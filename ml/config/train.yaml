@@ -1,0 +1,10 @@
+device: mps
+batch_size: 64
+epochs: 50
+early_stopping_patience: 8
+optimizer: AdamW
+learning_rate_cnn: 0.001
+learning_rate_transformer: 0.0005
+weight_decay: 0.0001
+gradient_clip_norm: 1.0
+seed: 42

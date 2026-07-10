@@ -1,0 +1,19 @@
+models:
+  tabular_baseline:
+    type: sklearn
+  cnn_tcn:
+    d_model: 128
+    dropout: 0.15
+  patch_tst_lite:
+    patch_len: 16
+    stride: 8
+    d_model: 128
+    n_heads: 4
+    layers: 3
+  itransformer_lite:
+    d_model: 128
+    n_heads: 4
+    layers: 2
+  scenario_encoder:
+    embedding_dim: 128
+

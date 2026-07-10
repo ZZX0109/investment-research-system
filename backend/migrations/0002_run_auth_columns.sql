@@ -1,0 +1,14 @@
+-- Compatibility migration for databases created before run snapshots and session lifecycle columns.
+-- investment_research:ensure_column research_runs input_snapshot_hash text
+-- investment_research:ensure_column research_runs input_snapshot_json text
+-- investment_research:ensure_column research_runs model_version text
+-- investment_research:ensure_column research_runs evidence_ids_json text
+-- investment_research:ensure_column research_runs reasoning_steps_json text
+-- investment_research:ensure_column research_runs judge_json text
+-- investment_research:ensure_column research_runs risk_conclusion_json text
+-- investment_research:ensure_column research_runs report_version text
+-- investment_research:ensure_column research_runs source_meta_json text
+-- investment_research:ensure_column sessions expires_at text
+-- investment_research:ensure_column sessions refresh_token_hash text
+-- investment_research:ensure_column sessions refresh_expires_at text
+-- investment_research:ensure_column sessions revoked_at text

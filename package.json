@@ -1,0 +1,37 @@
+{
+  "name": "investment-research-system",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite frontend --host 0.0.0.0",
+    "dev:api": "uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000",
+    "build": "tsc && vite build frontend",
+    "preview": "vite preview frontend --host 0.0.0.0",
+    "verify": "bash scripts/verify.sh",
+    "train:minimal": "python3 -m ml.pipelines.minimal_demo --allow-synthetic",
+    "train:real": "python3 -m ml.pipelines.real_data --model-id risk_tabular_real_v1 --min-symbols 20 --min-samples 800 --max-samples-per-symbol 80 --compact-feature-metadata --window-mode none",
+    "train:real:smoke": "python3 -m ml.pipelines.real_data --model-id risk_tabular_real_v1 --smoke --max-symbols 20 --min-symbols 20 --min-samples 480",
+    "train:real:deep:smoke": "python3 -m ml.pipelines.real_data --model-id risk_tabular_real_v1 --smoke --max-symbols 20 --min-symbols 20 --min-samples 480 --window-mode window120 --train-deep",
+    "refresh:events:large": "python3 -m ml.data.ingest_events --large-universe --workers 8",
+    "train:scale:smoke": "python3 -m ml.pipelines.reliable_scale --allow-synthetic --smoke --max-symbols 10 --min-symbols 8 --min-samples 240",
+    "train:scale": "python3 -m ml.pipelines.reliable_scale --fetch-real --min-symbols 30 --min-samples 1200",
+    "train:scale:large": "python3 -m ml.pipelines.reliable_scale --fetch-real --universe large_us_cn --min-symbols 300 --min-samples 12000 --min-rows 1250 --max-samples-per-symbol 40 --compact-feature-metadata --window-mode none --ingest-workers 8 --refresh-events --event-workers 8",
+    "train:scale:large:smoke": "python3 -m ml.pipelines.reliable_scale --allow-synthetic --smoke --universe large_us_cn --max-symbols 60 --min-symbols 50 --min-samples 2400",
+    "train:scale:large:deep:smoke": "python3 -m ml.pipelines.reliable_scale --allow-synthetic --smoke --universe large_us_cn --max-symbols 30 --min-symbols 24 --min-samples 960 --train-deep",
+    "train:scale:large:deep": "python3 -m ml.pipelines.reliable_scale --fetch-real --universe large_us_cn --min-symbols 300 --min-samples 12000 --min-rows 1250 --max-samples-per-symbol 40 --compact-feature-metadata --window-mode window120 --ingest-workers 8 --refresh-events --event-workers 8 --train-deep"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.83.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
+}
