@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Test Officer Demo App | Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Mission Hub</p>
+        <h1>Demo operations dashboard</h1>
+        <p>
+          Use these flows to verify the platform can connect to more than one
+          scenario family while keeping evidence and judge output structured.
+        </p>
+        <nav class="nav">
+          <a href="/orders">Orders</a>
+          <a href="/orders/create-form" class="secondary">Create order</a>
+          <a href="/tasks" class="secondary">Task filters</a>
+        </nav>
+      </section>
+
+      <section class="grid two-up">
+        <article class="panel">
+          <p class="eyebrow">Coverage</p>
+          <h2>Form submission</h2>
+          <p>Drive a realistic create flow with typed selectors and a success oracle.</p>
+        </article>
+        <article class="panel">
+          <p class="eyebrow">Coverage</p>
+          <h2>State transitions</h2>
+          <p>Ship an order and verify the list updates from pending to fulfilled.</p>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

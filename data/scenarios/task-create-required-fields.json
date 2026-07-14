@@ -1,0 +1,28 @@
+{
+  "id": "task_create_required_fields",
+  "title": "创建表单必填校验",
+  "summary": "空表单提交时必须阻止保存并给出可见必填提示。",
+  "pagePath": "/orders/create-form",
+  "matcher": {
+    "keywords": ["必填", "required", "表单", "create", "submit"],
+    "riskLevel": "high",
+    "sourceHints": ["requirement", "bug"],
+    "capabilities": ["browser_control", "screenshot", "dom"]
+  },
+  "corePath": {
+    "action": "submit_empty_form",
+    "pathId": "core_required_fields",
+    "title": "空表单提交并校验必填提示",
+    "buttonSelectorRef": "form-submit",
+    "statusSelectorRef": "form-validation-error",
+    "expectedTextIncludes": "Customer name is required"
+  },
+  "oracles": [
+    {
+      "id": "required_field_message",
+      "kind": "text",
+      "description": "空表单提交后必须出现必填错误提示。",
+      "requiredEvidence": ["screenshot", "dom-snapshot"]
+    }
+  ]
+}

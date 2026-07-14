@@ -1,0 +1,128 @@
+{
+  "baseUrl": "http://127.0.0.1:4173",
+  "project": {
+    "slug": "local-demo-app",
+    "name": "Local Demo App QA"
+  },
+  "targetApp": {
+    "name": "Local Demo App",
+    "environments": ["local"],
+    "defaultMode": "plan-assisted"
+  },
+  "auth": {
+    "strategy": "session",
+    "accountRef": "demo://local-app/test-user",
+    "loginPagePath": "/login"
+  },
+  "keyPages": [
+    {
+      "id": "login-page",
+      "name": "Login",
+      "path": "/login"
+    },
+    {
+      "id": "orders-page",
+      "name": "Orders",
+      "path": "/orders"
+    },
+    {
+      "id": "create-order-page",
+      "name": "Create order",
+      "path": "/orders/create-form"
+    },
+    {
+      "id": "tasks-page",
+      "name": "Tasks",
+      "path": "/tasks"
+    }
+  ],
+  "businessObjective": "Verify login, form submission, order state change, task filtering, search, empty state, and error recovery against the local demo app.",
+  "selectorHints": [
+    {
+      "id": "login-submit",
+      "pagePath": "/login",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=login-submit"]
+    },
+    {
+      "id": "order-submit",
+      "pagePath": "/orders/create-form",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=order-submit"]
+    },
+    {
+      "id": "order-validation-error",
+      "pagePath": "/orders/create-form",
+      "preferredStrategies": ["test-id", "text"],
+      "queries": ["data-testid=order-validation-error", "text=Customer name is required"]
+    },
+    {
+      "id": "ship-order",
+      "pagePath": "/orders",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=ship-order-ord-1001"]
+    },
+    {
+      "id": "task-filter-completed",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-filter-completed"]
+    },
+    {
+      "id": "task-filter-active",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-filter-active"]
+    },
+    {
+      "id": "task-search-input",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-search-input"]
+    },
+    {
+      "id": "task-search-submit",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-search-submit"]
+    },
+    {
+      "id": "task-empty-state",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-empty-state"]
+    },
+    {
+      "id": "task-error-trigger",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-error-trigger"]
+    },
+    {
+      "id": "task-error-banner",
+      "pagePath": "/tasks",
+      "preferredStrategies": ["test-id"],
+      "queries": ["data-testid=task-error-banner"]
+    }
+  ],
+  "scenarioRequests": [
+    {
+      "family": "auth-login",
+      "pagePath": "/login"
+    },
+    {
+      "family": "golden-path",
+      "pagePath": "/tasks"
+    },
+    {
+      "family": "form-submission",
+      "pagePath": "/orders/create-form",
+      "selectorHintIds": ["order-submit", "order-validation-error"]
+    },
+    {
+      "family": "list-state-change",
+      "pagePath": "/orders",
+      "selectorHintIds": ["ship-order"]
+    }
+  ]
+}

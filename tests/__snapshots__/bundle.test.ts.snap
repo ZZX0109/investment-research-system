@@ -1,0 +1,140 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`report builders > renders stable report sections for run replay and failure attribution > html-report-sections 1`] = `
+"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Test Officer Report run_mission-task-filter-completed-STABLE</title>
+    <style>
+      :root { color: #172019; background: #f3f5f1; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 1180px; margin: 0 auto; padding: 28px; }
+      header, section { border: 1px solid #d9e2d8; border-radius: 10px; background: #fffefb; padding: 18px; margin-bottom: 14px; box-shadow: 0 18px 40px rgba(20,30,20,.06); }
+      h1, h2, h3, p { margin-top: 0; }
+      .verdict { display: inline-flex; border-radius: 999px; padding: 7px 12px; font-weight: 700; }
+      .pass { background: #e8f5ed; color: #236444; }
+      .fail { background: #fde8e3; color: #923626; }
+      .review { background: #f8eed8; color: #835f16; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .card, li { border: 1px solid #dfe6dc; border-radius: 8px; background: #fbfcf8; padding: 12px; }
+      ul { display: grid; gap: 8px; list-style: none; padding: 0; margin: 0; }
+      code { overflow-wrap: anywhere; border-radius: 5px; background: #edf1eb; padding: 2px 6px; }
+      img { width: 100%; border: 1px solid #dfe6dc; border-radius: 8px; background: #1d241f; }
+      @media (max-width: 820px) { main { padding: 14px; } .grid { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Evidence-Grounded AI Test Officer</h1>
+        <p><span class="verdict pass">pass</span></p>
+        <p>All planned steps executed successfully and the oracle checks remained satisfied.</p>
+        <code>run_mission-task-filter-completed-STABLE</code>
+      </header>
+      <section>
+        <h2>Trust Boundary</h2>
+        <div class="grid">
+          <div class="card"><strong>Machine Evidence</strong><p>1 evidence records, 3 artifacts.</p></div>
+          <div class="card"><strong>Judge</strong><p>pass · confidence 0.92</p></div>
+          <div class="card"><strong>Judge Mode</strong><p>deterministic · llm not_configured</p></div>
+          <div class="card"><strong>Planned Steps</strong><p>1</p></div>
+          <div class="card"><strong>Evidence Rule</strong><p>Findings must cite persisted evidence IDs.</p></div>
+        </div>
+      </section>
+      <section>
+        <h2>Risk Coverage</h2>
+        <ul>
+          <li><strong>Completed task filter works</strong><p>Verify completed tasks can be filtered and displayed correctly.</p><code>scenario_task-filter-completed</code></li>
+        </ul>
+      </section>
+      <section>
+        <h2>Evidence Timeline</h2>
+        <ul>
+          <li><strong>Open completed filter</strong><p>passed · click · Completed tasks are visible</p></li>
+        </ul>
+      </section>
+      <section>
+        <h2>Oracle Decisions</h2>
+        <ul>
+          <li><strong>pass</strong><p>oracle_task-filter-completed · Completed filter oracle passed with required evidence coverage.</p></li>
+        </ul>
+      </section>
+      <section>
+        <h2>Latest Visual Evidence</h2>
+        <p>No inline image preview available.</p>
+      </section>
+      <section>
+        <h2>Findings</h2>
+        <ul>
+          <li>No findings.</li>
+        </ul>
+      </section>
+      <section>
+        <h2>Likely Causes</h2>
+        <ul>
+          <li>No failure attribution records.</li>
+        </ul>
+      </section>
+      <section>
+        <h2>Reproduce</h2>
+        <p><code>HEADLESS=1 npm run commit-check</code></p>
+      </section>
+    </main>
+  </body>
+</html>"
+`;
+
+exports[`report builders > renders stable report sections for run replay and failure attribution > markdown-report-sections 1`] = `
+"# Evidence-Grounded AI Test Officer Report
+
+- Run ID: \`run_mission-task-filter-completed-STABLE\`
+- Mission: Golden completed-filter mission
+- Status: \`passed\`
+- Review: \`pass\`
+- Judge: \`pass\`
+- Judge mode: \`deterministic\`
+- LLM status: \`not_configured\`
+- Policy: \`judge-policy-v1-structured-assertions\`
+- Scenario count: 1
+- Planned step count: 1
+- Evidence count: 1
+- Artifact count: 3
+
+## Release Verdict
+
+All planned steps executed successfully and the oracle checks remained satisfied.
+
+## Risk Coverage
+
+- \`covered\` Completed task filter works: Verify completed tasks can be filtered and displayed correctly.
+
+## Evidence Timeline
+
+- \`passed\` Open completed filter · click · Completed tasks are visible
+
+## Oracle Decisions
+
+- \`pass\` oracle_task-filter-completed: Completed filter oracle passed with required evidence coverage.
+
+## Findings
+
+- No findings
+
+## Likely Causes
+
+- No failure attribution records
+
+## Failed Paths
+
+- None
+
+## Reproduce
+
+\`\`\`bash
+HEADLESS=1 npm run commit-check
+\`\`\`
+"
+`;

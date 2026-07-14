@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Test Officer Demo App | Orders</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Scenario Family</p>
+        <h1>Order queue</h1>
+        <p>Validate list rendering, state changes, and operator actions.</p>
+        <nav class="nav">
+          <a href="/dashboard" class="secondary">Dashboard</a>
+          <a href="/orders/create-form">Create order</a>
+        </nav>
+      </section>
+
+      <section class="panel">
+        <h2>Current order status</h2>
+        <p class="status" data-testid="orders-summary">Loading orders…</p>
+        <ul class="list" data-testid="orders-list"></ul>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+[submodule "ai-test-officer"]
+	path = ai-test-officer
+	url = https://github.com/ZZX0109/ai-test-officer.git

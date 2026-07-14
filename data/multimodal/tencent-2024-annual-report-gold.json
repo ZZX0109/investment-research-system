@@ -1,0 +1,30 @@
+{
+  "annotation_version": "tencent-2024-ar-v1",
+  "source_url": "https://static.www.tencent.com/uploads/2025/04/08/0706a9085e70140122364ded872455ca.pdf",
+  "document_sha256": "70f529984a87ef7f46d9e1db26bb9ef27eef9c01d29c59aabf69e557b479a6a0",
+  "downloaded_at": "2026-07-13T14:51:00+08:00",
+  "cases": [
+    {
+      "page": 4,
+      "title": "财务概要 / 简明综合全面收益表",
+      "bbox": [50, 140, 550, 650],
+      "unit": "人民币百万元",
+      "time_range": [2020, 2024],
+      "series_name": "收入",
+      "values": [482064, 560118, 554552, 609015, 660257],
+      "trend": "overall_up_with_2022_dip",
+      "anomaly_years": [2022]
+    },
+    {
+      "page": 133,
+      "title": "综合现金流量表",
+      "bbox": [50, 60, 550, 750],
+      "unit": "人民币百万元",
+      "time_range": [2023, 2024],
+      "series_name": "经营活动所得现金流量净额",
+      "values": [221962, 258521],
+      "trend": "up",
+      "anomaly_years": []
+    }
+  ]
+}

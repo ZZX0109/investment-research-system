@@ -1,0 +1,375 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from investment_research.api.schemas import (
+    AssetCreateRequest,
+    EvidenceCreateRequest,
+    PositionCreateRequest,
+    PriceSeriesCreateRequest,
+    ResearchReportCreateRequest,
+    WatchlistCreateRequest,
+)
+from investment_research.domain.base import utc_now
+from investment_research.domain.enums import DataMode
+from investment_research.domain.enums import EvidenceType
+from investment_research.domain.models import Asset
+from investment_research.domain.models import AuditRecord
+from investment_research.domain.models import Evidence
+from investment_research.domain.models import Position
+from investment_research.domain.models import PricePoint
+from investment_research.domain.models import PriceSeries
+from investment_research.domain.models import ResearchReport
+from investment_research.domain.models import User
+from investment_research.domain.models import Watchlist
+from investment_research.repository.sqlite import SQLiteUnitOfWork
+from investment_research.service.data_mode import DataModePolicyService
+
+
+class PortfolioResearchService:
+    """Application service for portfolio, market-data, evidence, and report write/read operations."""
+
+    def __init__(self, uow: SQLiteUnitOfWork) -> None:
+        self.uow = uow
+        self.mode_policy = DataModePolicyService()
+
+    def list_assets(self, *, source_type: str | None = None) -> list[Asset]:
+        try:
+            return self.uow.assets.list(source_type=source_type)
+        finally:
+            self.uow.close()
+
+    def create_asset(self, payload: AssetCreateRequest) -> Asset:
+        try:
+            asset = self._build_asset(payload)
+            return self.uow.assets.add(asset)
+        finally:
+            self.uow.close()
+
+    def create_asset_for_user(self, payload: AssetCreateRequest, *, user: User) -> Asset:
+        try:
+            asset = self._build_asset(payload)
+            stored = self.uow.assets.add(asset)
+            self.uow.domain.assign_owner(
+                resource_type="asset", resource_id=stored.id, owner_user_id=user.id
+            )
+            self._record_audit(
+                actor=user.auth_subject,
+                action="asset.created",
+                target_type="asset",
+                target_id=stored.id,
+                details={"ticker": stored.ticker, "source_type": stored.provenance.source_type.value},
+                data_mode=stored.provenance.data_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def create_position_for_user(self, payload: PositionCreateRequest, *, user: User) -> Position:
+        try:
+            asset = self.uow.assets.get(payload.asset_id)
+            if asset is None:
+                raise ValueError("Asset not found")
+            self.uow.domain.assert_access(
+                resource_type="asset", resource_id=payload.asset_id, user_id=user.id, write=True
+            )
+            position = Position(
+                user_id=user.id,
+                asset_id=UUID(payload.asset_id),
+                quantity=payload.quantity,
+                cost_basis=payload.cost_basis,
+                opened_at=payload.opened_at,
+                provenance=self.mode_policy.build_manual_provenance(
+                    data_mode=asset.provenance.data_mode,
+                    source_name="position-entry",
+                    observed_at=payload.opened_at,
+                ),
+            )
+            stored = self.uow.positions.add(position)
+            self.uow.domain.assign_owner(
+                resource_type="position", resource_id=stored.id, owner_user_id=user.id
+            )
+            self._record_audit(
+                actor=user.auth_subject,
+                action="position.created",
+                target_type="position",
+                target_id=stored.id,
+                details={"asset_id": payload.asset_id, "quantity": str(payload.quantity)},
+                data_mode=stored.provenance.data_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def list_positions_for_user(self, *, user: User) -> list[Position]:
+        try:
+            return self.uow.positions.list_for_user(str(user.id))
+        finally:
+            self.uow.close()
+
+    def create_watchlist_for_user(self, payload: WatchlistCreateRequest, *, user: User) -> Watchlist:
+        try:
+            assets = [self.uow.assets.get(asset_id) for asset_id in payload.asset_ids]
+            if any(asset is None for asset in assets):
+                raise ValueError("Asset not found")
+            asset_modes = [asset.provenance.data_mode for asset in assets if asset is not None]
+            watchlist_mode = self.mode_policy.ensure_uniform_mode(data_modes=asset_modes, label="Watchlist assets")
+            watchlist = Watchlist(
+                user_id=user.id,
+                name=payload.name,
+                asset_ids=[UUID(asset_id) for asset_id in payload.asset_ids],
+                provenance=self.mode_policy.build_manual_provenance(
+                    data_mode=watchlist_mode,
+                    source_name="watchlist-entry",
+                    observed_at=utc_now(),
+                ),
+            )
+            stored = self.uow.watchlists.add(watchlist)
+            self.uow.domain.assign_owner(
+                resource_type="watchlist", resource_id=stored.id, owner_user_id=user.id
+            )
+            self._record_audit(
+                actor=user.auth_subject,
+                action="watchlist.created",
+                target_type="watchlist",
+                target_id=stored.id,
+                details={"name": stored.name, "asset_count": str(len(stored.asset_ids)), "mode": watchlist_mode.value},
+                data_mode=watchlist_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def list_watchlists_for_user(self, *, user: User) -> list[Watchlist]:
+        try:
+            return self.uow.watchlists.list_for_user(str(user.id))
+        finally:
+            self.uow.close()
+
+    def create_price_series(self, payload: PriceSeriesCreateRequest, *, user: User) -> PriceSeries:
+        try:
+            if self.uow.assets.get(payload.asset_id) is None:
+                raise ValueError("Asset not found")
+            self.uow.domain.assert_access(
+                resource_type="asset", resource_id=payload.asset_id, user_id=user.id, write=True
+            )
+            series = PriceSeries(
+                asset_id=UUID(payload.asset_id),
+                interval=payload.interval,
+                series_role=payload.series_role,
+                reference_symbol=payload.reference_symbol,
+                points=[
+                    PricePoint(
+                        asset_id=UUID(payload.asset_id),
+                        timestamp=point.timestamp,
+                        open=point.open,
+                        high=point.high,
+                        low=point.low,
+                        close=point.close,
+                        volume=point.volume,
+                        provenance=self.mode_policy.build_provenance(
+                            data_mode=payload.data_mode,
+                            source_type=payload.source_type,
+                            source_name=payload.source_name,
+                            observed_at=point.timestamp,
+                            confidence=payload.confidence,
+                        ),
+                    )
+                    for point in payload.points
+                ],
+                provenance=self.mode_policy.build_provenance(
+                    data_mode=payload.data_mode,
+                    source_type=payload.source_type,
+                    source_name=payload.source_name,
+                    observed_at=payload.observed_at,
+                    confidence=payload.confidence,
+                ),
+            )
+            stored = self.uow.price_series.add(series)
+            self._record_audit(
+                actor=user.auth_subject,
+                action="price-series.created",
+                target_type="price_series",
+                target_id=stored.id,
+                details={"asset_id": payload.asset_id, "points": str(len(payload.points))},
+                data_mode=stored.provenance.data_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def list_price_series_for_asset(self, asset_id: str) -> list[PriceSeries]:
+        try:
+            return self.uow.price_series.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def create_evidence(self, payload: EvidenceCreateRequest, *, user: User) -> Evidence:
+        try:
+            if self.uow.assets.get(payload.asset_id) is None:
+                raise ValueError("Asset not found")
+            self.uow.domain.assert_access(
+                resource_type="asset", resource_id=payload.asset_id, user_id=user.id, write=True
+            )
+            evidence = Evidence(
+                asset_id=UUID(payload.asset_id),
+                evidence_type=EvidenceType(payload.evidence_type),
+                title=payload.title,
+                summary=payload.summary,
+                source_url=payload.source_url,
+                collected_at=payload.collected_at,
+                published_at=payload.published_at or payload.collected_at,
+                payload_ref=payload.payload_ref,
+                event_type=payload.event_type,
+                direction=payload.direction,
+                intensity=payload.intensity,
+                source_tier=payload.source_tier,
+                surprise_bucket=payload.surprise_bucket,
+                guidance_bucket=payload.guidance_bucket,
+                filing_type=payload.filing_type,
+                raw_hash=payload.raw_hash,
+                normalized_hash=payload.normalized_hash,
+                data_version=payload.data_version,
+                provenance=self.mode_policy.build_provenance(
+                    data_mode=payload.data_mode,
+                    source_type=payload.source_type,
+                    source_name=payload.source_name,
+                    observed_at=payload.collected_at,
+                    confidence=payload.confidence,
+                ),
+            )
+            stored = self.uow.evidence.add(evidence)
+            self.uow.domain.register_evidence(evidence=stored, owner=user)
+            self._record_audit(
+                actor=user.auth_subject,
+                action="evidence.created",
+                target_type="evidence",
+                target_id=stored.id,
+                details={"asset_id": payload.asset_id, "evidence_type": payload.evidence_type},
+                data_mode=stored.provenance.data_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def list_evidence_for_asset(self, asset_id: str) -> list[Evidence]:
+        try:
+            return self.uow.evidence.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def create_research_report(self, payload: ResearchReportCreateRequest, *, user: User) -> ResearchReport:
+        try:
+            if self.uow.assets.get(payload.asset_id) is None:
+                raise ValueError("Asset not found")
+            if self.uow.analysis_runs.get(payload.analysis_run_id) is None:
+                raise ValueError("Analysis run not found")
+            report = ResearchReport(
+                asset_id=UUID(payload.asset_id),
+                analysis_run_id=UUID(payload.analysis_run_id),
+                title=payload.title,
+                thesis=payload.thesis,
+                evidence_ids=[UUID(evidence_id) for evidence_id in payload.evidence_ids],
+                report_version=payload.report_version,
+                provenance=self.mode_policy.build_provenance(
+                    data_mode=payload.data_mode,
+                    source_type=payload.source_type,
+                    source_name=payload.source_name,
+                    observed_at=payload.observed_at,
+                    confidence=payload.confidence,
+                ),
+            )
+            stored = self.uow.reports.add(report)
+            self.uow.domain.assert_access(
+                resource_type="asset", resource_id=payload.asset_id, user_id=user.id, write=True
+            )
+            self.uow.domain.assign_owner(
+                resource_type="research_report", resource_id=stored.id, owner_user_id=user.id
+            )
+            self._record_audit(
+                actor=user.auth_subject,
+                action="report.created",
+                target_type="research_report",
+                target_id=stored.id,
+                details={"asset_id": payload.asset_id, "analysis_run_id": payload.analysis_run_id},
+                data_mode=stored.provenance.data_mode,
+            )
+            return stored
+        finally:
+            self.uow.close()
+
+    def list_reports_for_asset(self, asset_id: str) -> list[ResearchReport]:
+        try:
+            return self.uow.reports.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def list_audit_records_for_user(self, *, user: User) -> list[AuditRecord]:
+        try:
+            return self.uow.audit_records.list_for_actor(user.auth_subject)
+        finally:
+            self.uow.close()
+
+    def list_assets_for_user(self, *, user: User, source_type: str | None = None) -> list[Asset]:
+        try:
+            permitted = self.uow.domain.accessible_resource_ids(resource_type="asset", user_id=user.id)
+            return [asset for asset in self.uow.assets.list(source_type=source_type) if str(asset.id) in permitted]
+        finally:
+            self.uow.close()
+
+    def list_evidence_for_asset_for_user(self, asset_id: str, *, user: User) -> list[Evidence]:
+        try:
+            self.uow.domain.assert_access(resource_type="asset", resource_id=asset_id, user_id=user.id)
+            return self.uow.evidence.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def list_price_series_for_asset_for_user(self, asset_id: str, *, user: User) -> list[PriceSeries]:
+        try:
+            self.uow.domain.assert_access(resource_type="asset", resource_id=asset_id, user_id=user.id)
+            return self.uow.price_series.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def list_reports_for_asset_for_user(self, asset_id: str, *, user: User) -> list[ResearchReport]:
+        try:
+            self.uow.domain.assert_access(resource_type="asset", resource_id=asset_id, user_id=user.id)
+            return self.uow.reports.list_for_asset(asset_id)
+        finally:
+            self.uow.close()
+
+    def _build_asset(self, payload: AssetCreateRequest) -> Asset:
+        return Asset(
+            ticker=payload.ticker.upper(),
+            name=payload.name,
+            asset_type=payload.asset_type,
+            currency=payload.currency.upper(),
+            exchange=payload.exchange,
+            provenance=self.mode_policy.build_provenance(
+                data_mode=payload.data_mode,
+                source_type=payload.source_type,
+                source_name=payload.source_name,
+                observed_at=payload.observed_at,
+                confidence=payload.confidence,
+            ),
+        )
+
+    def _record_audit(
+        self,
+        *,
+        actor: str,
+        action: str,
+        target_type: str,
+        target_id,
+        details: dict[str, str],
+        data_mode: DataMode,
+    ) -> None:
+        record = AuditRecord(
+            actor=actor,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            details=details,
+            provenance=self.mode_policy.build_audit_provenance(data_mode=data_mode, observed_at=utc_now()),
+        )
+        self.uow.audit_records.add(record)

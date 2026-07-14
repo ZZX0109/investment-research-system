@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Test Officer Demo App | Create Order</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Scenario Family</p>
+        <h1>Create a new order</h1>
+        <p>Exercise a form flow with required fields, success feedback, and persisted data.</p>
+        <nav class="nav">
+          <a href="/orders" class="secondary">Back to orders</a>
+          <a href="/tasks" class="secondary">Task filters</a>
+        </nav>
+      </section>
+
+      <section class="panel">
+        <form data-testid="order-form">
+          <label>
+            Customer name
+            <input
+              data-testid="order-customer"
+              type="text"
+              name="customer"
+              placeholder="Northwind Trading"
+              required
+            />
+          </label>
+          <label>
+            Operator notes
+            <textarea
+              data-testid="order-notes"
+              name="notes"
+              placeholder="Record any special handling instructions"
+            ></textarea>
+          </label>
+          <div class="actions">
+            <button data-testid="order-submit" type="submit">Submit order</button>
+          </div>
+        </form>
+        <p class="status bad" data-testid="order-validation-error" hidden>
+          Customer name is required.
+        </p>
+        <p class="status good" data-testid="order-success" hidden>
+          Order saved.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

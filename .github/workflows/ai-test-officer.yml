@@ -1,0 +1,76 @@
+name: AI Test Officer
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-officer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build:platform
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke standalone customer portal onboarding
+        run: RUN_PLAYWRIGHT_SMOKE=1 HEADLESS=1 npm test -- tests/bundle.test.ts -t "runs standalone customer portal through Playwright"
+
+      - id: officer
+        name: Run AI Test Officer
+        shell: bash
+        run: |
+          set +e
+          HEADLESS=1 node scripts/run-with-app.mjs \
+            --input ./examples/onboarding/local-demo-app.json \
+            --output-root ./runs \
+            --scenario-registry ./data/scenarios \
+            --mode plan-assisted \
+            --executor playwright \
+            --gate-config ./examples/ci/ai-test-officer.ci.json \
+            | tee ai-test-officer-output.json
+          officer_status=${PIPESTATUS[0]}
+          set -e
+
+          node <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(fs.readFileSync("ai-test-officer-output.json", "utf8"));
+          const upload = JSON.parse(fs.readFileSync(payload.reports.ciArtifactManifestPath, "utf8"));
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `exit_code=${payload.gate.exitCode}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `gate_path=${payload.reports.gatePath}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `pr_annotation_path=${payload.reports.prAnnotationPath}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `artifact_manifest_path=${payload.reports.ciArtifactManifestPath}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `artifact_name=${upload.githubActions.artifactName}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `retention_days=${upload.githubActions.retentionDays}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "artifact_paths<<EOF\n");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `${upload.githubActions.uploadPaths.join("\n")}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "EOF\n");
+          NODE
+
+          exit "$officer_status"
+
+      - name: Append AI Test Officer summary
+        if: always() && steps.officer.outputs.pr_annotation_path != ''
+        run: cat "${{ steps.officer.outputs.pr_annotation_path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload AI Test Officer artifacts
+        if: always() && steps.officer.outputs.artifact_paths != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.officer.outputs.artifact_name }}
+          path: ${{ steps.officer.outputs.artifact_paths }}
+          retention-days: ${{ steps.officer.outputs.retention_days }}
+          if-no-files-found: warn

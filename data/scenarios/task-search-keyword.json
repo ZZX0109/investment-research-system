@@ -1,0 +1,37 @@
+{
+  "id": "task_search_keyword",
+  "title": "任务搜索关键词验收",
+  "summary": "输入关键词 urgent 后只展示命中任务，并记录 keyword=urgent 查询意图。",
+  "pagePath": "/tasks",
+  "matcher": {
+    "keywords": ["搜索", "keyword", "search", "query", "urgent"],
+    "riskLevel": "medium",
+    "sourceHints": ["requirement", "pr"],
+    "capabilities": ["browser_control", "screenshot", "dom", "network"]
+  },
+  "corePath": {
+    "action": "fill_and_submit",
+    "pathId": "core_search_keyword",
+    "title": "输入关键词并校验搜索结果",
+    "inputSelectorRef": "task-search-input",
+    "submitSelectorRef": "task-search-submit",
+    "input": "urgent",
+    "expectedQueryFragment": "keyword=urgent",
+    "statusSelectorRef": "task-list",
+    "expectedTextIncludes": "urgent"
+  },
+  "oracles": [
+    {
+      "id": "search_query",
+      "kind": "network",
+      "description": "搜索动作必须携带 keyword=urgent 查询意图。",
+      "requiredEvidence": ["network-log", "dom-snapshot"]
+    },
+    {
+      "id": "search_dom",
+      "kind": "text",
+      "description": "搜索结果必须包含 urgent 任务。",
+      "requiredEvidence": ["screenshot", "dom-snapshot"]
+    }
+  ]
+}

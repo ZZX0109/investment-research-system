@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Test Officer Demo App | Tasks</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Golden Path</p>
+        <h1>Task filter board</h1>
+        <p>
+          Preserve the original `task_filter_completed` scenario while hosting it
+          beside broader platform-ready flows.
+        </p>
+        <nav class="nav">
+          <a href="/dashboard" class="secondary">Dashboard</a>
+          <a href="/orders" class="secondary">Orders</a>
+        </nav>
+      </section>
+
+      <section class="panel">
+        <form class="search-row" data-testid="task-search-form">
+          <label>
+            Search tasks
+            <input
+              data-testid="task-search-input"
+              name="keyword"
+              placeholder="Search tasks"
+              type="search"
+            />
+          </label>
+          <button data-testid="task-search-submit" type="submit">Search</button>
+        </form>
+        <div class="actions" data-testid="task-filter-status">
+          <button data-testid="task-filter-all" data-filter="all" type="button">All</button>
+          <button
+            class="secondary"
+            data-testid="task-filter-active"
+            data-filter="active"
+            type="button"
+          >
+            Active
+          </button>
+          <button
+            class="secondary"
+            data-testid="task-filter-completed"
+            data-filter="completed"
+            type="button"
+          >
+            Completed
+          </button>
+          <button
+            class="secondary"
+            data-testid="task-error-trigger"
+            data-filter="error"
+            type="button"
+          >
+            Simulate error
+          </button>
+        </div>
+        <p class="status bad" data-testid="task-error-banner" hidden>
+          Task service is unavailable. Retry by returning to All tasks.
+        </p>
+        <p class="status" data-testid="task-empty-state" hidden></p>
+        <ul class="list" data-testid="task-list"></ul>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

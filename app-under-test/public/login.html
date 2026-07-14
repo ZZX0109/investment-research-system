@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Test Officer Demo App | Login</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Target App</p>
+        <h1>Operations portal sign-in</h1>
+        <p>
+          This local app-under-test gives the platform a realistic login, form,
+          state transition, and filtered-list surface to validate.
+        </p>
+      </section>
+
+      <section class="panel">
+        <h2>Sign in with the demo operator account</h2>
+        <form data-testid="login-form">
+          <label>
+            Email
+            <input
+              data-testid="login-email"
+              type="email"
+              name="email"
+              placeholder="qa@example.test"
+              value="qa@example.test"
+              required
+            />
+          </label>
+          <label>
+            Password
+            <input
+              data-testid="login-password"
+              type="password"
+              name="password"
+              placeholder="demo-password"
+              value="demo-password"
+              required
+            />
+          </label>
+          <div class="actions">
+            <button data-testid="login-submit" type="submit">Login</button>
+          </div>
+          <p class="status" data-testid="login-status">
+            Ready for login validation.
+          </p>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

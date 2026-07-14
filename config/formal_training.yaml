@@ -1,0 +1,49 @@
+schema_version: training-pipeline-config-v2
+mode: formal
+markets: [us, cn, hk, jp]
+start_date: 2018-01-01
+end_date: 2026-07-14
+decision_context: close_confirmed
+decision_contexts: [close_confirmed, pre_open]
+tasks: [risk, return, direction]
+targets: [future_max_drawdown_20d, future_max_drawdown_60d, future_max_drawdown_120d]
+train_window_days: 504
+validation_window_days: 126
+final_holdout_days: 252
+recent_stress_days: 126
+embargo_days: 120
+random_seeds: [42, 2026, 3407]
+feature_contract_version: investment-risk-features-v2
+label_policy_version: four-market-tradeable-label-v1
+adjustment_policy: qfq-labels_raw-market-state
+providers:
+  us:
+    primary: licensed-us-primary
+    backup: licensed-us-backup
+    authorized: false
+    sla_name: pending-contract
+  cn:
+    primary: licensed-cn-primary
+    backup: licensed-cn-backup
+    authorized: false
+    sla_name: pending-contract
+  hk:
+    primary: licensed-hk-primary
+    backup: licensed-hk-backup
+    authorized: false
+    sla_name: pending-contract
+  jp:
+    primary: licensed-jp-primary
+    backup: licensed-jp-backup
+    authorized: false
+    sla_name: pending-contract
+cache_ttl:
+  daily_bars_seconds: 86400
+  events_seconds: 3600
+  snapshots_seconds: 15
+output_root: artifacts/training
+deployment_root: output/models
+allow_synthetic: false
+training_profile: full
+minimum_shadow_sessions: 20
+minimum_critical_coverage: 0.98

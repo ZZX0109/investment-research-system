@@ -1,0 +1,219 @@
+{
+  "baseUrl": "http://127.0.0.1:4185",
+  "project": {
+    "slug": "customer-portal-lite",
+    "name": "Customer Portal Lite Fixture",
+    "description": "A standalone target-project fixture used to validate real-project onboarding without relying on the built-in task demo app."
+  },
+  "targetApp": {
+    "name": "Customer Portal Lite",
+    "environments": ["local-fixture"],
+    "defaultMode": "plan-assisted"
+  },
+  "auth": {
+    "strategy": "session",
+    "accountRef": "fixture://customer-portal-lite/accounts/qa-admin",
+    "loginPagePath": "/signin"
+  },
+  "runtime": {
+    "profile": "local-dev",
+    "projectRoot": "examples/target-projects/customer-portal-lite",
+    "start": {
+      "command": "node",
+      "args": ["server.mjs"],
+      "cwd": "examples/target-projects/customer-portal-lite",
+      "env": [
+        {
+          "name": "CUSTOMER_PORTAL_FIXTURE_PORT",
+          "value": "4185",
+          "scope": "launch"
+        },
+        {
+          "name": "CUSTOMER_PORTAL_FIXTURE_ACCOUNT",
+          "value": "qa-admin@example.test",
+          "scope": "launch"
+        }
+      ],
+      "timeoutMs": 10000
+    },
+    "healthCheck": {
+      "url": "http://127.0.0.1:4185/healthz",
+      "method": "GET",
+      "expectedStatus": [204],
+      "timeoutMs": 1000,
+      "intervalMs": 100,
+      "retries": 20
+    },
+    "cleanup": {
+      "command": "node",
+      "args": ["cleanup.mjs"],
+      "cwd": "examples/target-projects/customer-portal-lite",
+      "env": [
+        {
+          "name": "CUSTOMER_PORTAL_FIXTURE_MODE",
+          "value": "local-fixture",
+          "scope": "cleanup"
+        }
+      ],
+      "timeoutMs": 5000
+    },
+    "routes": [
+      {
+        "id": "signin",
+        "path": "/signin",
+        "purpose": "login",
+        "authenticated": false
+      },
+      {
+        "id": "customers",
+        "path": "/customers",
+        "purpose": "workflow",
+        "authenticated": true
+      },
+      {
+        "id": "create-customer",
+        "path": "/customers/new",
+        "purpose": "workflow",
+        "authenticated": true
+      },
+      {
+        "id": "orders",
+        "path": "/orders",
+        "purpose": "workflow",
+        "authenticated": true
+      },
+      {
+        "id": "health",
+        "path": "/api/health",
+        "purpose": "health",
+        "authenticated": false
+      }
+    ],
+    "testAccounts": [
+      {
+        "id": "qa-admin",
+        "role": "admin",
+        "credentialRef": "fixture://customer-portal-lite/accounts/qa-admin",
+        "scope": ["local-fixture", "customers", "orders"]
+      }
+    ]
+  },
+  "keyPages": [
+    {
+      "id": "signin-page",
+      "name": "Sign in",
+      "path": "/signin",
+      "tags": ["auth"]
+    },
+    {
+      "id": "customers-page",
+      "name": "Customers",
+      "path": "/customers",
+      "tags": ["golden-path", "list"]
+    },
+    {
+      "id": "create-customer-page",
+      "name": "Create customer",
+      "path": "/customers/new",
+      "tags": ["form"]
+    },
+    {
+      "id": "orders-page",
+      "name": "Orders",
+      "path": "/orders",
+      "tags": ["state-change"]
+    }
+  ],
+  "businessObjective": "Verify a QA admin can sign in, inspect customers, create a customer record, and ship an order in the standalone customer portal fixture.",
+  "selectorHints": [
+    {
+      "id": "auth-login-submit",
+      "pagePath": "/signin",
+      "description": "Sign in button.",
+      "preferredStrategies": ["test-id", "role", "text"],
+      "queries": ["data-testid=signin-submit", "role=button[name='Sign in']", "text=Sign in"]
+    },
+    {
+      "id": "golden-path-primary-action",
+      "pagePath": "/customers",
+      "description": "Open the seeded customer.",
+      "preferredStrategies": ["test-id", "role"],
+      "queries": ["data-testid=open-customer-cust-1001", "role=button[name='Open customer']"]
+    },
+    {
+      "id": "golden-path-observer",
+      "pagePath": "/customers",
+      "description": "Customer profile panel.",
+      "preferredStrategies": ["test-id", "text"],
+      "queries": ["data-testid=customer-detail-panel", "text=Customer profile"]
+    },
+    {
+      "id": "form-primary-input",
+      "pagePath": "/customers/new",
+      "description": "Customer name field.",
+      "preferredStrategies": ["test-id", "label"],
+      "queries": ["data-testid=customer-name", "label=Customer name"]
+    },
+    {
+      "id": "form-submit",
+      "pagePath": "/customers/new",
+      "description": "Create customer button.",
+      "preferredStrategies": ["test-id", "role"],
+      "queries": ["data-testid=customer-save", "role=button[name='Create customer']"]
+    },
+    {
+      "id": "form-success-indicator",
+      "pagePath": "/customers/new",
+      "description": "Customer creation confirmation.",
+      "preferredStrategies": ["test-id", "text"],
+      "queries": ["data-testid=customer-success", "text=Customer created"]
+    },
+    {
+      "id": "list-state-change-trigger",
+      "pagePath": "/orders",
+      "description": "Ship the seeded order.",
+      "preferredStrategies": ["test-id", "role"],
+      "queries": ["data-testid=ship-order-ord-1001", "role=button[name='Ship order']"]
+    },
+    {
+      "id": "list-state-observer",
+      "pagePath": "/orders",
+      "description": "Orders list state after shipment.",
+      "preferredStrategies": ["test-id", "text"],
+      "queries": ["data-testid=orders-list", "text=Shipped"]
+    }
+  ],
+  "scenarioRequests": [
+    {
+      "family": "auth-login",
+      "name": "QA admin can sign in",
+      "pagePath": "/signin",
+      "fixtureRefs": ["fixture://customer-portal-lite/accounts/qa-admin"],
+      "evidenceRequirements": ["screenshot", "dom-snapshot", "console-log", "network-log"]
+    },
+    {
+      "family": "golden-path",
+      "name": "Customer profile opens",
+      "pagePath": "/customers",
+      "selectorHintIds": ["golden-path-primary-action", "golden-path-observer"],
+      "fixtureRefs": ["fixture://customer-portal-lite/customers/seeded"],
+      "evidenceRequirements": ["screenshot", "dom-snapshot", "console-log"]
+    },
+    {
+      "family": "form-submission",
+      "name": "Create customer form submits",
+      "pagePath": "/customers/new",
+      "selectorHintIds": ["form-primary-input", "form-submit", "form-success-indicator"],
+      "fixtureRefs": ["fixture://customer-portal-lite/customers/new-record"],
+      "evidenceRequirements": ["screenshot", "dom-snapshot", "console-log", "network-log"]
+    },
+    {
+      "family": "list-state-change",
+      "name": "Seeded order can be shipped",
+      "pagePath": "/orders",
+      "selectorHintIds": ["list-state-change-trigger", "list-state-observer"],
+      "fixtureRefs": ["fixture://customer-portal-lite/orders/seeded"],
+      "evidenceRequirements": ["screenshot", "dom-snapshot", "console-log", "network-log"]
+    }
+  ]
+}

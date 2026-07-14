@@ -1,0 +1,48 @@
+schema_version: cn-research-task-registry-v1
+markets: [cn]
+decision_contexts:
+  close_confirmed:
+    decision_time: "15:10"
+    timezone: Asia/Shanghai
+  pre_open:
+    decision_time: "09:10"
+    timezone: Asia/Shanghai
+    session: next_trading_day
+tasks:
+  direction_1d:
+    horizon_trading_days: 1
+    output: [up, down, flat]
+    label_policy: volatility_standardized-v1
+    baselines: [constant_class, index_direction, momentum, random]
+  direction_5d:
+    horizon_trading_days: 5
+    output: [up, down, flat]
+    label_policy: volatility_standardized-v1
+    baselines: [constant_class, index_direction, momentum, random]
+  return_20d:
+    horizon_trading_days: 20
+    output: [p10, p50, p90]
+    label_policy: return-distribution-v1
+    baselines: [historical_distribution, linear_quantile]
+  drawdown_20d:
+    horizon_trading_days: 20
+    output: [p10, p50, p90, probability_below_minus_8pct]
+    label_policy: maximum-drawdown-v2
+    baselines: [historical_distribution, volatility, linear]
+approval:
+  initial_status: research_only
+  independent_by: [task, decision_context]
+  required_gates:
+    - pit_leakage_zero
+    - artifact_hashes_valid
+    - calibration
+    - recent_windows
+    - market_and_industry_groups
+    - regime_stability
+    - coverage
+    - alert_frequency_and_concentration
+    - transaction_cost_constraints
+rollout:
+  shadow_trading_days: 20
+  minimum_critical_coverage: 0.98
+  maximum_synthetic_formal_outputs: 0

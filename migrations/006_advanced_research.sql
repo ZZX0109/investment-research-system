@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS refresh_runs (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, user_id TEXT, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_refresh_runs_asset_id ON refresh_runs(asset_id);
+CREATE TABLE IF NOT EXISTS historical_scenarios (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, analysis_run_id TEXT, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_historical_scenarios_asset_id ON historical_scenarios(asset_id);
+CREATE TABLE IF NOT EXISTS portfolio_risk_snapshots (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_portfolio_risk_user_id ON portfolio_risk_snapshots(user_id);
+CREATE TABLE IF NOT EXISTS report_schedules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, asset_id TEXT, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_report_schedules_user_id ON report_schedules(user_id);
+CREATE TABLE IF NOT EXISTS document_artifacts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, asset_id TEXT, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_document_artifacts_user_id ON document_artifacts(user_id);
+CREATE TABLE IF NOT EXISTS research_audits (id TEXT PRIMARY KEY, analysis_run_id TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_research_audits_run_id ON research_audits(analysis_run_id);
+CREATE TABLE IF NOT EXISTS paper_observations (id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, analysis_run_id TEXT NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_paper_observations_due ON paper_observations(observed_at);

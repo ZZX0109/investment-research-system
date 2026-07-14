@@ -1,0 +1,44 @@
+{
+  "name": "workbuddy-research-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "python3 -m pytest -q && npm run build && npm test",
+    "build": "npm run build:platform && npm run build:workbench",
+    "build:adapter": "tsc -p tsconfig.json",
+    "build:platform": "npm run build:adapter",
+    "build:workbench": "vite build --config workbench-ui/vite.config.ts",
+    "dev:app-under-test": "node app-under-test/server.mjs",
+    "dev:workbench": "vite --config workbench-ui/vite.config.ts",
+    "dev:workbuddy": "python3 scripts/start_workbuddy.py",
+    "run:cli": "npm --prefix ai-test-officer run commit-check",
+    "ci:test-officer": "npm --prefix ai-test-officer run commit-check:strict",
+    "commit-check": "npm --prefix ai-test-officer run commit-check",
+    "requirement-acceptance": "npm --prefix ai-test-officer run requirement-acceptance",
+    "patrol": "npm --prefix ai-test-officer run patrol",
+    "smoke:customer-portal:playwright": "npm --prefix ai-test-officer run demo:verify",
+    "judge:eval": "npm --prefix ai-test-officer run judge:eval",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.83.0",
+    "lucide-react": "^1.24.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "recharts": "^3.9.2",
+    "zod": "^3.25.76",
+    "zustand": "^5.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.14",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^5.0.0",
+    "playwright": "^1.61.1",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4"
+  }
+}
