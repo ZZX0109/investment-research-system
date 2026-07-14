@@ -6,24 +6,30 @@ export type AiTestOfficerGateStatus = "pass" | "fail" | "blocked" | "needs-human
 export interface AiTestOfficerClientOptions {
   baseUrl?: string;
   token?: string;
+  bearerToken?: string;
   timeoutMs?: number;
 }
 
 export class AiTestOfficerClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly bearerToken?: string;
   private readonly timeoutMs: number;
   constructor(options: AiTestOfficerClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.AI_TEST_OFFICER_URL ?? "http://127.0.0.1:4317").replace(/\/$/, "");
     this.token = options.token ?? process.env.AI_TEST_OFFICER_TOKEN ?? "dev-local-token";
+    this.bearerToken = options.bearerToken ?? process.env.AI_TEST_OFFICER_BEARER_TOKEN;
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   private async request<T>(route: string, init?: RequestInit): Promise<T> {
+    if (process.env.NODE_ENV === "production" && !this.bearerToken) {
+      throw new Error("AI_TEST_OFFICER_BEARER_TOKEN is required in production; shared agent tokens are disabled");
+    }
     const response = await fetch(`${this.baseUrl}${route}`, {
       ...init,
       signal: AbortSignal.timeout(this.timeoutMs),
-      headers: { "content-type": "application/json", "x-agent-token": this.token, ...(init?.headers ?? {}) }
+      headers: { "content-type": "application/json", ...(this.bearerToken ? { authorization: `Bearer ${this.bearerToken}` } : { "x-agent-token": this.token }), ...(init?.headers ?? {}) }
     });
     if (!response.ok) throw new Error(`ai_test_officer_http_${response.status}`);
     return response.json() as Promise<T>;

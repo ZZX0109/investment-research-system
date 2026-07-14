@@ -10,6 +10,13 @@ class CreateRunInput(BaseModel):
     scenarioId: str | None = None
     requirement: str | None = None
     diff: str | None = None
+    plannerMode: Literal["deterministic", "llm"] = "deterministic"
+    judgeMode: Literal["deterministic", "llm-assisted"] = "deterministic"
+    modelProfileId: str | None = None
+    experimentId: str | None = None
+    repetition: int | None = None
+    promptVersion: str = "plan-v1"
+    faultProfile: Literal["wrong-status", "api-503", "label-rename", "permission-bypass", "drop-trace", "ambiguous-oracle"] | None = None
     executionMode: Literal["oci", "trusted-local"] = "oci"
     capabilities: list[Literal["browser", "desktop"]] = Field(default_factory=lambda: ["browser"])
     permissionProfile: dict[str, bool] = Field(default_factory=dict)
@@ -31,3 +38,5 @@ class RunProjection(BaseModel):
     machineGate: dict[str, Any] | None = None
     judgeRecommendation: dict[str, Any] | None = None
     humanDecision: dict[str, Any] | None = None
+    planProvenance: dict[str, Any] | None = None
+    plannerCall: dict[str, Any] | None = None
