@@ -12,6 +12,7 @@ from investment_research.domain.forecasts import (
 
 ABSTAIN_RULES = [
     "feature_coverage_below_85pct",
+    "core_feature_coverage_below_85pct",
     "cache_expired_or_unavailable",
     "provider_conflict",
     "artifact_hash_mismatch",
