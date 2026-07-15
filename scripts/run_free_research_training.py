@@ -162,7 +162,11 @@ def main() -> int:
                     for item in sorted(snapshot_refs, key=lambda value: (value[0] or "", value[1] or ""))
                 ],
                 "fold_hash": result_payload["fold_hash"],
-                "selected_candidate": result_payload["selected_candidate"],
+                # The manifest's selected candidate is the roster primary,
+                # after the research Gate has decided whether the raw
+                # evaluation winner is eligible.  The raw winner remains in
+                # evaluation.json for audit.
+                "selected_candidate": primary_candidate,
                 "roster_primary_candidate": primary_candidate,
                 "roster_fallback_candidate": fallback_candidate,
                 "evaluation_ref": _portable_ref(evaluation_path),
