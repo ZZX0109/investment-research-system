@@ -465,7 +465,7 @@ def _has_provider_conflict(index: dict, symbol: str) -> bool:
 
 def _restore_maps(row: dict) -> dict:
     value = dict(row)
-    for key in ("features", "labels"):
+    for key in ("features", "labels", "data_quality_mask", "event_missing_mask"):
         if isinstance(value.get(key), str):
             value[key] = json.loads(value[key])
     return value

@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--training-run-id", default=None)
     parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
     parser.add_argument("--cohort", choices=("cn_equity_core", "cn_etf_benchmark"), default=None)
+    parser.add_argument("--minimum-cohort-symbols", type=int, default=80, help="Research-only override for a deliberately small fixture/cohort; formal-sized runs keep the default 80-symbol gate.")
     return parser.parse_args()
 
 
@@ -98,8 +99,8 @@ def main() -> int:
     if any(sample.market.value != market or sample.decision_context != context for sample in samples):
         raise SystemExit("sample rows do not match their manifest market/decision context")
     symbol_count = len({sample.symbol for sample in samples})
-    if cohort == "cn_equity_core" and symbol_count < 80:
-        raise SystemExit("cn_equity_core training requires at least 80 fixed-cohort symbols")
+    if cohort == "cn_equity_core" and symbol_count < args.minimum_cohort_symbols:
+        raise SystemExit(f"cn_equity_core training requires at least {args.minimum_cohort_symbols} fixed-cohort symbols")
     if cohort == "cn_etf_benchmark" and symbol_count != 5:
         raise SystemExit("cn_etf_benchmark training requires all five fixed ETFs")
     dataset_hash = _dataset_hash(args.sample_manifest, sources)
@@ -111,7 +112,15 @@ def main() -> int:
         scope = root / task
         scope.mkdir(parents=True, exist_ok=True)
         try:
-            result = _run(task, samples=samples, market=market, context=context,
+            # Public backfills include the newest rows whose future window is
+            # not observable yet.  Exclude those rows before the formal
+            # walk-forward planner; do not let an unavailable label become a
+            # training failure for otherwise usable research history.
+            task_samples = _eligible_samples(
+                task,
+                [item for item in samples if item.labels.label_available and item.labels.label_end is not None],
+            )
+            result = _run(task, samples=task_samples, market=market, context=context,
                           dataset_hash=dataset_hash, ledger=ledger)
             result_payload = _jsonable(result)
             primary_candidate, fallback_candidate, challenger_candidates = select_research_roster_candidates(task, result)
@@ -119,13 +128,13 @@ def main() -> int:
             evaluation_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             evaluation_hash = sha256(evaluation_path.read_bytes()).hexdigest()
             artifact_hashes = _freeze_research_artifacts(
-                task=task, result=result, samples=samples, scope=scope,
+                task=task, result=result, samples=task_samples, scope=scope,
                 primary_candidate=primary_candidate, fallback_candidate=fallback_candidate,
             )
             snapshot_hash = next(iter(snapshot_refs))[1]
             assert snapshot_hash is not None
             reports = research_scope_reports(
-                task=task, result=result, samples=samples, dataset_hash=dataset_hash,
+                task=task, result=result, samples=task_samples, dataset_hash=dataset_hash,
                 snapshot_hash=snapshot_hash, cohort=cohort,
             )
             report_hashes = write_research_reports(scope / "reports", reports)
@@ -146,8 +155,8 @@ def main() -> int:
                 "training_run_id": run_id,
                 "dataset_manifest_refs": [_portable_ref(path) for path in args.sample_manifest],
                 "dataset_hash": dataset_hash,
-                "sample_count": len(samples),
-                "symbol_count": len({sample.symbol for sample in samples}),
+                "sample_count": len(task_samples),
+                "symbol_count": len({sample.symbol for sample in task_samples}),
                 "market_snapshot_refs": [
                     {"market_snapshot_id": item[0], "market_snapshot_hash": item[1]}
                     for item in sorted(snapshot_refs, key=lambda value: (value[0] or "", value[1] or ""))
@@ -220,7 +229,7 @@ def _run(task, *, samples, market, context, dataset_hash, ledger):
 
 def _restore_maps(row: dict) -> dict:
     value = dict(row)
-    for key in ("features", "labels"):
+    for key in ("features", "labels", "data_quality_mask", "event_missing_mask"):
         if isinstance(value.get(key), str):
             value[key] = json.loads(value[key])
     return value
@@ -292,11 +301,12 @@ def _freeze_research_artifacts(
     feature_order = sorted({name for sample in samples for name in sample.features})
     if not feature_order:
         raise ValueError("research artifact has no feature order")
+    selected = primary_candidate
     package = {
         "schema_version": "free-research-model-artifact-v1",
         "data_tier": DataTier.RESEARCH_PIT.value,
         "status": "research_only", "deployment_ready": False,
-        "task": task, "selected_candidate": result.selected_candidate,
+        "task": task, "selected_candidate": selected,
         "feature_order": feature_order,
         "feature_bounds": {
             name: [
@@ -307,7 +317,6 @@ def _freeze_research_artifacts(
         },
     }
     matrix = [[float(sample.features.get(name, 0.0)) for name in feature_order] for sample in samples]
-    selected = primary_candidate
     if task == "drawdown_20d":
         from investment_research.training.calibration import compare_calibrators
         from investment_research.training.formal_risk_runner import _estimator, _label
