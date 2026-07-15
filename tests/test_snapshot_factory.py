@@ -8,19 +8,25 @@ from investment_research.domain.models import Asset, Evidence, PricePoint, Price
 from investment_research.pipeline.snapshot_factory import AnalysisSnapshotFactory
 from investment_research.service.analysis_intake import AnalysisIntakeResolution, EvidenceSelection, PriceSeriesSelection
 
+FIXED_NOW = datetime(2026, 7, 14, 8, 0, tzinfo=timezone.utc)
+
+
+def snapshot_factory() -> AnalysisSnapshotFactory:
+    return AnalysisSnapshotFactory(clock=lambda: FIXED_NOW)
+
 
 def provenance(*, data_mode: DataMode = DataMode.REAL, source_type: DataSourceType = DataSourceType.REAL) -> Provenance:
     return Provenance(
         data_mode=data_mode,
         source_type=source_type,
         source_name=f"{data_mode.value}-{source_type.value}",
-        observed_at=datetime.now(timezone.utc),
+        observed_at=FIXED_NOW,
         confidence=0.9,
     )
 
 
 def price_series(asset: Asset, *, source_type: DataSourceType, close: float) -> PriceSeries:
-    observed_at = datetime.now(timezone.utc)
+    observed_at = FIXED_NOW
     return PriceSeries(
         asset_id=asset.id,
         interval="1d",
@@ -46,7 +52,7 @@ def evidence(asset: Asset, *, source_type: DataSourceType, title: str) -> Eviden
         evidence_type=EvidenceType.RESEARCH_NOTE,
         title=title,
         summary=f"{title} summary",
-        collected_at=datetime.now(timezone.utc),
+        collected_at=FIXED_NOW,
         provenance=provenance(source_type=source_type),
     )
 
@@ -76,7 +82,7 @@ def test_snapshot_factory_freezes_selected_inputs_and_source_metadata() -> None:
         ),
     )
 
-    snapshot = AnalysisSnapshotFactory().build_snapshot(asset, resolution)
+    snapshot = snapshot_factory().build_snapshot(asset, resolution)
 
     assert snapshot.asset_id == str(asset.id)
     assert snapshot.asset_snapshot == asset
@@ -98,6 +104,8 @@ def test_snapshot_factory_freezes_selected_inputs_and_source_metadata() -> None:
     assert snapshot.synthetic_share == 0.0
     assert snapshot.real_share == pytest.approx(2 / 3)
     assert snapshot.source_meta.synthetic_ratio == snapshot.synthetic_ratio
+    assert snapshot.feature_built_at == FIXED_NOW
+    assert snapshot.captured_at == FIXED_NOW
 
 
 def test_snapshot_factory_rejects_transparent_mixed_data_modes() -> None:
@@ -112,7 +120,7 @@ def test_snapshot_factory_rejects_transparent_mixed_data_modes() -> None:
         evidence_type=EvidenceType.RESEARCH_NOTE,
         title="Real note",
         summary="Mixed mode should not be accepted.",
-        collected_at=datetime.now(timezone.utc),
+        collected_at=FIXED_NOW,
         provenance=provenance(data_mode=DataMode.REAL, source_type=DataSourceType.REAL),
     )
     resolution = AnalysisIntakeResolution(
@@ -131,4 +139,32 @@ def test_snapshot_factory_rejects_transparent_mixed_data_modes() -> None:
     )
 
     with pytest.raises(ValueError, match="cannot mix data modes transparently"):
-        AnalysisSnapshotFactory().build_snapshot(asset, resolution)
+        snapshot_factory().build_snapshot(asset, resolution)
+
+
+def test_snapshot_factory_rejects_naive_clock() -> None:
+    asset = Asset(
+        ticker="DEMO",
+        name="Demo Asset",
+        asset_type=AssetType.EQUITY,
+        provenance=provenance(),
+    )
+    resolution = AnalysisIntakeResolution(
+        price_selection=PriceSeriesSelection(
+            provider_name="empty",
+            provider_version="1.0.0",
+            status="unavailable",
+            price_series=[],
+        ),
+        evidence_selection=EvidenceSelection(
+            provider_name="empty",
+            provider_version="1.0.0",
+            status="unavailable",
+            evidence=[],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="aware datetime"):
+        AnalysisSnapshotFactory(clock=lambda: datetime(2026, 7, 14)).build_snapshot(
+            asset, resolution
+        )

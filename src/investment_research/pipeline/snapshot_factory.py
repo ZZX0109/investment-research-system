@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
@@ -51,9 +52,11 @@ class AnalysisSnapshotFactory:
         *,
         mode_policy: DataModePolicyService | None = None,
         lifecycle: AnalysisLifecycleService | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.mode_policy = mode_policy or DataModePolicyService()
         self.lifecycle = lifecycle or AnalysisLifecycleService()
+        self.clock = clock or utc_now
 
     def build_snapshot(
         self,
@@ -62,6 +65,10 @@ class AnalysisSnapshotFactory:
         *,
         decision_context: DecisionContext | None = None,
     ) -> AnalysisSnapshot:
+        captured_at = self.clock()
+        if captured_at.tzinfo is None or captured_at.utcoffset() is None:
+            raise ValueError("AnalysisSnapshotFactory clock must return an aware datetime")
+        captured_at = captured_at.astimezone(timezone.utc)
         price_series = resolution.price_series
         raw_evidence = resolution.evidence
         asset_series = [
@@ -88,7 +95,7 @@ class AnalysisSnapshotFactory:
         if (
             latest_point is None
             and context.context_type == DecisionContextType.CLOSE_CONFIRMED
-            and context.decision_time > utc_now()
+            and context.decision_time > captured_at
         ):
             previous = trade_date - timedelta(days=1)
             while previous.weekday() >= 5:
@@ -136,7 +143,7 @@ class AnalysisSnapshotFactory:
             overrides=overrides,
             synthetic_ratio=source_mix.synthetic_ratio,
         )
-        feature_built_at = utc_now()
+        feature_built_at = captured_at
         snapshot_payload = {
             "asset_id": str(asset.id),
             "decision_context": context.context_type.value,
@@ -162,7 +169,7 @@ class AnalysisSnapshotFactory:
             feature_built_at=feature_built_at,
             asset_id=str(asset.id),
             asset_snapshot=asset,
-            captured_at=utc_now(),
+            captured_at=captured_at,
             mode=data_mode.value,
             provider=provider,
             as_of=as_of,
