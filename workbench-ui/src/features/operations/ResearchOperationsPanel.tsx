@@ -26,13 +26,13 @@ export function ResearchOperationsPanel() {
             <option value="monthly">Monthly</option><option value="event_triggered">Event triggered</option>
           </select>
         </label>
-        <button className="icon-button" type="button" disabled={mode !== "real" || !assetId || createSchedule.isPending} onClick={() => createSchedule.mutate({ asset_id: assetId, frequency, enabled: frequency !== "manual", timezone: "Asia/Shanghai" })}>
+        <button className="icon-button" type="button" disabled={!(["research", "real"].includes(mode)) || !assetId || createSchedule.isPending} onClick={() => createSchedule.mutate({ asset_id: assetId, frequency, enabled: frequency !== "manual", timezone: "Asia/Shanghai" })}>
           <CalendarClock size={16} aria-hidden="true" /><span>Set</span>
         </button>
       </div>
       <label className="file-control">
         <span><FileUp size={16} aria-hidden="true" /> Financial PDF</span>
-        <input type="file" accept="application/pdf" disabled={mode !== "real"} onChange={(event) => {
+        <input type="file" accept="application/pdf" disabled={!(["research", "real"].includes(mode))} onChange={(event) => {
           const file = event.target.files?.[0];
           if (file) upload.mutate({ file, assetId });
         }} />

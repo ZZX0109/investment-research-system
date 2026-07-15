@@ -1,6 +1,8 @@
 # WorkBuddy Research System
 
-WorkBuddy is a local, run-centric investment research system. It combines real point-in-time market data, a governed drawdown-risk model, historical analogies, portfolio risk, evidence lineage, deterministic audit gates, PDF extraction, scheduled inspection, and fixed-run report replay. Outputs are limited to risk probability, historical distributions, observation conditions, and contrary evidence. The system does not execute trades or issue deterministic buy/sell instructions.
+WorkBuddy currently ships as a **zero-budget, research-grade, reproducible and evidence-driven A-share quantitative research platform**. The active path uses public AKShare data with Baostock fallback/cross-check, A-share daily bars and a small fixed ETF benchmark cohort. Every public-data artifact is permanently `research_pit / research_only / deployment_ready=false`. It is suitable for experiments, backtests and close/pre-open research updates; it is not real-time market data, an executable trading service or investment advice.
+
+The four-market licensed PIT architecture remains available as a future extension. It fails closed when authorization, SLA and historical visibility evidence are missing, so free public backfills can never be presented as formal PIT data.
 
 Core technical proposition: an evidence-bound financial research Agent that operates under point-in-time data, model uncertainty, and conflicting evidence, and decides whether to generate, repair, degrade, or abstain.
 
@@ -29,7 +31,57 @@ Default URLs:
 
 The startup script applies Alembic migrations, checks the approved model manifest and four market bundles, and starts APScheduler inside FastAPI. No default account or password is created. Register through the workbench or `/api/v1/auth/register`.
 
-## Trusted Data Path
+The workbench opens in `A股研究模式` by default and visibly labels public-data limitations.
+
+## Zero-budget A-share research workflow
+
+Install the research/training dependencies:
+
+```bash
+python3 -m pip install -e ".[dev,train]"
+```
+
+Run the scheduled close-confirmed collection and rebuild. The collector enumerates the current public A-share universe, always includes the ETF benchmark cohort, stores raw provider bytes append-only, uses AKShare as primary, Baostock as fallback, and cross-checks all ETFs plus a deterministic 20% equity sample. Use `--max-symbols 20` only for a quick local smoke run.
+
+```bash
+python3 scripts/run_free_research_cycle.py --decision-context close_confirmed
+```
+
+`pre_open`, four-market scheduling and minute collection remain code-compatible but disabled in the zero-budget mainline. The active scheduler freezes only `CN + close_confirmed` after 15:10 Asia/Shanghai.
+
+The complete demonstration has one fail-closed entry point. It performs collection, raw/hash persistence, quality audit, fixed-cohort snapshotting, same-fold training, research roster freezing, hash-verified inference and immutable Shadow freezing in that order:
+
+```bash
+python3 scripts/run_cn_research_demo.py
+python3 scripts/run_cn_research_demo.py --dry-run
+```
+
+The rebuild index under `artifacts/free_research_rebuild/` links raw hashes to year-partitioned standard Parquet, immutable market snapshots, the `cn_equity_core` and `cn_etf_benchmark` cohorts, Feature V2 sample manifests, and machine-readable leakage reports. Train a complete cohort by passing every sample manifest from exactly one market snapshot and context:
+
+```bash
+python3 scripts/run_free_research_training.py \
+  --sample-manifest artifacts/free_research_rebuild/samples/close_confirmed/cn_equity_core/*/*.json \
+  --cohort cn_equity_core
+```
+
+Risk (`drawdown_20d`), direction (`direction_1d`, `direction_5d`) and return (`return_20d`) are independent research manifests. The runner uses purged walk-forward validation, task-horizon embargo, a 252-session final holdout, a 126-session stress slice and time-OOF calibration. Traditional models remain primary; deep models are challengers and require at least two regimes with AUROC improvement of 0.03 before entering candidate evaluation. Public-data results remain non-deployable regardless of metrics.
+
+Generate hash-verified task predictions from one frozen rebuild, freeze them in Research Shadow, then backfill immutable 1/5/20/60-session outcomes:
+
+```bash
+python3 scripts/run_cn_research_inference.py \
+  --rebuild-index artifacts/free_research_rebuild/rebuild-<date>-<hash>.json \
+  --decision-context close_confirmed --cohort cn_equity_core \
+  --symbols 600519 000001
+python3 scripts/run_free_research_cycle.py --decision-context close_confirmed \
+  --skip-collection --skip-rebuild --freeze-shadow \
+  --prediction-file artifacts/predictions/cn-research.json
+python3 scripts/backfill_research_shadow.py --session-id <uuid>
+```
+
+Research Shadow progress is exposed through `/api/v1/research-shadow/sessions`, `/api/v1/research-shadow/summary`, and the workbench. It is forward research evidence and never counts toward a formal release gate.
+
+## Future licensed data path
 
 Formal analysis uses `real + full` artifacts only. Configure the analysis providers to read the timestamped authoritative bundles:
 

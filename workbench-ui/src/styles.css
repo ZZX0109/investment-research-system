@@ -939,3 +939,17 @@ textarea {
   .agent-node-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .system-status { display: none; }
 }
+.research-mode-banner {
+  margin: 0 24px 16px;
+  padding: 10px 14px;
+  border: 1px solid #b98a42;
+  border-radius: 10px;
+  background: #fff8e8;
+  color: #664617;
+  font-size: 0.9rem;
+}
+.research-mode-banner--formal {
+  border-color: #a75050;
+  background: #fff0f0;
+  color: #702626;
+}

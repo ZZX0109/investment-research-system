@@ -19,7 +19,7 @@ interface WorkbenchState {
 }
 
 export const useWorkbenchStore = create<WorkbenchState>((set) => ({
-  mode: "demo",
+  mode: "research",
   selectedAssetId: null,
   selectedRunId: null,
   selectedEvidenceId: null,

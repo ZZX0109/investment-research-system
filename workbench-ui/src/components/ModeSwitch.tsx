@@ -9,12 +9,13 @@ export function ModeSwitch({ mode, onChange }: ModeSwitchProps) {
   const labels: Record<WorkbenchMode, string> = {
     demo: "Demo Mode",
     sandbox: "Sandbox Mode",
-    real: "Real Data Mode"
+    research: "A股研究模式",
+    real: "正式模式（需授权）"
   };
 
   return (
     <div className="mode-switch" role="tablist" aria-label="Workbench mode">
-      {(["demo", "sandbox", "real"] as WorkbenchMode[]).map((entry) => (
+      {(["research", "demo", "sandbox", "real"] as WorkbenchMode[]).map((entry) => (
         <button
           key={entry}
           data-testid={`mode-switch-${entry}`}

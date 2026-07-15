@@ -38,7 +38,7 @@ export function AgentExecutionPanel() {
         </button>
       }
     >
-      {mode !== "real" ? <InlineNotice tone="warn" title="Non-authoritative mode" body="This run will abstain because formal Agent research requires real data." /> : null}
+      {!["research", "real"].includes(mode) ? <InlineNotice tone="warn" title="Non-authoritative mode" body="This seeded run remains isolated from research evidence." /> : null}
       {run.error ? <InlineNotice tone="error" title="Agent failed" body={run.error.message} /> : null}
       {result ? (
         <>

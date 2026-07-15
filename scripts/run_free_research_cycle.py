@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-symbols", type=int, default=None, help="Optional development cap; scheduled research runs enumerate the full public CN universe by default.")
     parser.add_argument("--rebuild-timeout-seconds", type=int, default=1800)
     parser.add_argument("--skip-rebuild", action="store_true", help="Collect raw payloads only; the default also rebuilds CN standard/snapshot/feature/sample layers.")
+    parser.add_argument("--skip-collection", action="store_true", help="Do not contact public providers; use with --skip-rebuild to freeze an already generated prediction file.")
     parser.add_argument(
         "--run-directory", type=Path,
         default=PROJECT / "artifacts" / "free_research_runs",
@@ -68,7 +69,7 @@ def main() -> int:
     started = datetime.now(timezone.utc)
     run_id = f"free-research-{started:%Y%m%dT%H%M%SZ}-{uuid4().hex[:12]}"
     results: list[dict[str, object]] = []
-    for market, group in DEFAULT_CYCLES:
+    for market, group in (() if args.skip_collection else DEFAULT_CYCLES):
         if market not in allowed or group not in groups:
             continue
         command = [

@@ -4,7 +4,7 @@ import { Panel } from "../../components/Panel";
 import { SourceBadge } from "../../components/SourceBadge";
 import { SelectedRunDossierCard } from "../dossier/SelectedRunDossierCard";
 import { useResearchWorkspace } from "./useResearchWorkspace";
-import { useDeploymentStatusQuery, useDirectionalForecastQuery, useMarketObservationQuery, useRefreshMarketObservationMutation, useResearchForecastQuery } from "../../hooks/useWorkbenchQueries";
+import { useDeploymentStatusQuery, useDirectionalForecastQuery, useMarketObservationQuery, useRefreshMarketObservationMutation, useResearchForecastQuery, useResearchModelRostersQuery, useResearchShadowSessionsQuery, useResearchShadowSummaryQuery } from "../../hooks/useWorkbenchQueries";
 
 export function ResearchPanel() {
   const workspace = useResearchWorkspace();
@@ -16,11 +16,62 @@ export function ResearchPanel() {
   const direction = useDirectionalForecastQuery(workspace.selectedRunId);
   const forecast = useResearchForecastQuery(workspace.selectedRunId);
   const refreshObservation = useRefreshMarketObservationMutation(workspace.assetId);
+  const shadow = useResearchShadowSessionsQuery(workspace.assetTicker);
+  const shadowSummary = useResearchShadowSummaryQuery(workspace.assetTicker);
+  const rosters = useResearchModelRostersQuery();
 
   return (
     <Panel eyebrow="Research" title="Evidence, Price Layers, Reports">
       {workspace.assetId ? (
         <>
+          <article className="story-card" data-testid="cn-research-data-quality">
+            <div className="story-card__header">
+              <strong>1 · 数据质量与资格</strong>
+              <span className="tag">{forecast.data?.data_status.quality_status ?? "research_pit"}</span>
+            </div>
+            <p className="muted">
+              免费公开数据固定为 research_pit；历史可见时间未完全证明，永不自动提升为正式 PIT。数据覆盖 {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : "等待冻结快照"}，缓存 {forecast.data?.data_status.cache_state ?? "unavailable"}，事件 {forecast.data?.data_status.event_coverage_status ?? "unsupported"}。
+            </p>
+            {forecast.data?.data_status.reasons.length ? <InlineNotice title="数据降级原因" tone="warn" body={forecast.data.data_status.reasons.join("；")} /> : null}
+          </article>
+          <article className="story-card" data-testid="cn-research-roster">
+            <div className="story-card__header">
+              <strong>2 · Research Model Roster</strong>
+              <span className="tag">{rosters.data?.length ?? 0} scopes</span>
+            </div>
+            {(rosters.data ?? []).length ? (
+              <div className="stack-list">
+                {rosters.data?.map((roster) => (
+                  <p key={roster.roster_hash}>
+                    {roster.cohort} · {roster.task}：primary {roster.primary.candidate_name} / fallback {roster.fallback.candidate_name} · research_only
+                  </p>
+                ))}
+              </div>
+            ) : <p className="muted">尚无完成哈希校验的研究清单；任务结果保持 unavailable，不从任意训练目录加载模型。</p>}
+          </article>
+          <article className="story-card" data-testid="cn-research-task-results">
+            <div className="story-card__header"><strong>3 · 方向、收益与风险</strong><span className="tag">非交易信号</span></div>
+            {forecast.data && !forecast.data.abstained ? (
+              <div className="metric-strip">
+                <div className="metric-card"><div className="eyebrow">1D Up</div><div className="metric-card__value">{forecast.data.direction_1d ? `${Math.round(forecast.data.direction_1d.up * 100)}%` : "unavailable"}</div></div>
+                <div className="metric-card"><div className="eyebrow">5D Up</div><div className="metric-card__value">{forecast.data.direction_5d ? `${Math.round(forecast.data.direction_5d.up * 100)}%` : "unavailable"}</div></div>
+                <div className="metric-card"><div className="eyebrow">20D P10/P50/P90</div><div className="metric-card__value">{forecast.data.return_20d ? [forecast.data.return_20d.p10, forecast.data.return_20d.p50, forecast.data.return_20d.p90].map((value) => `${(value * 100).toFixed(1)}%`).join(" / ") : "unavailable"}</div></div>
+                <div className="metric-card"><div className="eyebrow">20D Drawdown Risk</div><div className="metric-card__value">{forecast.data.drawdown_20d ? `${Math.round(forecast.data.drawdown_20d.threshold_probability * 100)}%` : "unavailable"}</div></div>
+              </div>
+            ) : <InlineNotice title="证据不足，暂不预测" tone="warn" body={forecast.data?.gating_reasons.join("；") || "等待冻结快照、研究清单和完整哈希证据。"} />}
+            {forecast.data?.influence_facts.length ? <p className="muted">可核验影响事实：{forecast.data.influence_facts.join("；")}。这些是模型输入依据，不代表因果关系。</p> : null}
+          </article>
+          <article className="story-card" data-testid="research-shadow-summary">
+            <div className="story-card__header"><strong>4 · Research Shadow 前向验证</strong><span className="tag">{shadowSummary.data?.valid_session_count ?? 0} valid sessions</span></div>
+            {(shadow.data ?? []).length ? (
+              <>
+                <p className="muted">每日冻结原始研究概率、收益区间、风险与证据；历史记录不可覆盖，后续按有效交易日回填。平均覆盖 {Math.round((shadowSummary.data?.average_coverage_ratio ?? 0) * 100)}%，弃权率 {Math.round((shadowSummary.data?.abstain_rate ?? 0) * 100)}%，已完成 1/5/20/60 日回填 {([1, 5, 20, 60] as const).map((h) => shadowSummary.data?.completed_outcomes[String(h)] ?? 0).join("/")}。20 日报告 {shadowSummary.data?.forward_report_20_status ?? "pending"}；60 日主模型复核 {shadowSummary.data?.primary_change_60_status ?? "blocked"}。</p>
+                {(shadow.data ?? []).slice(0, 3).map((item) => (
+                  <p key={item.id}>{item.trade_date} · {item.decision_context} · {item.task} · {item.abstained ? `abstain: ${item.abstain_reasons.join(", ")}` : "frozen"}</p>
+                ))}
+              </>
+            ) : <p className="muted">尚无该标的的前向 Shadow 记录；完成下一次收盘研究后开始累计。</p>}
+          </article>
           <div className="metric-strip">
             <div className="metric-card">
               <div className="eyebrow">Latest Close</div>
@@ -46,11 +97,11 @@ export function ResearchPanel() {
           {trustedCard ? (
             <article className="story-card" data-testid="trusted-risk-gate-card">
               <div className="story-card__header">
-                <strong>Trusted Risk Gate</strong>
+                <strong>Research Governance Gate</strong>
                 <span className="tag">{String(trustedCard.framework_version ?? "v1")}</span>
               </div>
               <p className="muted">
-                PIT data, structured events, regime approval, Judge degradation, and frozen run replay govern this research signal.
+                Research PIT、事件覆盖、市场状态验证、拒答与固定回放共同约束研究输出；正式发布仍需授权数据。
               </p>
             </article>
           ) : null}
@@ -68,7 +119,7 @@ export function ResearchPanel() {
           ) : null}
           {marketObservation.data ? (
             <article className="story-card" data-testid="market-observation-panel">
-              <div className="story-card__header"><strong>Approved Risk vs Real Price</strong><span className="tag">{marketObservation.data.market_status}</span></div>
+              <div className="story-card__header"><strong>研究风险与后续价格</strong><span className="tag">{marketObservation.data.market_status}</span></div>
               <div className="metric-strip">
                 <div className="metric-card"><div className="eyebrow">Risk Forecast</div><div className="metric-card__value">{outcome?.predicted_risk == null ? "n/a" : `${Math.round(outcome.predicted_risk * 100)}%`}</div></div>
                 <div className="metric-card"><div className="eyebrow">Predicted At</div><div className="metric-card__value">{outcome?.prediction_price?.toFixed(2) ?? "n/a"}</div></div>
@@ -84,7 +135,7 @@ export function ResearchPanel() {
           ) : null}
           {workspace.selectedRunId ? (
             <article className="story-card" data-testid="trusted-close-research">
-              <div className="story-card__header"><strong>{forecast.data?.decision_context === "pre_open" ? "Trusted Pre-open Research" : "Trusted Close Research"}</strong><span className="tag">{forecast.data?.data_status.quality_status ?? "checking"}</span></div>
+              <div className="story-card__header"><strong>{forecast.data?.decision_context === "pre_open" ? "A股盘前研究" : "A股收盘确认研究"}</strong><span className="tag">{forecast.data?.data_status.quality_status ?? "checking"}</span></div>
               {forecast.data ? <>
                 <div className="metric-strip">
                   <div className="metric-card"><div className="eyebrow">Data As Of</div><div className="metric-card__value">{new Date(forecast.data.data_status.as_of).toLocaleString()}</div></div>
@@ -92,8 +143,8 @@ export function ResearchPanel() {
                   <div className="metric-card"><div className="eyebrow">Evidence Coverage</div><div className="metric-card__value">{Math.round(forecast.data.evidence_coverage * 100)}%</div></div>
                   <div className="metric-card"><div className="eyebrow">20D &gt;8% Drawdown</div><div className="metric-card__value">{forecast.data.drawdown_20d ? `${Math.round(forecast.data.drawdown_20d.threshold_probability * 100)}%` : "abstain"}</div></div>
                 </div>
-                <p className="muted">{forecast.data.decision_context === "pre_open" ? "Next-session pre-open" : "Confirmed-close"} research only; this is not an intraday trading signal. Decision time: {forecast.data.decision_time ? new Date(forecast.data.decision_time).toLocaleString() : "unavailable"}; source time: {forecast.data.data_status.latest_source_time ? new Date(forecast.data.data_status.latest_source_time).toLocaleString() : "unavailable"}; delay: {forecast.data.data_status.latency_seconds == null ? "n/a" : `${Math.round(forecast.data.data_status.latency_seconds)}s`}; cache: {forecast.data.data_status.cache_state}; providers: {forecast.data.data_status.provider_chain.join(" → ") || "unavailable"}.</p>
-                {forecast.data.direction_5d ? <p>5-day direction: up {Math.round(forecast.data.direction_5d.up * 100)}%, down {Math.round(forecast.data.direction_5d.down * 100)}%, flat {Math.round(forecast.data.direction_5d.flat * 100)}%.</p> : <p className="muted">1/5-day direction and 20-day return distributions remain hidden until their independent manifests are approved.</p>}
+                <p className="muted">数据等级：{forecast.data.data_tier}；模型状态：research_only；{forecast.data.decision_context === "pre_open" ? "下一交易日盘前" : "收盘确认"}研究，不是盘中交易信号。决策时间：{forecast.data.decision_time ? new Date(forecast.data.decision_time).toLocaleString() : "unavailable"}；缓存：{forecast.data.data_status.cache_state}；事件：{forecast.data.data_status.event_coverage_status}；来源：{forecast.data.data_status.provider_chain.join(" → ") || "unavailable"}。</p>
+                {forecast.data.direction_5d ? <p>5-day direction: up {Math.round(forecast.data.direction_5d.up * 100)}%, down {Math.round(forecast.data.direction_5d.down * 100)}%, flat {Math.round(forecast.data.direction_5d.flat * 100)}%.</p> : <p className="muted">1/5 日方向和 20 日收益只有在对应研究 roster 与全部哈希通过校验后才展示。</p>}
                 {forecast.data.gating_reasons.length ? <InlineNotice title="Research Gates" tone="warn" body={forecast.data.gating_reasons.join("; ")} /> : null}
               </> : <p className="muted">No frozen trusted-close forecast is available for this historical run.</p>}
             </article>
@@ -101,7 +152,7 @@ export function ResearchPanel() {
           {workspace.selectedRunId ? (
             <article className="story-card" data-testid="directional-research-status">
               <div className="story-card__header"><strong>Research-only Direction Signal</strong><span className="tag">{direction.data?.status ?? "checking"}</span></div>
-              {direction.data?.status === "approved" && direction.data.forecast ? <p>{direction.data.forecast.direction} at {Math.round(direction.data.forecast.confidence * 100)}% confidence.</p> : <p className="muted">Direction model is still under independent walk-forward and regime validation. It does not affect the approved drawdown-risk gate.</p>}
+              <p className="muted">方向只以 up/down/flat 概率展示。旧的确定性方向状态为 {direction.data?.status ?? "unavailable"}，不作为研究结论或交易指令。</p>
             </article>
           ) : null}
           {workspace.priceChart.length ? (

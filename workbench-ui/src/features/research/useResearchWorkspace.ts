@@ -1,4 +1,4 @@
-import { useAnalysisRunsQuery, useDomainCatalogQuery, useEvidenceQuery, usePriceSeriesQuery, useReportsQuery, useRunDossierSummaryQuery, useRunScopeSummaryQuery } from "../../hooks/useWorkbenchQueries";
+import { useAnalysisRunsQuery, useAssetsQuery, useDomainCatalogQuery, useEvidenceQuery, usePriceSeriesQuery, useReportsQuery, useRunDossierSummaryQuery, useRunScopeSummaryQuery } from "../../hooks/useWorkbenchQueries";
 import { useWorkbenchStore } from "../../state/workbenchStore";
 import { buildSelectedRunDossier } from "../dossier/model";
 import { formatQueryFailure, hasMissingSourceMetadata, isStaleAsOf } from "../governance/runStatus";
@@ -13,6 +13,7 @@ export function useResearchWorkspace() {
   const setOnlySelectedRunResearch = useWorkbenchStore((state) => state.setOnlySelectedRunResearch);
 
   const catalogQuery = useDomainCatalogQuery();
+  const assetsQuery = useAssetsQuery();
   const evidenceQuery = useEvidenceQuery(assetId);
   const priceSeriesQuery = usePriceSeriesQuery(assetId);
   const reportsQuery = useReportsQuery(assetId);
@@ -23,6 +24,7 @@ export function useResearchWorkspace() {
   const assetSeries =
     priceSeriesQuery.data?.find((series) => series.series_role === "asset") ??
     priceSeriesQuery.data?.[0];
+  const selectedAsset = assetsQuery.data?.find((item) => item.id === assetId);
   const latestPoint = assetSeries?.points.at(-1);
   const chartPoints = (assetSeries?.points ?? []).slice(-90);
   const initialClose = chartPoints[0]?.close;
@@ -77,6 +79,7 @@ export function useResearchWorkspace() {
 
   return {
     assetId,
+    assetTicker: selectedAsset?.ticker ?? null,
     selectedRunId,
     selectedEvidenceId,
     onlySelectedRunResearch,

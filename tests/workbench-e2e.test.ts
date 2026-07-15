@@ -24,7 +24,10 @@ describe("workbench fixed-path e2e", () => {
     try {
       await page.goto(builtIndexUrl, { waitUntil: "domcontentloaded" });
 
-      await page.getByRole("heading", { name: "WorkBuddy Research Workbench" }).waitFor({ state: "visible" });
+      await page.getByRole("heading", { name: "A股量化研究平台" }).waitFor({ state: "visible" });
+      await page.getByTestId("mode-switch-research").waitFor({ state: "visible" });
+      await page.getByText("研究级公开数据 · 非投资建议 · 不可直接交易 · 免费数据产物永不进入正式发布").waitFor({ state: "visible" });
+      await page.getByTestId("mode-switch-demo").click();
       await page.getByTestId("mode-switch-demo").waitFor({ state: "visible" });
 
       await page.getByTestId("asset-card-nvda").click();

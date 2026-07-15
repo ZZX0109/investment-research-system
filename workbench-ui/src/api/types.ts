@@ -1,4 +1,4 @@
-export type WorkbenchMode = "demo" | "sandbox" | "real";
+export type WorkbenchMode = "demo" | "sandbox" | "research" | "real";
 export type DataMode = "demo" | "sandbox" | "real";
 export type SourceType = "real" | "synthetic" | "backfilled" | "manual_override";
 export type JudgeVerdict = "pass" | "warn" | "hold" | "block";
@@ -242,6 +242,9 @@ export interface IngestionJob {
 }
 
 export interface DataStatus {
+  data_tier: "formal_pit" | "research_pit" | "test_fixture";
+  research_only: boolean;
+  historical_visibility_assumption?: string | null;
   as_of: string;
   latest_source_time?: string | null;
   fetched_at?: string | null;
@@ -249,6 +252,7 @@ export interface DataStatus {
   coverage_ratio: number;
   quality_status: "passed" | "degraded" | "failed";
   cache_state: "fresh" | "stale_usable" | "expired" | "unavailable";
+  event_coverage_status: "events_present" | "confirmed_none" | "unsupported" | "fetch_failed" | "pending_update" | "partial";
   degraded_symbols: string[];
   provider_chain: string[];
   reasons: string[];
@@ -265,6 +269,7 @@ export interface ResearchForecastBundle {
   id: string;
   analysis_run_id: string;
   asset_id: string;
+  data_tier: "formal_pit" | "research_pit" | "test_fixture";
   market_snapshot_id?: string | null;
   market_snapshot_hash?: string | null;
   decision_context: "close_confirmed" | "pre_open";
@@ -280,6 +285,9 @@ export interface ResearchForecastBundle {
   data_status: DataStatus;
   tasks: Array<{ task: string; status: string; model_name?: string | null; model_version?: string | null; gating_reasons: string[] }>;
   gating_reasons: string[];
+  influence_facts: string[];
+  model_disagreement: Record<string, number>;
+  risk_level: "low" | "medium" | "high" | "unavailable";
   abstained: boolean;
 }
 
@@ -365,6 +373,106 @@ export interface DeploymentStatus {
   feature_contract: Record<string, unknown>;
   trusted_risk_gate?: Record<string, unknown>;
   public_experiment?: Record<string, unknown>;
+  research_mode?: Record<string, unknown>;
+  formal_release?: Record<string, unknown>;
+}
+
+export interface ResearchShadowSession {
+  id: string;
+  market: "cn";
+  decision_context: "close_confirmed" | "pre_open";
+  symbol: string;
+  cohort: "cn_equity_core" | "cn_etf_benchmark";
+  task: "bundle" | "direction_1d" | "direction_5d" | "return_20d" | "drawdown_20d";
+  trade_date: string;
+  frozen_at: string;
+  market_snapshot_id: string;
+  market_snapshot_hash: string;
+  data_tier: "research_pit";
+  historical_visibility_assumption: string;
+  coverage_ratio: number;
+  event_coverage_status: string;
+  provider_chain: string[];
+  provider_switch_count: number;
+  model_artifact_hashes: Record<string, string>;
+  roster_hash?: string | null;
+  model_candidate?: string | null;
+  frozen_prediction: Record<string, unknown>;
+  prediction_price?: number | null;
+  evidence_coverage: number;
+  model_disagreement?: number | null;
+  influence_facts: string[];
+  market_regime: "bull" | "bear" | "range" | "high_vol" | "unknown";
+  cache_state: "fresh" | "stale_usable" | "expired" | "unavailable";
+  abstained: boolean;
+  abstain_reasons: string[];
+  evidence_valid: boolean;
+}
+
+export interface ResearchShadowOutcome {
+  id: string;
+  research_shadow_session_id: string;
+  horizon_sessions: 1 | 5 | 20 | 60;
+  filled_at: string;
+  realized_return?: number | null;
+  realized_max_drawdown?: number | null;
+  mae?: number | null;
+  mfe?: number | null;
+  direction: "up" | "down" | "flat" | "unavailable";
+  data_complete: boolean;
+  error_category: string;
+}
+
+export interface ResearchShadowSummary {
+  data_tier: "research_pit";
+  research_only: true;
+  session_count: number;
+  answered_count: number;
+  abstained_count: number;
+  abstain_rate: number;
+  average_coverage_ratio: number;
+  completed_outcomes: Record<string, number>;
+  latest_trade_date?: string | null;
+  valid_session_count: number;
+  forward_report_20_status: "pending" | "ready";
+  primary_change_60_status: "blocked" | "eligible_for_review";
+}
+
+export interface ResearchRosterEntry {
+  role: "primary" | "fallback" | "challenger";
+  task: "direction_1d" | "direction_5d" | "return_20d" | "drawdown_20d";
+  candidate_name: string;
+  component: "primary" | "comparator";
+  artifact_ref: string;
+  artifact_hashes: Record<string, string>;
+  report_hashes: Record<string, string>;
+  data_tier: "research_pit";
+  status: "research_only";
+  deployment_ready: false;
+}
+
+export interface ResearchModelRoster {
+  schema_version: string;
+  data_tier: "research_pit";
+  status: "research_only";
+  deployment_ready: false;
+  market: "cn";
+  decision_context: "close_confirmed" | "pre_open";
+  cohort: "cn_equity_core" | "cn_etf_benchmark";
+  cohort_version: string;
+  task: "direction_1d" | "direction_5d" | "return_20d" | "drawdown_20d";
+  training_run_id: string;
+  dataset_hash: string;
+  market_snapshot_hash: string;
+  feature_contract_version: string;
+  code_hash: string;
+  dependency_hash: string;
+  primary: ResearchRosterEntry;
+  fallback: ResearchRosterEntry;
+  challengers: ResearchRosterEntry[];
+  limitations: string[];
+  abstain_rules: string[];
+  roster_hash: string;
 }
 
 export interface MarketObservation {

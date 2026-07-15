@@ -37,7 +37,7 @@ export function ResearchAuditPanel() {
             className="icon-button icon-button--primary"
             type="button"
             title="Run research audit"
-            disabled={mode !== "real" || !selectedRunId || audit.isPending}
+            disabled={!(["research", "real"].includes(mode)) || !selectedRunId || audit.isPending}
             onClick={() => selectedRunId && audit.mutate(selectedRunId)}
           >
             <ShieldCheck size={16} aria-hidden="true" />

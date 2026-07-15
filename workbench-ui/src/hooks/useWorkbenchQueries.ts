@@ -145,14 +145,14 @@ export function useDeploymentStatusQuery() {
   return useQuery({
     queryKey: ["deployment-status", client.mode],
     queryFn: () => client.getDeploymentStatus(),
-    enabled: client.mode === "real",
+    enabled: client.mode === "research" || client.mode === "real",
     retry: false
   });
 }
 
 export function useMarketObservationQuery(assetId: string | null) {
   const client = useWorkbenchClient();
-  return useQuery({ queryKey: ["market-observation", client.mode, assetId], queryFn: () => client.getMarketObservation(assetId ?? ""), enabled: client.mode === "real" && Boolean(assetId), refetchInterval: 300000, retry: false });
+  return useQuery({ queryKey: ["market-observation", client.mode, assetId], queryFn: () => client.getMarketObservation(assetId ?? ""), enabled: ["research", "real"].includes(client.mode) && Boolean(assetId), refetchInterval: 300000, retry: false });
 }
 
 export function useRefreshMarketObservationMutation(assetId: string | null) {
@@ -166,7 +166,7 @@ export function useRefreshMarketObservationMutation(assetId: string | null) {
 
 export function useDirectionalForecastQuery(runId: string | null) {
   const client = useWorkbenchClient();
-  return useQuery({ queryKey: ["directional-forecast", client.mode, runId], queryFn: () => client.getDirectionalForecast(runId ?? ""), enabled: client.mode === "real" && Boolean(runId), retry: false });
+  return useQuery({ queryKey: ["directional-forecast", client.mode, runId], queryFn: () => client.getDirectionalForecast(runId ?? ""), enabled: ["research", "real"].includes(client.mode) && Boolean(runId), retry: false });
 }
 
 export function useResearchForecastQuery(runId: string | null) {
@@ -174,7 +174,37 @@ export function useResearchForecastQuery(runId: string | null) {
   return useQuery({
     queryKey: ["research-forecast", client.mode, runId],
     queryFn: () => client.getResearchForecast(runId ?? ""),
-    enabled: client.mode === "real" && Boolean(runId),
+    enabled: ["research", "real"].includes(client.mode) && Boolean(runId),
+    retry: false
+  });
+}
+
+export function useResearchShadowSessionsQuery(symbol?: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-shadow", client.mode, symbol],
+    queryFn: () => client.getResearchShadowSessions({ symbol: symbol ?? undefined }),
+    enabled: ["research", "real"].includes(client.mode),
+    retry: false
+  });
+}
+
+export function useResearchModelRostersQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-model-rosters", client.mode],
+    queryFn: () => client.getResearchModelRosters(),
+    enabled: client.mode === "research" || client.mode === "real",
+    retry: false
+  });
+}
+
+export function useResearchShadowSummaryQuery(symbol?: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-shadow-summary", client.mode, symbol],
+    queryFn: () => client.getResearchShadowSummary({ symbol: symbol ?? undefined }),
+    enabled: ["research", "real"].includes(client.mode),
     retry: false
   });
 }
@@ -184,7 +214,7 @@ export function useIngestionJobQuery(jobId: string | null) {
   return useQuery({
     queryKey: ["ingestion-job", client.mode, jobId],
     queryFn: () => client.getIngestionJob(jobId ?? ""),
-    enabled: client.mode === "real" && Boolean(jobId),
+    enabled: ["research", "real"].includes(client.mode) && Boolean(jobId),
     refetchInterval: (query) => ["queued", "running", "retrying"].includes(query.state.data?.state ?? "") ? 1500 : false,
     retry: false
   });
@@ -210,7 +240,7 @@ export function useModelResearchFindingsQuery() {
   return useQuery({
     queryKey: ["model-research-findings", client.mode],
     queryFn: client.getModelResearchFindings,
-    enabled: client.mode === "real",
+    enabled: ["research", "real"].includes(client.mode),
     retry: false
   });
 }
@@ -220,7 +250,7 @@ export function usePaperValidationSummaryQuery() {
   return useQuery({
     queryKey: ["paper-validation", client.mode],
     queryFn: client.getPaperValidationSummary,
-    enabled: client.mode === "real",
+    enabled: ["research", "real"].includes(client.mode),
     retry: false
   });
 }

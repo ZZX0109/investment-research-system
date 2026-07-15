@@ -3,7 +3,7 @@ import { useWorkbenchStore } from "../workbench-ui/src/state/workbenchStore";
 
 function resetWorkbenchState() {
   useWorkbenchStore.setState({
-    mode: "demo",
+    mode: "research",
     selectedAssetId: null,
     selectedRunId: null,
     selectedEvidenceId: null,
@@ -15,6 +15,10 @@ function resetWorkbenchState() {
 describe("workbench store", () => {
   afterEach(() => {
     resetWorkbenchState();
+  });
+
+  it("uses the fail-closed A-share research workbench by default", () => {
+    expect(useWorkbenchStore.getState().mode).toBe("research");
   });
 
   it("resets run-scoped research state when the asset changes", () => {

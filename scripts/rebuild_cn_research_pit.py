@@ -181,7 +181,7 @@ def main() -> int:
             }
             path = standard_root / f"{symbol}-{batch.payload_hash[:12]}.json"
             _write_json(path, manifest)
-            manifest["manifest_ref"] = str(path)
+            manifest["manifest_ref"] = _portable_path(path)
             standard_manifests.append(manifest)
             all_bars.extend(bars)
         except Exception as exc:
@@ -229,7 +229,7 @@ def main() -> int:
                         bars=bars_by_symbol[member.symbol], standard=standard_by_symbol[member.symbol],
                         snapshot=snapshot, parquet=parquet, output_root=args.output_root,
                     )
-                    sample_manifests[cohort.cohort].extend(str(item) for item in manifests)
+                    sample_manifests[cohort.cohort].extend(_portable_path(item) for item in manifests)
                 except Exception as exc:
                     failures.append({
                         "symbol": member.symbol, "stage": f"sample:{context}:{cohort.cohort}",
@@ -239,9 +239,9 @@ def main() -> int:
         leakage_path = args.output_root / "leakage" / context / f"{as_of.isoformat()}-{snapshot['market_snapshot_hash'][:12]}.json"
         _write_json(leakage_path, leakage)
         contexts[context] = {
-            "snapshot_ref": str(snapshot_path), "snapshot_id": snapshot["market_snapshot_id"],
+            "snapshot_ref": _portable_path(snapshot_path), "snapshot_id": snapshot["market_snapshot_id"],
             "snapshot_hash": snapshot["market_snapshot_hash"],
-            "sample_manifests": dict(sample_manifests), "leakage_report_ref": str(leakage_path),
+            "sample_manifests": dict(sample_manifests), "leakage_report_ref": _portable_path(leakage_path),
         }
 
     index = {
@@ -253,7 +253,7 @@ def main() -> int:
         "blocking_reasons": list(RESEARCH_TIER_REASONS),
         "standard_manifest_count": len(standard_manifests),
         "standard_manifest_refs": [item["manifest_ref"] for item in standard_manifests],
-        "cohort_refs": {key: str(value) for key, value in cohort_paths.items()},
+        "cohort_refs": {key: _portable_path(value) for key, value in cohort_paths.items()},
         "contexts": contexts, "failures": failures,
         "quality_reports": quality_reports,
         "training_blocked": len(cohorts[0].members) < args.minimum_equities,
@@ -416,6 +416,15 @@ def _provider_conflict_symbols(path: Path) -> set[str]:
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def _portable_path(path: Path) -> str:
+    """Persist project-relative refs while retaining isolated temp-fixture support."""
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(PROJECT.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 def _write_json(path: Path, payload: object) -> None:

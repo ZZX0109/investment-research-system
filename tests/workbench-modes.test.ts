@@ -32,6 +32,7 @@ describe("workbench modes", () => {
   it("resolves workbench data sources explicitly for each mode", () => {
     expect(resolveWorkbenchDataSource("demo")).toBe("seeded-demo");
     expect(resolveWorkbenchDataSource("sandbox")).toBe("seeded-sandbox");
+    expect(resolveWorkbenchDataSource("research")).toBe("api");
     expect(resolveWorkbenchDataSource("real")).toBe("api");
   });
 });

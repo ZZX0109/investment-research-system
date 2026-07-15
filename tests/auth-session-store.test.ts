@@ -8,7 +8,7 @@ function resetAuthSessionState() {
 
 function resetWorkbenchState() {
   useWorkbenchStore.setState({
-    mode: "demo",
+    mode: "research",
     selectedAssetId: null,
     selectedRunId: null,
     selectedEvidenceId: null,

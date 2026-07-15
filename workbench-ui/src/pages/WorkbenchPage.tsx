@@ -24,14 +24,24 @@ export function WorkbenchPage() {
       <header className="app-header">
         <div className="brand-lockup">
           <Activity size={22} aria-hidden="true" />
-          <div><h1>WorkBuddy Research Workbench</h1><span>Point-in-time investment risk console</span></div>
+          <div><h1>A股量化研究平台</h1><span>零预算、研究级、可复现、证据驱动</span></div>
         </div>
         <div className="app-header__status">
-          <span className="system-status"><Database size={15} aria-hidden="true" /> {mode} data</span>
+          <span className="system-status"><Database size={15} aria-hidden="true" /> {mode === "research" ? "research_pit" : mode} data</span>
           <span className="system-status"><ShieldCheck size={15} aria-hidden="true" /> strict gate</span>
           <ModeSwitch mode={mode} onChange={setMode} />
         </div>
       </header>
+
+      {mode === "research" ? (
+        <div className="research-mode-banner" role="status">
+          研究级公开数据 · 非投资建议 · 不可直接交易 · 免费数据产物永不进入正式发布
+        </div>
+      ) : mode === "real" ? (
+        <div className="research-mode-banner research-mode-banner--formal" role="status">
+          正式模式需要授权数据、SLA、完整历史可见时间和发布审批；任一条件缺失时系统将阻断。
+        </div>
+      ) : null}
 
       <SelectedRunContextBar />
 

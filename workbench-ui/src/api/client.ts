@@ -67,6 +67,10 @@ import type {
   RunScopeSummary,
   RunLineageTimeline,
   ResearchReport,
+  ResearchModelRoster,
+  ResearchShadowOutcome,
+  ResearchShadowSession,
+  ResearchShadowSummary,
   TestOfficerComparisonReport,
   TestOfficerAuditRunDetail,
   TestOfficerAuditRun,
@@ -429,6 +433,20 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     refreshMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation/refresh`, { method: "POST" }),
     getDirectionalForecast: (runId: string) => apiFetch<import("./types").DirectionalForecastResponse>(`/api/v1/analysis-runs/${runId}/directional-forecast`),
     getResearchForecast: (runId: string) => apiFetch<import("./types").ResearchForecastBundle>(`/api/v1/analysis-runs/${runId}/research-forecast`),
+    getResearchModelRosters: () => apiFetch<ResearchModelRoster[]>("/api/v1/research-model-rosters"),
+    getResearchShadowSessions: (params: { decisionContext?: string; symbol?: string; task?: string } = {}) => {
+      const query = new URLSearchParams({ market: "cn" });
+      if (params.decisionContext) query.set("decision_context", params.decisionContext);
+      if (params.symbol) query.set("symbol", params.symbol);
+      if (params.task) query.set("task", params.task);
+      return apiFetch<ResearchShadowSession[]>(`/api/v1/research-shadow/sessions?${query.toString()}`);
+    },
+    getResearchShadowOutcomes: (sessionId: string) => apiFetch<ResearchShadowOutcome[]>(`/api/v1/research-shadow/sessions/${sessionId}/outcomes`),
+    getResearchShadowSummary: (params: { symbol?: string } = {}) => {
+      const query = new URLSearchParams({ market: "cn" });
+      if (params.symbol) query.set("symbol", params.symbol);
+      return apiFetch<ResearchShadowSummary>(`/api/v1/research-shadow/summary?${query.toString()}`);
+    },
     getIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}`),
     cancelIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}/cancel`, { method: "POST" }),
     createAgentRun: (payload: { asset_id: string; task_text: string; as_of: string; user_preference: AgentRun["user_preference"] }) =>
