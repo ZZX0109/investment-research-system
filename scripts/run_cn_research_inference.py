@@ -18,6 +18,7 @@ from investment_research.training.models import PreparedPriceBar, TrainingSample
 from investment_research.training.parquet_store import PITParquetStore
 from investment_research.training.sequence_dataset import build_sequence_examples
 from investment_research.training.sequence_models import SequenceTaskRunner
+from investment_research.training.research_feature_coverage import feature_coverage_breakdown
 from investment_research.pipeline.research_roster import load_verified_research_roster
 
 TASKS = ("drawdown_20d", "direction_1d", "direction_5d", "return_20d")
@@ -51,6 +52,9 @@ def main() -> int:
     for symbol in args.symbols:
         symbol_samples = _samples_for_symbol(context, args.cohort, symbol, store)
         sample = max(symbol_samples, key=lambda item: item.as_of_time)
+        core_coverage, optional_coverage = feature_coverage_breakdown(
+            sample.features, sample.missing_features
+        )
         reference_price = _latest_price(standard[symbol], store)
         influence = [
             f"{name}={sample.features[name]:.4g}"
@@ -68,7 +72,15 @@ def main() -> int:
                 "market_snapshot_hash": context["snapshot_hash"],
                 "prediction_price": reference_price,
                 "coverage_ratio": sample.feature_coverage,
+                "core_feature_coverage": core_coverage,
+                "optional_feature_coverage": optional_coverage,
                 "event_coverage_status": sample.event_coverage_status,
+                "data_status": (
+                    "complete"
+                    if sample.event_coverage_status in {"events_present", "confirmed_none"}
+                    and optional_coverage >= 1.0
+                    else "degraded"
+                ),
                 "provider_chain": [sample.provider] if sample.provider else [],
                 "evidence_coverage": sample.feature_coverage,
                 "influence_facts": influence,
@@ -117,7 +129,8 @@ def main() -> int:
                     record["ensemble_weights"] = ensemble_weights
                     disagreement = max(float(disagreement or 0.0), sequence_disagreement)
                 reasons = _abstain_reasons(
-                    task=task, sample=sample, package=package, disagreement=disagreement,
+                    task=task, sample=sample, core_feature_coverage=core_coverage,
+                    package=package, disagreement=disagreement,
                     cache_state=args.cache_state,
                     provider_conflict=_has_provider_conflict(index, symbol),
                 )
@@ -427,12 +440,13 @@ def _return_disagreement(component: dict | None, vector: list[list[float]], sele
 
 
 def _abstain_reasons(
-    *, task: str, sample: TrainingSample, package: dict, disagreement: float | None,
+    *, task: str, sample: TrainingSample, core_feature_coverage: float,
+    package: dict, disagreement: float | None,
     cache_state: str, provider_conflict: bool,
 ) -> list[str]:
     reasons: list[str] = []
-    if sample.feature_coverage < 0.85:
-        reasons.append("feature_coverage_below_85pct")
+    if core_feature_coverage < 0.85:
+        reasons.append("core_feature_coverage_below_85pct")
     if cache_state in {"expired", "unavailable"}:
         reasons.append(f"cache_{cache_state}")
     if provider_conflict:

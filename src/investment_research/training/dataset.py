@@ -31,6 +31,9 @@ from investment_research.training.models import (
     PreparedPriceBar,
     TrainingSample,
 )
+from investment_research.training.research_feature_coverage import (
+    core_feature_coverage,
+)
 
 
 _DEFAULT_CALENDAR = {
@@ -210,6 +213,7 @@ class TrainingDatasetBuilder:
                     data_version=self.data_version,
                     features=features,
                     feature_coverage=_feature_coverage(features, missing_features),
+                    core_feature_coverage=core_feature_coverage(features, missing_features),
                     missing_features=missing_features,
                     labels=labels,
                     point_in_time_event_count=event_count_30d,

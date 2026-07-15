@@ -415,6 +415,9 @@ class TrainingSample(BaseModel):
     data_version: str
     features: dict[str, float] = Field(default_factory=dict)
     feature_coverage: float = 1.0
+    # Coverage of the price/market-state contract.  ``feature_coverage`` is
+    # retained as the aggregate evidence coverage for backward compatibility.
+    core_feature_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     missing_features: list[str] = Field(default_factory=list)
     labels: LabelSet
     point_in_time_event_count: int = 0

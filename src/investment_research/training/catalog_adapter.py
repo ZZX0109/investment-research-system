@@ -26,6 +26,9 @@ from investment_research.training.models import (
     Market,
     TrainingSample,
 )
+from investment_research.training.research_feature_coverage import (
+    core_feature_coverage,
+)
 
 
 class PITCatalogIntegrityError(RuntimeError):
@@ -79,6 +82,15 @@ class FormalPITDataset(BaseModel):
                     feature_coverage=1.0 - (
                         sum(bool(value) for value in record.missing_mask.values())
                         / max(1, len(set(record.features) | set(record.missing_mask)))
+                    ),
+                    core_feature_coverage=core_feature_coverage(
+                        features,
+                        [
+                            key for key, value in record.features.items() if value is None
+                        ]
+                        + [
+                            key for key, missing in record.missing_mask.items() if missing
+                        ],
                     ),
                     missing_features=sorted(
                         set(key for key, value in record.features.items() if value is None)

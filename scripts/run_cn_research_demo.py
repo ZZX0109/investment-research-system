@@ -27,6 +27,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the reproducible CN research demo")
     parser.add_argument("--max-symbols", type=int, default=None, help="Development-only provider cap; omit for the fixed 100-stock plus 5-ETF workflow.")
     parser.add_argument("--symbols-per-cohort", type=int, default=3)
+    parser.add_argument("--max-equities", type=int, default=None,
+                        help="Research-only cap forwarded to the PIT rebuild.")
+    parser.add_argument("--minimum-equities", type=int, default=80,
+                        help="Minimum eligible equity members for this run (default: 80).")
+    parser.add_argument("--minimum-history-sessions", type=int, default=756)
+    parser.add_argument("--minimum-cohort-symbols", type=int, default=80,
+                        help="Training gate for a cohort; lower only for an explicit small fixture run.")
     parser.add_argument("--skip-collection", action="store_true")
     parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use configured fixed research symbols instead of Baostock universe discovery.")
     parser.add_argument("--skip-sequence-challengers", action="store_true", help="Skip true-window deep challenger runs; tabular research tasks remain unchanged.")
@@ -76,9 +83,14 @@ def main() -> int:
                 command.append("--no-discover-cn-universe")
             _run("incremental_public_collection_and_raw_hash", command, report, allow_failure=True)
 
+        rebuild_command = [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root),
+                           "--minimum-equities", str(args.minimum_equities),
+                           "--minimum-history-sessions", str(args.minimum_history_sessions)]
+        if args.max_equities is not None:
+            rebuild_command.extend(["--max-equities", str(args.max_equities)])
         rebuild_stdout = _run(
             "quality_audit_fixed_cohort_and_snapshot",
-            [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root)], report,
+            rebuild_command, report,
             allow_failure=True,
         )
         rebuild_path = _path_from_stdout(rebuild_stdout)
@@ -107,11 +119,21 @@ def main() -> int:
                     report["tasks"][f"{cohort}/{task}"] = {"status": "unavailable", "gating_reasons": ["sample_manifests_missing"]}
                 blocked = True
                 continue
-            if cohort == "cn_equity_core" and len(cohort_payload.get("members", [])) < 80:
-                cohort_report.update(status="blocked", blocking_reasons=["eligible_equity_count_below_80"])
+            if cohort == "cn_equity_core" and len(cohort_payload.get("members", [])) < args.minimum_cohort_symbols:
+                cohort_report.update(
+                    status="blocked",
+                    blocking_reasons=[
+                        f"eligible_equity_count_below_{args.minimum_cohort_symbols}"
+                    ],
+                )
                 report["cohorts"][cohort] = cohort_report
                 for task in TASKS:
-                    report["tasks"][f"{cohort}/{task}"] = {"status": "blocked", "gating_reasons": ["eligible_equity_count_below_80"]}
+                    report["tasks"][f"{cohort}/{task}"] = {
+                        "status": "blocked",
+                        "gating_reasons": [
+                            f"eligible_equity_count_below_{args.minimum_cohort_symbols}"
+                        ],
+                    }
                 blocked = True
                 continue
             report["cohorts"][cohort] = cohort_report
@@ -121,6 +143,7 @@ def main() -> int:
                     f"same_fold_model_comparison:{cohort}/{task}",
                     [sys.executable, "scripts/run_free_research_training.py", "--cohort", cohort,
                      "--output-root", str(run_model_root),
+                     "--minimum-cohort-symbols", str(args.minimum_cohort_symbols),
                      "--tasks", task, "--training-run-id", train_id,
                      "--sample-manifest", *manifests],
                     report, timeout=24 * 60 * 60, allow_failure=True,
