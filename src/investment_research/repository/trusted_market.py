@@ -87,6 +87,44 @@ class TrustedMarketRepository:
             RawDataBatch,
         )
 
+    def raw_batches_by_payload_hashes(self, payload_hashes: list[str]) -> list[RawDataBatch]:
+        """Resolve immutable raw lineage without a provider/request fallback."""
+        unique = sorted(set(payload_hashes))
+        if not unique:
+            return []
+        # `payload_json` is retained for SQLite/PostgreSQL cutover parity, so
+        # do the immutable hash filter after hydration rather than relying on
+        # a database-specific JSON operator.
+        rows = self.connection.execute(
+            "SELECT payload_json FROM raw_data_batches"
+        ).fetchall()
+        wanted = set(unique)
+        return [
+            item
+            for row in rows
+            if (item := RawDataBatch.model_validate_json(str(row[0]))).payload_hash in wanted
+        ]
+
+    def raw_batches(
+        self, *, dataset: str | None = None, data_tier: str | None = None,
+        symbol: str | None = None,
+    ) -> list[RawDataBatch]:
+        """List immutable raw batches for replay/rebuild workflows.
+
+        Filtering after model hydration keeps SQLite behavior aligned with the
+        JSON catalog representation used by the PostgreSQL cutover path.
+        """
+        rows = self.connection.execute(
+            "SELECT payload_json FROM raw_data_batches ORDER BY fetched_at"
+        ).fetchall()
+        items = [RawDataBatch.model_validate_json(str(row[0])) for row in rows]
+        return [
+            item for item in items
+            if (dataset is None or item.dataset == dataset)
+            and (data_tier is None or item.data_tier.value == data_tier)
+            and (symbol is None or item.symbol == symbol)
+        ]
+
     def add_bar(self, item: VersionedMarketBar) -> VersionedMarketBar:
         existing = self.connection.execute(
             "SELECT payload_json FROM versioned_market_bars WHERE symbol=? AND bar_start=? AND interval=? AND provider=? AND adjustment_mode=? AND revision=?",

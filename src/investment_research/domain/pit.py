@@ -9,6 +9,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from investment_research.domain.data_tier import DataTier
+
 
 class EventCoverageStatus(str, Enum):
     EVENTS_PRESENT = "events_present"
@@ -128,6 +130,7 @@ class TradingCostSchedule(BaseModel):
 
 class PITFeatureRecord(BaseModel):
     schema_version: str = "pit-feature-record-v1"
+    data_tier: DataTier = DataTier.FORMAL_PIT
     symbol: str
     market: Literal["cn", "us", "hk", "jp"]
     decision_context: Literal["close_confirmed", "pre_open"]
@@ -173,6 +176,7 @@ class PITFeatureRecord(BaseModel):
 
 class PITSampleRecord(BaseModel):
     schema_version: str = "pit-sample-record-v1"
+    data_tier: DataTier = DataTier.FORMAL_PIT
     symbol: str
     market: Literal["cn", "us", "hk", "jp"]
     decision_context: Literal["close_confirmed", "pre_open"]
@@ -191,6 +195,8 @@ class PITSampleRecord(BaseModel):
     label_available: bool
     label_unavailable_reason: str | None = None
     entry_delay_trading_days: int = Field(default=0, ge=0, le=5)
+    input_revision_ids: list[str] = Field(default_factory=list)
+    missing_mask: dict[str, bool] = Field(default_factory=dict)
     features: dict[str, float | None]
     labels: dict[str, float | str | bool | None]
     sample_hash: str = Field(min_length=64, max_length=64)
@@ -198,12 +204,19 @@ class PITSampleRecord(BaseModel):
 
 class PITDatasetManifest(BaseModel):
     schema_version: str = "pit-dataset-manifest-v1"
+    data_tier: DataTier = DataTier.FORMAL_PIT
     id: UUID = Field(default_factory=uuid4)
     training_run_id: str
     market: Literal["cn", "us", "hk", "jp"]
     decision_context: Literal["close_confirmed", "pre_open"]
     task: str
     parquet_refs: list[str]
+    # Immutable normalized inputs are catalogued separately from the feature
+    # and sample layers.  They make every released training scope traceable
+    # back to the exact standard price/event/universe/action revisions used to
+    # build it, without forcing training readers to materialize raw data.
+    standard_parquet_refs: list[str] = Field(default_factory=list)
+    standard_layer_hash: str | None = Field(default=None, min_length=64, max_length=64)
     row_count: int = Field(ge=0)
     dataset_hash: str = Field(min_length=64, max_length=64)
     schema_hash: str = Field(min_length=64, max_length=64)
@@ -239,3 +252,54 @@ class ModelApprovalEvidence(BaseModel):
     artifact_ref: str
     artifact_hash: str = Field(min_length=64, max_length=64)
     created_at: datetime
+
+
+class ShadowRunSession(BaseModel):
+    """Immutable daily shadow evidence for one exact release scope."""
+
+    id: UUID = Field(default_factory=uuid4)
+    training_run_id: str
+    market: Literal["cn", "us", "hk", "jp"]
+    decision_context: Literal["close_confirmed", "pre_open"]
+    task: str
+    trade_date: date
+    frozen_at: datetime
+    market_snapshot_id: UUID
+    market_snapshot_hash: str = Field(min_length=64, max_length=64)
+    artifact_hashes: dict[str, str] = Field(default_factory=dict)
+    coverage_ratio: float = Field(ge=0, le=1)
+    formal_synthetic_output_count: int = Field(default=0, ge=0)
+    provider_switch_count: int = Field(default=0, ge=0)
+    abstained: bool = False
+    valid: bool
+    invalid_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_session(self) -> "ShadowRunSession":
+        expected_valid = (
+            self.coverage_ratio >= 0.98
+            and self.formal_synthetic_output_count == 0
+            and bool(self.artifact_hashes)
+            and not self.invalid_reasons
+        )
+        if self.valid != expected_valid:
+            raise ValueError("shadow validity must be derived from immutable session evidence")
+        return self
+
+
+class ShadowRunOutcome(BaseModel):
+    """Immutable realized-result backfill attached to a frozen shadow session."""
+
+    id: UUID = Field(default_factory=uuid4)
+    shadow_session_id: UUID
+    horizon_sessions: Literal[1, 5, 20, 60]
+    filled_at: datetime
+    realized_return: float | None = None
+    realized_max_drawdown: float | None = None
+    mae: float | None = None
+    mfe: float | None = None
+    direction: Literal["up", "down", "flat", "unavailable"] = "unavailable"
+    data_complete: bool = False
+    suspended_during_window: bool = False
+    limit_event_during_window: bool = False
+    error_category: str | None = None

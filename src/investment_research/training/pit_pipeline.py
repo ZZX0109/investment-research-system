@@ -15,6 +15,7 @@ from investment_research.domain.pit import (
     PITSampleRecord,
     StandardEventRevision,
 )
+from investment_research.domain.data_tier import DataTier
 from investment_research.training.leakage_audit import (
     LeakageAuditReport,
     audit_point_in_time_inputs,
@@ -50,7 +51,11 @@ class PITDatasetPublisher:
         feature_version: str,
         label_version: str,
         historical_universe_version: str,
+        standard_partitions: list[PITDatasetPartition] | None = None,
+        data_tier: DataTier = DataTier.FORMAL_PIT,
     ) -> tuple[PITDatasetManifest, LeakageAuditReport]:
+        if data_tier != DataTier.FORMAL_PIT:
+            raise ValueError("formal PIT catalog rejects non-formal data tiers")
         self._validate_scope(market, decision_context, feature_records, sample_records)
         report = audit_point_in_time_inputs(
             training_run_id=training_run_id,
@@ -94,17 +99,29 @@ class PITDatasetPublisher:
                 quality_status=PITDataQualityStatus.PASSED,
                 created_at=generated_at,
             )
-            self.catalog.add_partition(partition)
-            refs.append(ref)
+            stored_partition = self.catalog.add_partition(partition)
+            # Identical feature partitions are shared across task manifests;
+            # always reference the catalog's canonical immutable object.
+            refs.append(stored_partition.object_ref)
             payload_hashes.append(payload_hash)
             schema_hashes.append(schema_hash)
         dataset_hash = _hash_list(payload_hashes)
         manifest = PITDatasetManifest(
+            data_tier=data_tier,
+            schema_version=(
+                "pit-dataset-manifest-v2" if standard_partitions else "pit-dataset-manifest-v1"
+            ),
             training_run_id=training_run_id,
             market=market,
             decision_context=decision_context,
             task=task,
             parquet_refs=refs,
+            standard_parquet_refs=[item.object_ref for item in standard_partitions or []],
+            standard_layer_hash=(
+                _hash_list([item.payload_hash for item in standard_partitions])
+                if standard_partitions
+                else None
+            ),
             row_count=len(sample_records),
             dataset_hash=dataset_hash,
             schema_hash=_hash_list(schema_hashes),
@@ -117,6 +134,60 @@ class PITDatasetPublisher:
         )
         self.catalog.add_manifest(manifest)
         return manifest, report
+
+    def publish_standard_layers(
+        self,
+        *,
+        market: str,
+        trade_year: int,
+        generated_at: datetime,
+        bars: list[PreparedPriceBar],
+        events: list[StandardEventRevision],
+        universe: list[HistoricalUniverseMembership],
+        corporate_actions: list[CorporateActionRevision],
+        data_tier: DataTier = DataTier.FORMAL_PIT,
+    ) -> list[PITDatasetPartition]:
+        """Persist immutable normalized inputs before feature/sample layers.
+
+        Empty optional datasets are intentionally not represented by a fake
+        zero-row file: their semantic status belongs in the snapshot and event
+        coverage records.  Every returned partition is content-addressed and
+        can be reused by all four task manifests for the same rebuild scope.
+        """
+        if data_tier != DataTier.FORMAL_PIT:
+            raise ValueError("formal PIT catalog rejects non-formal data tiers")
+        layers = (
+            ("standard_prices", "pit-standard-price-v1", bars),
+            ("standard_events", "pit-standard-event-v1", events),
+            ("historical_universe", "pit-historical-universe-v1", universe),
+            ("corporate_actions", "pit-corporate-action-v1", corporate_actions),
+        )
+        partitions: list[PITDatasetPartition] = []
+        for dataset, schema_version, records in layers:
+            if not records:
+                continue
+            partition_id = str(uuid4())
+            ref, payload_hash, schema_hash, row_count = self.parquet.write_partition(
+                records,
+                market=market,
+                dataset=dataset,
+                schema_version=schema_version,
+                trade_year=trade_year,
+                partition_id=partition_id,
+            )
+            partitions.append(self.catalog.add_partition(PITDatasetPartition(
+                market=market,
+                dataset=dataset,
+                schema_version=schema_version,
+                trade_year=trade_year,
+                object_ref=ref,
+                payload_hash=payload_hash,
+                schema_hash=schema_hash,
+                row_count=row_count,
+                quality_status=PITDataQualityStatus.PASSED,
+                created_at=generated_at,
+            )))
+        return partitions
 
     @staticmethod
     def _validate_scope(market, context, features, samples) -> None:

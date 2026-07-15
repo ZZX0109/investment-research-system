@@ -6,6 +6,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from investment_research.domain.data_tier import DataTier
+
 
 QualityStatus = Literal["passed", "degraded", "failed"]
 CacheState = Literal["fresh", "stale_usable", "expired", "unavailable"]
@@ -63,6 +65,7 @@ class SecurityStateRecord(BaseModel):
 
 class RawDataBatch(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    data_tier: DataTier = DataTier.FORMAL_PIT
     provider: str
     request_id: str
     dataset: str
@@ -185,6 +188,7 @@ class MarketSnapshot(BaseModel):
     """Immutable aggregate shared by training, inference, approval and replay."""
 
     id: UUID = Field(default_factory=uuid4)
+    data_tier: DataTier = DataTier.FORMAL_PIT
     symbol: str
     decision_context: Literal["close_confirmed", "pre_open"]
     trade_date: date

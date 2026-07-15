@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from investment_research.domain.trusted_market import RawDataBatch
+from investment_research.domain.data_tier import DataTier
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import ObjectStore, build_object_store
 
@@ -26,7 +27,12 @@ class RawPayloadIngestionService:
         symbol: str | None = None,
         interval: str | None = None,
         source_time: datetime | None = None,
+        exchange_time: datetime | None = None,
+        received_at: datetime | None = None,
         market_session: str | None = None,
+        data_tier: DataTier = DataTier.FORMAL_PIT,
+        coverage_start: datetime | None = None,
+        coverage_end: datetime | None = None,
     ) -> RawDataBatch:
         existing = self.uow.trusted_market.raw_batch_by_request(provider, request_id)
         digest = hashlib.sha256(payload).hexdigest()
@@ -35,9 +41,16 @@ class RawPayloadIngestionService:
                 raise ValueError("Provider request_id was reused with different payload bytes")
             return existing
         fetched_at = datetime.now(timezone.utc)
-        key = f"raw-market/{fetched_at:%Y/%m/%d}/{provider}/{request_id}-{digest[:12]}.json"
+        received = received_at or fetched_at
+        persisted = datetime.now(timezone.utc)
+        if available_at < received:
+            raise ValueError("raw payload available_at cannot precede receipt")
+        # Provider observations remain append-only in the catalog while equal
+        # bytes share one content-addressed object.
+        key = f"raw-market/sha256/{digest[:2]}/{digest}.json"
         payload_ref = self.object_store.put(key, payload, content_type="application/json")
         batch = RawDataBatch(
+            data_tier=data_tier,
             provider=provider,
             request_id=request_id,
             dataset=dataset,
@@ -46,16 +59,17 @@ class RawPayloadIngestionService:
             schema_version=schema_version,
             symbol=symbol,
             interval=interval,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
             market_session=market_session,
             fetched_at=fetched_at,
             source_time=source_time,
+            exchange_time=exchange_time,
+            received_at=received,
+            persisted_at=persisted,
             available_at=available_at,
         )
-        try:
-            return self.uow.trusted_market.add_raw_batch(batch)
-        except Exception:
-            self.object_store.delete(key)
-            raise
+        return self.uow.trusted_market.add_raw_batch(batch)
 
 
 class ProviderChain:

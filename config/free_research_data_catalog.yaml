@@ -1,0 +1,79 @@
+schema_version: cn-zero-budget-research-data-catalog-v1
+purpose: >-
+  Public, reproducible research collection inventory. "available" means the
+  source can be collected without a paid market-data contract; it never means
+  the data is licensed for production trading or proven formal PIT.
+datasets:
+  - id: daily_bars
+    markets: [CN]
+    content: [raw_open, raw_high, raw_low, raw_close, raw_volume, raw_amount, qfq_open, qfq_high, qfq_low, qfq_close]
+    provider: akshare_with_baostock_fallback
+    status: enabled_research_backfill
+    limitations: [delayed_or_unspecified_source_time, no_production_sla, historical_available_at_unproven_public_backfill]
+  - id: corporate_actions
+    markets: [CN]
+    content: [dividends, splits, capital_changes]
+    provider: akshare_or_official_disclosure
+    status: planned
+    limitations: [historical_revision_time_not_proven]
+  - id: security_master
+    markets: [CN]
+    content: [symbol, issuer_name, exchange, collection_time_status]
+    provider: akshare_with_baostock_fallback
+    status: enabled_research_current_enumeration
+    limitations: [historical_universe_incomplete]
+  - id: filings
+    markets: [US]
+    content: [form, accession_number, filing_date, acceptance_datetime, primary_document]
+    provider: sec_edgar
+    status: enabled_research_backfill
+  - id: company_facts
+    markets: [US]
+    content: [xbrl_facts, fiscal_period, filed_date, accession_number]
+    provider: sec_edgar
+    status: enabled_research_backfill
+  - id: sec_bulk_archives
+    markets: [US]
+    content: [all_submissions, all_companyfacts]
+    provider: sec_edgar
+    status: available_but_not_default
+    limitations: [large_download, rate_and_storage_budget_required]
+  - id: hkex_announcements
+    markets: [HK]
+    content: [announcement_title, issuer, published_time, category, document_reference]
+    provider: hkexnews
+    status: enabled_research_backfill
+  - id: cn_exchange_disclosures
+    markets: [CN]
+    content: [announcement, financial_report, corporate_action, regulatory_event]
+    provider: akshare_cninfo_notices
+    status: enabled_raw_partial_research
+    limitations: [rolling_public_window, historical_publish_time_incomplete, source_endpoint_no_sla]
+  - id: jp_disclosures
+    markets: [JP]
+    content: [edinet_filing_list, xbrl_document, tdnet_timed_disclosure]
+    provider: edinet_tdnet
+    status: api_key_or_adapter_required
+    limitations: [EDINET_requires_subscription_key, TDnet_adapter_not_implemented]
+  - id: market_macro_us
+    markets: [US]
+    content: [policy_rate, treasury_yields, dollar_index, volatility_index, recession_indicator]
+    provider: fred_public_csv
+    status: enabled_research_backfill
+  - id: market_indices
+    markets: [CN]
+    content: [benchmark_index_prices, etf_proxies]
+    provider: akshare
+    status: enabled_research_backfill
+  - id: historical_security_status
+    markets: [CN]
+    content: [listing, delisting, suspension, ST, index_membership]
+    provider: commercial_or_exchange_archive
+    status: blocked_for_formal_pit
+    limitations: [complete_historical_as_of_state_not_available_from_current_free_collectors]
+  - id: intraday_bars_and_orderbook
+    markets: [CN]
+    content: [minute_bars, quote, bid_ask, orderbook]
+    provider: licensed_provider
+    status: intentionally_disabled
+    limitations: [requires_authorized_low_latency_source]

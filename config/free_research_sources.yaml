@@ -1,0 +1,54 @@
+# Zero-cost research collection only. These sources are deliberately not
+# eligible for formal PIT deployment: historical available_at cannot generally
+# be proven before our own collection time.
+schema_version: cn-zero-budget-research-sources-v1
+mode: research_only
+markets:
+  cn:
+    enabled: true
+    prices: akshare
+    backup_prices: baostock
+    events: [akshare_cninfo_notices]
+  us:
+    enabled: false
+    prices: yfinance
+    events: [sec_edgar]
+  hk:
+    enabled: false
+    prices: yfinance
+    events: [hkexnews]
+  jp:
+    enabled: false
+    prices: yfinance
+    events: [tdnet, edinet]
+collection:
+  timezone: Asia/Shanghai
+  raw_retention: append_only
+  provider_timeout_seconds: 20
+  incremental_overlap_trading_days: 5
+  cross_check_daily_ratio: 0.20
+  primary_requests_per_second: 2
+  backup_requests_per_second: 1
+  max_attempts: 4
+  retry_backoff_seconds: [1, 2, 4, 8]
+  cache_expiry_trading_days: 3
+  close_confirmed_time: "15:10"
+  pre_open_time: "09:10"
+  active_context: close_confirmed
+  pre_open_enabled: false
+  synthetic_allowed: false
+  formal_deployment_allowed: false
+research_cohorts:
+  cn_equity_core:
+    max_symbols: 100
+    lookback_sessions: 120
+    minimum_history_sessions: 756
+    minimum_coverage_ratio: 0.98
+    minimum_median_amount: 100000000
+    minimum_required_members: 80
+  cn_etf_benchmark:
+    symbols: ["510050", "510300", "510500", "159915", "512100"]
+features:
+  minute_collection_enabled: false
+  intraday_inference_enabled: false
+  four_market_research_enabled: false

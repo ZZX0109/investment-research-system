@@ -23,6 +23,15 @@ class PITCatalogRepository:
         self.connection = connection
 
     def add_partition(self, item: PITDatasetPartition) -> PITDatasetPartition:
+        existing = self.partition_by_payload_hash(item.payload_hash)
+        if existing is not None:
+            if (
+                existing.schema_hash != item.schema_hash
+                or existing.row_count != item.row_count
+                or existing.dataset != item.dataset
+            ):
+                raise ValueError("PIT partition payload hash was reused with different metadata")
+            return existing
         self.connection.execute(
             "INSERT INTO pit_dataset_partitions (id,market,dataset,schema_version,trade_year,object_ref,payload_hash,schema_hash,row_count,quality_status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -41,6 +50,18 @@ class PITCatalogRepository:
         )
         self.connection.commit()
         return item
+
+    def partition_by_payload_hash(self, payload_hash: str) -> PITDatasetPartition | None:
+        row = self.connection.execute(
+            "SELECT id,market,dataset,schema_version,trade_year,object_ref,payload_hash,"
+            "schema_hash,row_count,quality_status,created_at FROM pit_dataset_partitions WHERE payload_hash=?",
+            (payload_hash,),
+        ).fetchone()
+        return None if row is None else PITDatasetPartition(
+            id=row[0], market=row[1], dataset=row[2], schema_version=row[3], trade_year=row[4],
+            object_ref=row[5], payload_hash=row[6], schema_hash=row[7], row_count=row[8],
+            quality_status=row[9], created_at=row[10],
+        )
 
     def add_event_revision(self, item: StandardEventRevision) -> StandardEventRevision:
         self.connection.execute(
@@ -165,9 +186,104 @@ class PITCatalogRepository:
         )
         return item
 
+    def partitions(
+        self,
+        *,
+        market: str,
+        dataset: str | None = None,
+        schema_version: str | None = None,
+        trade_year: int | None = None,
+    ) -> list[PITDatasetPartition]:
+        clauses = ["market=?"]
+        params: list[object] = [market]
+        for column, value in (
+            ("dataset", dataset),
+            ("schema_version", schema_version),
+            ("trade_year", trade_year),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        rows = self.connection.execute(
+            "SELECT id,market,dataset,schema_version,trade_year,object_ref,payload_hash,"
+            "schema_hash,row_count,quality_status,created_at FROM pit_dataset_partitions "
+            f"WHERE {' AND '.join(clauses)} ORDER BY trade_year,created_at,id",
+            tuple(params),
+        ).fetchall()
+        return [
+            PITDatasetPartition(
+                id=row[0], market=row[1], dataset=row[2], schema_version=row[3],
+                trade_year=row[4], object_ref=row[5], payload_hash=row[6],
+                schema_hash=row[7], row_count=row[8], quality_status=row[9], created_at=row[10],
+            )
+            for row in rows
+        ]
+
+    def manifest(
+        self,
+        *,
+        training_run_id: str,
+        market: str,
+        decision_context: str,
+        task: str,
+    ) -> PITDatasetManifest | None:
+        row = self.connection.execute(
+            "SELECT payload_json FROM pit_dataset_manifests "
+            "WHERE training_run_id=? AND market=? AND decision_context=? AND task=?",
+            (training_run_id, market, decision_context, task),
+        ).fetchone()
+        return None if row is None else PITDatasetManifest.model_validate_json(str(row[0]))
+
+    def manifests(
+        self,
+        *,
+        training_run_id: str | None = None,
+        market: str | None = None,
+        decision_context: str | None = None,
+        task: str | None = None,
+    ) -> list[PITDatasetManifest]:
+        clauses: list[str] = []
+        params: list[object] = []
+        for column, value in (
+            ("training_run_id", training_run_id), ("market", market),
+            ("decision_context", decision_context), ("task", task),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        sql = "SELECT payload_json FROM pit_dataset_manifests"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY training_run_id,market,decision_context,task"
+        return [
+            PITDatasetManifest.model_validate_json(str(row[0]))
+            for row in self.connection.execute(sql, tuple(params)).fetchall()
+        ]
+
     def add_approval_evidence(
         self, item: ModelApprovalEvidence
     ) -> ModelApprovalEvidence:
+        existing = self.connection.execute(
+            "SELECT id,training_run_id,market,decision_context,task,evidence_type,artifact_ref,artifact_hash,created_at "
+            "FROM model_approval_evidence WHERE training_run_id=? AND market=? "
+            "AND decision_context=? AND task=? AND evidence_type=?",
+            (
+                item.training_run_id, item.market, item.decision_context,
+                item.task, item.evidence_type,
+            ),
+        ).fetchone()
+        if existing is not None:
+            stored = ModelApprovalEvidence(
+                id=existing[0], training_run_id=existing[1], market=existing[2],
+                decision_context=existing[3], task=existing[4], evidence_type=existing[5],
+                artifact_ref=existing[6], artifact_hash=existing[7], created_at=existing[8],
+            )
+            if (
+                stored.artifact_hash != item.artifact_hash
+                or stored.artifact_ref != item.artifact_ref
+            ):
+                raise ValueError("approval evidence is immutable for scope and type")
+            return stored
         self.connection.execute(
             "INSERT INTO model_approval_evidence (id,training_run_id,market,decision_context,task,evidence_type,artifact_ref,artifact_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (

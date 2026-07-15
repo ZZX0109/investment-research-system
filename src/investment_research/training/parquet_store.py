@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from pathlib import Path
 from typing import Iterable
 
 from pydantic import BaseModel
@@ -37,7 +38,10 @@ class PITParquetStore:
         pq.write_table(table, sink, compression="zstd", version="2.6")
         payload = sink.getvalue()
         payload_hash = hashlib.sha256(payload).hexdigest()
-        schema_hash = hashlib.sha256(str(table.schema).encode("utf-8")).hexdigest()
+        # Parquet writers may canonicalize timestamp units or attach metadata;
+        # hash the persisted schema rather than the pre-serialization table.
+        persisted = pq.read_table(io.BytesIO(payload))
+        schema_hash = parquet_schema_hash(persisted.schema)
         key = (
             f"pit/{market}/{dataset}/{schema_version}/trade_year={trade_year}/"
             f"part-{partition_id}-{payload_hash[:12]}.parquet"
@@ -56,13 +60,20 @@ class PITParquetStore:
 
 def _object_key(ref: str) -> str:
     if ref.startswith("file-object://"):
-        return ref.removeprefix("file-object://")
+        return _safe_object_key(ref.removeprefix("file-object://"))
     if ref.startswith("s3://"):
         parts = ref.removeprefix("s3://").split("/", 1)
         if len(parts) != 2:
             raise ValueError("invalid S3 object reference")
-        return parts[1]
-    return ref
+        return _safe_object_key(parts[1])
+    return _safe_object_key(ref)
+
+
+def _safe_object_key(key: str) -> str:
+    path = Path(key)
+    if not key or path.is_absolute() or ".." in path.parts:
+        raise ValueError("object-store reference escapes configured root")
+    return key
 
 
 def _parquet_safe(row: dict) -> dict:
@@ -73,3 +84,9 @@ def _parquet_safe(row: dict) -> dict:
         else value
         for key, value in row.items()
     }
+
+
+def parquet_schema_hash(schema) -> str:
+    """Hash logical Arrow schema, excluding writer-added metadata."""
+    canonical = schema.remove_metadata() if schema.metadata else schema
+    return hashlib.sha256(str(canonical).encode("utf-8")).hexdigest()

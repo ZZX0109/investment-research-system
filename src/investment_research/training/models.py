@@ -410,6 +410,7 @@ class TrainingSample(BaseModel):
     decision_context: str = "close_confirmed"
     prediction_start_date: date | None = None
     market_snapshot_id: str | None = None
+    market_snapshot_hash: str | None = Field(default=None, min_length=64, max_length=64)
     feature_version: str
     data_version: str
     features: dict[str, float] = Field(default_factory=dict)
@@ -669,8 +670,19 @@ class PromotionGatePolicy(BaseModel):
         default_factory=lambda: ["bull", "bear", "range", "high_vol"]
     )
     deep_model_families: list[str] = Field(
-        default_factory=lambda: ["patchtst", "tcn", "itransformer"]
+        default_factory=lambda: [
+            "deep_learning",
+            "patchtst",
+            "tcn",
+            "gru",
+            "lstm",
+            "itransformer",
+        ]
     )
+    minimum_deep_regime_count: int = Field(default=2, ge=1)
+    # Formal releases override this from config/gate_rules.yaml. Keeping the
+    # library default neutral preserves backwards-compatible research use.
+    minimum_deep_regime_auroc_delta: float = Field(default=0.0, ge=0.0)
 
 
 class PromotionGateCheck(BaseModel):

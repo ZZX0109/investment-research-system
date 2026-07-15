@@ -58,6 +58,22 @@ def test_exchange_local_context_handles_us_dst_and_asian_sessions() -> None:
     assert jp.decision_time.hour == 15 and jp.decision_time.minute == 40
 
 
+def test_us_context_uses_exchange_local_offset_on_both_sides_of_dst() -> None:
+    # New York switches to daylight time on 2026-03-08 and returns on 2026-11-01.
+    before = build_market_decision_context(
+        date(2026, 3, 6), "close_confirmed", calendar_code="XNYS"
+    )
+    after = build_market_decision_context(
+        date(2026, 3, 9), "close_confirmed", calendar_code="XNYS"
+    )
+    winter = build_market_decision_context(
+        date(2026, 11, 2), "close_confirmed", calendar_code="XNYS"
+    )
+    assert before.decision_time.utcoffset() == timedelta(hours=-5)
+    assert after.decision_time.utcoffset() == timedelta(hours=-4)
+    assert winter.decision_time.utcoffset() == timedelta(hours=-5)
+
+
 def test_tradeable_label_defers_one_price_limit_up_entry() -> None:
     start = date(2026, 1, 1)
     bars = [_bar(start + timedelta(days=index), 100 + index) for index in range(30)]
