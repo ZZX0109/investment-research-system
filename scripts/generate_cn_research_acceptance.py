@@ -38,6 +38,7 @@ def main() -> int:
     status_counts = Counter(str(item.get("status", "unknown")) for item in cn_records)
     quality_counts = Counter(_quality_status(item) for item in cn_records)
     fallback_records = [item for item in cn_records if len(item.get("provider_chain", [])) > 1]
+    market_coverage = [item for item in coverage.get("market_coverage", []) if item.get("market") == "cn"]
     event_states = Counter(
         str(item.get("event_coverage_status", item.get("status", "unknown")))
         for item in cn_records if item.get("dataset") == "events"
@@ -75,14 +76,24 @@ def main() -> int:
         "environment": _environment(),
         "data": {
             "coverage_ref": _portable_ref(_resolve(args.coverage)) if _resolve(args.coverage).is_file() else None,
+            "market_coverage": [{key: item.get(key) for key in (
+                "market", "target_count", "successful_target_count", "coverage_ratio",
+                "unavailable_symbols", "failed_providers", "security_state_status",
+                "event_coverage_status", "reasons",
+            )} for item in market_coverage],
             "provider_counts": dict(provider_counts),
+            "akshare_success_count": sum(item.get("provider") == "akshare" and item.get("status") in {"backfilled", "complete"} for item in cn_records),
+            "baostock_success_count": sum(item.get("provider") == "baostock" and item.get("status") in {"backfilled", "complete"} for item in cn_records),
             "status_counts": dict(status_counts),
+            "failed_count": sum(item.get("status") in {"fetch_failed", "unsupported"} for item in cn_records),
+            "conflict_count": sum(item.get("degraded_reason") == "provider_conflict" for item in cn_records),
             "quality_status_counts": dict(quality_counts),
             "fallback_count": len(fallback_records),
             "fallback_providers": sorted({str(item.get("provider")) for item in fallback_records}),
             "event_coverage_states": dict(event_states),
             "synthetic_count": int(coverage.get("synthetic_count", 0)),
             "cn_yfinance_records": sum(item.get("provider") == "yfinance" for item in cn_records),
+            "legacy_yfinance_excluded_count": sum(item.get("provider") == "yfinance" for item in cn_records),
         },
         "cohorts": run.get("cohorts", {}),
         "tasks": task_statuses,
