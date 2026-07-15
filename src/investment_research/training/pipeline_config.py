@@ -38,6 +38,11 @@ class ProviderConfig(BaseModel):
     backup: str | None = None
     authorized: bool = False
     sla_name: str | None = None
+    authorization_ref: str | None = None
+    catalog_ref: str | None = None
+    supports_historical_pit: bool = False
+    supports_revisions: bool = False
+    historical_time_fields: list[str] = Field(default_factory=list)
 
 
 class CacheTtlConfig(BaseModel):

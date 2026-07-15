@@ -33,7 +33,7 @@ deep_model_gate:
   eligible_condition:
     regime_count_min: 2                     # must beat in ≥ 2 regimes
     auroc_delta_min: 0.03                   # vs best tabular per regime
-  deep_model_families: ["patchtst", "tcn", "itransformer"]
+  deep_model_families: ["deep_learning", "mlp", "patchtst", "tcn", "itransformer"]
   fallback_status: "research_only"          # status when not eligible
 
 tuning:

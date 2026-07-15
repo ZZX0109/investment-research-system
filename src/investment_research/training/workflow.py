@@ -15,7 +15,7 @@ from investment_research.training.models import (
     WalkForwardFoldResult,
 )
 from investment_research.training.trainers import LinearBaselineTrainerSpec, TrainerSpec
-from investment_research.training.validation import build_walk_forward_folds
+from investment_research.training.validation import build_walk_forward_folds, samples_for_fold
 
 
 class WalkForwardTrainingRunner:
@@ -62,8 +62,11 @@ class WalkForwardTrainingRunner:
         fold_results: list[WalkForwardFoldResult] = []
         all_metrics: list[FoldMetric] = []
         for fold in folds:
-            train_samples = [sample for sample in ordered_samples if fold.train_start <= sample.as_of_date <= fold.train_end]
-            validation_samples = [sample for sample in ordered_samples if fold.validation_start <= sample.as_of_date <= fold.validation_end]
+            # Do not allow a training label to cross the validation boundary.
+            # This is deliberately applied in the execution path, not merely
+            # when folds are reported, so all traditional/deep candidates see
+            # identical purged samples.
+            train_samples, validation_samples = samples_for_fold(ordered_samples, fold)
             if not train_samples or not validation_samples:
                 continue
 

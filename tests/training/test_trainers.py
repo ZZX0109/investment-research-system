@@ -135,5 +135,12 @@ def test_deep_mlp_trainer_emits_prediction_and_explanation() -> None:
 def test_default_trainer_specs_includes_all_models() -> None:
     specs = default_trainer_specs()
     names = {s.name for s in specs}
-    expected = {"linear-baseline", "logistic-regression", "random-forest", "lightgbm", "xgboost", "deep-mlp"}
+    expected = {
+        "linear-baseline",
+        "logistic-regression",
+        "random-forest",
+        "lightgbm",
+        "xgboost",
+        "deep-mlp",
+    }
     assert names == expected

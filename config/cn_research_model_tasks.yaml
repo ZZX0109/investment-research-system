@@ -1,48 +1,39 @@
-schema_version: cn-research-task-registry-v1
-markets: [cn]
-decision_contexts:
-  close_confirmed:
-    decision_time: "15:10"
-    timezone: Asia/Shanghai
-  pre_open:
-    decision_time: "09:10"
-    timezone: Asia/Shanghai
-    session: next_trading_day
+schema_version: cn-research-model-tasks-v1
+data_tier: research_pit
+market: cn
+active_decision_context: close_confirmed
+decision_time: "15:10 Asia/Shanghai"
+disabled_contexts: [pre_open]
 tasks:
   direction_1d:
-    horizon_trading_days: 1
-    output: [up, down, flat]
-    label_policy: volatility_standardized-v1
-    baselines: [constant_class, index_direction, momentum, random]
+    horizon_sessions: 1
+    candidates: [constant-class, index-direction, momentum, random, logistic-regression, random-forest, lightgbm, xgboost, time-oof-weighted-ensemble]
   direction_5d:
-    horizon_trading_days: 5
-    output: [up, down, flat]
-    label_policy: volatility_standardized-v1
-    baselines: [constant_class, index_direction, momentum, random]
+    horizon_sessions: 5
+    candidates: [constant-class, index-direction, momentum, random, logistic-regression, random-forest, lightgbm, xgboost, time-oof-weighted-ensemble]
   return_20d:
-    horizon_trading_days: 20
-    output: [p10, p50, p90]
-    label_policy: return-distribution-v1
-    baselines: [historical_distribution, linear_quantile]
+    horizon_sessions: 20
+    candidates: [historical-distribution, linear-quantile, quantile-random-forest, lightgbm-quantile, xgboost-quantile, time-oof-weighted-ensemble]
   drawdown_20d:
-    horizon_trading_days: 20
-    output: [p10, p50, p90, probability_below_minus_8pct]
-    label_policy: maximum-drawdown-v2
-    baselines: [historical_distribution, volatility, linear]
-approval:
-  initial_status: research_only
-  independent_by: [task, decision_context]
-  required_gates:
-    - pit_leakage_zero
-    - artifact_hashes_valid
-    - calibration
-    - recent_windows
-    - market_and_industry_groups
-    - regime_stability
-    - coverage
-    - alert_frequency_and_concentration
-    - transaction_cost_constraints
-rollout:
-  shadow_trading_days: 20
-  minimum_critical_coverage: 0.98
-  maximum_synthetic_formal_outputs: 0
+    horizon_sessions: 20
+    candidates: [historical-distribution, linear-baseline, logistic-regression, random-forest, lightgbm, xgboost, time-oof-weighted-ensemble]
+validation:
+  train_sessions: 504
+  validation_sessions: 126
+  purge_and_embargo: task_horizon
+  final_holdout_sessions: 252
+  stress_sessions: 126
+  calibration: time_oof_only
+  final_holdout_single_use: true
+deep_challengers:
+  families: [mlp, patchtst, tcn, itransformer]
+  seeds: [42, 2026, 3407]
+  classification_minimum_regimes: 2
+  classification_minimum_auroc_delta: 0.03
+  return_minimum_pinball_improvement_ratio: 0.05
+cost_policy:
+  version: cn-research-cost-v1
+  notional_cny: 100000
+  settlement: T+1
+  stock: {commission_buy_bps: 3, commission_sell_bps: 3, stamp_tax_sell_bps: 5, slippage_buy_bps: 5, slippage_sell_bps: 5}
+  etf: {commission_buy_bps: 3, commission_sell_bps: 3, stamp_tax_sell_bps: 0, slippage_buy_bps: 3, slippage_sell_bps: 3}

@@ -20,17 +20,13 @@ from investment_research.training.pipeline_config import (
     PipelineMode,
     load_training_pipeline_config,
 )
-from investment_research.training.publisher import (
-    PublicationBlocked,
-    attach_approval_evidence,
-    atomic_publish,
-    validate_publishable_manifest,
+from investment_research.training.publisher import PublicationBlocked
+from investment_research.training.run_identity import TrainingRunIdentity, write_identity
+from investment_research.training.formal_preflight import (
+    run_formal_preflight,
+    write_preflight_report,
 )
-from investment_research.training.run_identity import (
-    TrainingRunIdentity,
-    hash_files,
-    write_identity,
-)
+from investment_research.training.formal_release import materialize_blocked_release_matrix
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,11 +51,14 @@ def main() -> int:
     )
     run_root = (PROJECT / config.run_root(identity.training_run_id)).resolve()
     identity_path = run_root / "training_run.json"
-    commands = [
-        [sys.executable, str(PROJECT / "scripts" / "fetch_real_data.py")],
-        [sys.executable, str(PROJECT / "scripts" / "fetch_real_events.py")],
-        [sys.executable, str(PROJECT / "scripts" / "run_retraining.py"), "--data-source", "real", "--profile", config.training_profile],
-    ]
+    commands = [[
+        sys.executable,
+        str(PROJECT / "scripts" / "run_pit_scope_training.py"),
+        "--config",
+        str(args.config.resolve()),
+        "--run-root",
+        str(run_root),
+    ]]
     plan = {
         "training_run_id": identity.training_run_id,
         "run_root": str(run_root),
@@ -71,10 +70,17 @@ def main() -> int:
     if args.dry_run:
         return 0
     write_identity(identity_path, identity)
-    unauthorized = [market for market in config.markets if not config.providers[market].authorized]
-    if unauthorized:
+    preflight = run_formal_preflight(
+        config, training_run_id=identity.training_run_id, project_root=PROJECT
+    )
+    preflight_path = write_preflight_report(
+        preflight, run_root / "audits" / "provider_pit_gap_report.json"
+    )
+    identity.completed_steps.append("formal_pit_preflight")
+    if not preflight.publishable:
+        materialize_blocked_release_matrix(run_root / "models", preflight=preflight)
         identity.status = "blocked"
-        identity.failure_reason = "provider authorization/SLA not confirmed: " + ", ".join(unauthorized)
+        identity.failure_reason = f"formal PIT preflight blocked; see {preflight_path}"
         write_identity(identity_path, identity)
         print(identity.failure_reason, file=sys.stderr)
         return 2
@@ -97,41 +103,21 @@ def main() -> int:
             "INVESTMENT_RESEARCH_EXPECTED_FEATURE_CONTRACT": config.feature_contract_version,
             "INVESTMENT_RESEARCH_LABEL_POLICY_VERSION": config.label_policy_version,
             "INVESTMENT_RESEARCH_ALLOW_SYNTHETIC_SANDBOX": "false",
+            "INVESTMENT_RESEARCH_DISABLE_SAMPLE_CACHE": "true",
         }
     )
     try:
         _run(commands[0], env)
-        identity.completed_steps.append("real_data_fetch")
-        _run(commands[1], env)
-        identity.completed_steps.append("event_fetch")
-        raw_files = list(run_root.glob("bundle_*.pkl")) + list(run_root.glob("events_*.pkl"))
-        identity.raw_data_hash = hash_files(raw_files)
-        env["INVESTMENT_RESEARCH_RAW_DATA_HASH"] = identity.raw_data_hash
-        write_identity(identity_path, identity)
-        _run(commands[2], env)
-        identity.completed_steps.extend(["pit_samples", "training", "walk_forward_validation", "approval_evidence"])
-        sample_files = list((run_root / "temp").glob("*samples*.pkl"))
-        identity.sample_data_hash = hash_files(sample_files) if sample_files else None
-        attach_approval_evidence(
-            run_root / "models",
-            training_run_id=identity.training_run_id,
-            evidence_paths=list((run_root / "audits").glob("approval_report*")),
+        identity.completed_steps.extend(
+            ["pit_catalog_read", "scope_training", "walk_forward_validation", "approval_evidence"]
         )
         identity.status = "staged"
         write_identity(identity_path, identity)
         if args.publish:
-            validate_publishable_manifest(
-                run_root / "models",
-                expected_training_run_id=identity.training_run_id,
-                expected_config_hash=identity.config_hash,
-                expected_feature_contract=config.feature_contract_version,
-                expected_decision_context=config.decision_context,
-                require_four_market_evidence=True,
+            raise PublicationBlocked(
+                "formal publication is scope-specific; publish only manifests that have "
+                "passed 20-session shadow validation via the release controller"
             )
-            atomic_publish(run_root / "models", (PROJECT / config.deployment_root).resolve())
-            identity.completed_steps.append("published")
-            identity.status = "published"
-            write_identity(identity_path, identity)
     except (subprocess.CalledProcessError, PublicationBlocked, RuntimeError, ValueError) as exc:
         identity.status = "blocked" if isinstance(exc, PublicationBlocked) else "failed"
         identity.failure_reason = f"{type(exc).__name__}: {exc}"

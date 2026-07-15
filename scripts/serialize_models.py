@@ -231,9 +231,13 @@ def main() -> int:
         "approved_trainers": sorted(serialized),
         "models": serialized,
         "skipped": skipped,
-        "deployment_ready": bool(serialized)
-        and len(serialized) == len(approved_trainers),
-        "note": "Only approved models are serialized for deployment. Research-only models remain in evaluation outputs only.",
+        "deployment_ready": False,
+        "gating_reasons": [
+            "legacy_serializer_refits_samples",
+            "time_oof_calibrator_artifact_missing",
+            "scope_specific_approval_evidence_missing",
+        ],
+        "note": "Compatibility artifacts only. Formal publication consumes frozen, scope-specific training-run artifacts.",
     }
     (models_dir / "model_manifest.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
@@ -347,37 +351,14 @@ def build_estimator(trainer_name: str):
 
 
 def fit_calibrated_estimator(estimator, x_scaled, y_np):
-    from sklearn.base import clone
-    from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.metrics import brier_score_loss
-    from sklearn.model_selection import train_test_split
+    """Legacy serializer no longer performs random/full-data recalibration.
 
-    if len(set(y_np.tolist())) < 2 or len(y_np) < 20:
-        model = CalibratedClassifierCV(estimator, method="sigmoid", cv=2)
-        model.fit(x_scaled, y_np)
-        return model, "sigmoid"
-
-    x_train, x_valid, y_train, y_valid = train_test_split(
-        x_scaled,
-        y_np,
-        test_size=0.2,
-        random_state=42,
-        stratify=y_np,
-    )
-    best_method = "sigmoid"
-    best_score = None
-    for method in ("sigmoid", "isotonic"):
-        candidate = CalibratedClassifierCV(clone(estimator), method=method, cv=3)
-        candidate.fit(x_train, y_train)
-        probs = candidate.predict_proba(x_valid)[:, 1]
-        score = brier_score_loss(y_valid, probs)
-        if best_score is None or score < best_score:
-            best_score = score
-            best_method = method
-
-    final_model = CalibratedClassifierCV(estimator, method=best_method, cv=3)
-    final_model.fit(x_scaled, y_np)
-    return final_model, best_method
+    Formal models must arrive as frozen training-run artifacts with a calibrator
+    selected from time-OOF predictions. This compatibility serializer fits only
+    an uncalibrated research artifact and can never mark it deployment-ready.
+    """
+    estimator.fit(x_scaled, y_np)
+    return estimator, "none_legacy_research_only"
 
 
 if __name__ == "__main__":

@@ -293,6 +293,7 @@ class XGBoostTrainerSpec:
             scale_pos_weight=1.0,
             random_state=7,
             verbosity=0,
+            n_jobs=1,
         )
         return SklearnTrainerModel(
             target_name=target_name,
@@ -358,6 +359,8 @@ class DeepMLPTrainerSpec:
 
                 if not samples:
                     raise ValueError("samples must not be empty")
+                torch.set_num_threads(1)
+                torch.manual_seed(42)
                 self.feature_order = sorted(samples[0].features)
                 _compute_feature_stats(self.feature_order, samples, self.feature_stats)
 

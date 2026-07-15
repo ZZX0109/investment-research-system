@@ -800,6 +800,8 @@ def phase_b(
     cache_fingerprint = _sample_cache_fingerprint(filtered_bundles)
     if (
         authoritative
+        and os.environ.get("INVESTMENT_RESEARCH_DISABLE_SAMPLE_CACHE", "").lower()
+        not in {"1", "true", "yes"}
         and samples_cache_path.exists()
         and (artifact_root / "labels.csv").exists()
         and cache_manifest_path.exists()
@@ -863,7 +865,8 @@ def phase_b(
             sym_events = events_by_sym.get(sym, [])
 
             builder = TrainingDatasetBuilder(
-                feature_version="v2.0-trust", data_version=f"bundle_{mkt_label}"
+                feature_version="investment-risk-features-v2",
+                data_version=f"bundle_{mkt_label}",
             )
             samples = builder.build_samples(
                 instrument=inst,
@@ -1007,7 +1010,7 @@ def _sample_cache_fingerprint(bundles: dict[str, Path]) -> str:
     payload = {
         "artifacts": artifacts,
         "feature_contract_version": FEATURE_CONTRACT_VERSION,
-        "label_pipeline_version": "multitask-v2",
+        "label_pipeline_version": "four-market-tradeable-label-v1",
         "reference_resolver_version": "market-fallback-merge-v2",
     }
     return hashlib.sha256(
@@ -1462,21 +1465,29 @@ def _compute_evaluation(results_data: dict) -> dict:
     eval_out["best_table_model"] = best_name
 
     if best_table:
-        best_fold_map = {f["fold_id"]: f for f in best_table.get("folds", [])}
+        best_table_by_regime: dict[str, float] = {}
+        for table_model in table_models:
+            for regime, value in _mean_fold_auroc_by_regime(table_model).items():
+                best_table_by_regime[regime] = max(
+                    value, best_table_by_regime.get(regime, float("-inf"))
+                )
         for model in results_data["models"]:
             af = model["algorithm_family"].lower()
-            if af in ("patchtst", "tcn", "itransformer"):
-                wins = 0
-                for dfold in model.get("folds", []):
-                    tfold = best_fold_map.get(dfold["fold_id"])
-                    if tfold:
-                        da = dfold.get("metrics", {}).get("auc_roc", 0)
-                        ta = tfold.get("metrics", {}).get("auc_roc", 0)
-                        if da - ta >= 0.03:
-                            wins += 1
+            if af in ("deep_learning", "patchtst", "tcn", "gru", "lstm", "itransformer"):
+                deep_by_regime = _mean_fold_auroc_by_regime(model)
+                deltas = {
+                    regime: deep_auc - best_table_by_regime[regime]
+                    for regime, deep_auc in deep_by_regime.items()
+                    if regime in best_table_by_regime
+                }
+                winning_regimes = sorted(
+                    regime for regime, delta in deltas.items() if delta >= 0.03
+                )
                 eval_out["regime_deltas"][model["trainer_name"]] = {
-                    "regime_wins_vs_table": wins,
-                    "eligible_deep": wins >= 2,
+                    "auroc_delta_vs_best_table": deltas,
+                    "winning_regimes": winning_regimes,
+                    "regime_wins_vs_table": len(winning_regimes),
+                    "eligible_deep": len(winning_regimes) >= 2,
                 }
 
     for task_name, task_payload in results_data.get("task_matrix", {}).items():
@@ -1487,6 +1498,20 @@ def _compute_evaluation(results_data: dict) -> dict:
         }
 
     return eval_out
+
+
+def _mean_fold_auroc_by_regime(model: dict) -> dict[str, float]:
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for fold in model.get("folds", []):
+        regime = fold.get("regime")
+        value = fold.get("metrics", {}).get("auc_roc")
+        if regime and value is not None:
+            grouped[str(regime)].append(float(value))
+    return {
+        regime: sum(values) / len(values)
+        for regime, values in grouped.items()
+        if values
+    }
 
 
 def _evaluate_model_list(models: list[dict]) -> dict[str, dict]:

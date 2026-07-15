@@ -13,6 +13,7 @@ class ReleaseMatrixStatus(BaseModel):
     approved_scopes: int
     missing_scopes: list[str] = Field(default_factory=list)
     invalid_scopes: list[str] = Field(default_factory=list)
+    not_ready_scopes: list[str] = Field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -38,10 +39,18 @@ def validate_release_matrix(
             found[key] = manifest
             if manifest.market not in manifest.applicable_markets:
                 invalid.append(f"applicable_market_mismatch:{key}")
-            if manifest.status == "approved" and (
+            if manifest.deployment_ready and manifest.status != "approved":
+                invalid.append(f"deployment_status_mismatch:{key}")
+            if manifest.deployment_ready and (
                 manifest.shadow_run_sessions < 20
                 or manifest.critical_data_coverage < 0.98
                 or manifest.formal_synthetic_output_count != 0
+                or manifest.leakage_error_count != 0
+                or manifest.calibration_leakage_error_count != 0
+                or not manifest.holdout_12m_passed
+                or not manifest.stress_6m_passed
+                or not manifest.market_regime_sample_gate_passed
+                or not manifest.cost_gate_passed
                 or not manifest.artifact_hashes
             ):
                 invalid.append(f"approval_gate_incomplete:{key}")
@@ -50,7 +59,12 @@ def validate_release_matrix(
     return ReleaseMatrixStatus(
         expected_scopes=len(expected),
         discovered_scopes=len(found),
-        approved_scopes=sum(item.status == "approved" for item in found.values()),
+        approved_scopes=sum(
+            item.status == "approved" and item.deployment_ready for item in found.values()
+        ),
         missing_scopes=sorted(expected - set(found)),
         invalid_scopes=sorted(invalid),
+        not_ready_scopes=sorted(
+            key for key, item in found.items() if not item.deployment_ready
+        ),
     )

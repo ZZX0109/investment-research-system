@@ -86,8 +86,52 @@ def evaluate_promotion_gate(
         for regime in shared_regimes:
             regime_deltas[regime] = candidate_metrics[regime] - baseline_metrics[regime]
 
-        if candidate.algorithm_family.lower() in {item.lower() for item in gate.deep_model_families}:
-            if not shared_regimes:
+        if candidate.algorithm_family.lower() in {
+            item.lower() for item in gate.deep_model_families
+        }:
+            # A neutral threshold is the backwards-compatible research policy:
+            # retain the original primary-metric comparison. Formal policy is
+            # explicit (0.03) and uses the AUROC regime aggregation below.
+            if gate.minimum_deep_regime_auroc_delta == 0:
+                failing = [name for name, delta in regime_deltas.items() if delta < 0]
+                if failing:
+                    detail = (
+                        "Deep candidate underperforms the baseline primary metric in "
+                        + ", ".join(sorted(failing))
+                    )
+                    reasons.append(detail)
+                    checks.append(
+                        PromotionGateCheck(
+                            check_name="deep_legacy_primary_regime_guardrail",
+                            status="failed",
+                            actual_value=len(failing),
+                            threshold_value=0,
+                            detail=detail,
+                        )
+                    )
+                else:
+                    checks.append(
+                        PromotionGateCheck(
+                            check_name="deep_legacy_primary_regime_guardrail",
+                            status="passed",
+                            actual_value=0,
+                            threshold_value=0,
+                            detail="Deep candidate does not underperform the baseline primary metric.",
+                        )
+                    )
+                # The formal AUROC challenger policy is loaded from YAML.
+                deep_shared_regimes = []
+            else:
+                deep_shared_regimes = None
+            candidate_auc = _group_metrics(candidate.validation_metrics, "auc_roc")
+            baseline_auc = _group_metrics(baseline.validation_metrics, "auc_roc")
+            if deep_shared_regimes is None:
+                deep_shared_regimes = sorted(set(candidate_auc) & set(baseline_auc))
+            deep_regime_deltas = {
+                regime: candidate_auc[regime] - baseline_auc[regime]
+                for regime in deep_shared_regimes
+            }
+            if gate.minimum_deep_regime_auroc_delta > 0 and not deep_shared_regimes:
                 detail = "Deep candidate has no shared regime metrics against baseline."
                 reasons.append(detail)
                 checks.append(
@@ -99,29 +143,60 @@ def evaluate_promotion_gate(
                         detail=detail,
                     )
                 )
-            for regime in shared_regimes:
-                if regime_deltas[regime] <= gate.minimum_primary_metric_delta:
-                    detail = f"Deep candidate does not exceed baseline in regime '{regime}' by required margin."
-                    reasons.append(detail)
+            qualifying_regimes: list[str] = []
+            for regime in deep_shared_regimes:
+                if (
+                    deep_regime_deltas[regime]
+                    < gate.minimum_deep_regime_auroc_delta
+                ):
+                    detail = f"Deep candidate AUROC delta in regime '{regime}' is below the challenger threshold."
                     checks.append(
                         PromotionGateCheck(
-                            check_name=f"deep_regime_delta:{regime}",
+                            check_name=f"deep_regime_auroc_delta:{regime}",
                             status="failed",
-                            actual_value=regime_deltas[regime],
-                            threshold_value=gate.minimum_primary_metric_delta,
+                            actual_value=deep_regime_deltas[regime],
+                            threshold_value=gate.minimum_deep_regime_auroc_delta,
                             detail=detail,
                         )
                     )
                 else:
+                    qualifying_regimes.append(regime)
                     checks.append(
                         PromotionGateCheck(
-                            check_name=f"deep_regime_delta:{regime}",
+                            check_name=f"deep_regime_auroc_delta:{regime}",
                             status="passed",
-                            actual_value=regime_deltas[regime],
-                            threshold_value=gate.minimum_primary_metric_delta,
-                            detail=f"Deep candidate exceeds baseline in regime '{regime}'.",
+                            actual_value=deep_regime_deltas[regime],
+                            threshold_value=gate.minimum_deep_regime_auroc_delta,
+                            detail=f"Deep candidate exceeds the best tabular AUROC in regime '{regime}'.",
                         )
                     )
+            if gate.minimum_deep_regime_auroc_delta > 0 and len(qualifying_regimes) < gate.minimum_deep_regime_count:
+                detail = (
+                    f"Deep candidate exceeds the best tabular AUROC by at least "
+                    f"{gate.minimum_deep_regime_auroc_delta:.3f} in only "
+                    f"{len(qualifying_regimes)} regimes; minimum is "
+                    f"{gate.minimum_deep_regime_count}."
+                )
+                reasons.append(detail)
+                checks.append(
+                    PromotionGateCheck(
+                        check_name="deep_qualifying_regime_count",
+                        status="failed",
+                        actual_value=len(qualifying_regimes),
+                        threshold_value=gate.minimum_deep_regime_count,
+                        detail=detail,
+                    )
+                )
+            elif gate.minimum_deep_regime_auroc_delta > 0:
+                checks.append(
+                    PromotionGateCheck(
+                        check_name="deep_qualifying_regime_count",
+                        status="passed",
+                        actual_value=len(qualifying_regimes),
+                        threshold_value=gate.minimum_deep_regime_count,
+                        detail="Deep candidate meets the minimum qualifying-regime count.",
+                    )
+                )
 
     candidate_precision = _mean_metric(candidate.validation_metrics, "top_bucket_alert_precision")
     baseline_precision = None if baseline is None else _mean_metric(baseline.validation_metrics, "top_bucket_alert_precision")
@@ -930,6 +1005,16 @@ def load_gate_rules_from_yaml(path: Path | None = None) -> PromotionGatePolicy |
     deep_payload = payload.get("deep_model_gate", {})
     if isinstance(deep_payload, dict) and deep_payload.get("deep_model_families") is not None:
         clean["deep_model_families"] = deep_payload.get("deep_model_families")
+    eligible_condition = (
+        deep_payload.get("eligible_condition", {})
+        if isinstance(deep_payload, dict)
+        else {}
+    )
+    if isinstance(eligible_condition, dict):
+        if eligible_condition.get("regime_count_min") is not None:
+            clean["minimum_deep_regime_count"] = eligible_condition["regime_count_min"]
+        if eligible_condition.get("auroc_delta_min") is not None:
+            clean["minimum_deep_regime_auroc_delta"] = eligible_condition["auroc_delta_min"]
     return PromotionGatePolicy(**clean)
 
 

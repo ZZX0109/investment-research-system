@@ -22,21 +22,41 @@ providers:
     backup: licensed-us-backup
     authorized: false
     sla_name: pending-contract
+    authorization_ref: null
+    catalog_ref: null
+    supports_historical_pit: false
+    supports_revisions: false
+    historical_time_fields: []
   cn:
     primary: licensed-cn-primary
     backup: licensed-cn-backup
     authorized: false
     sla_name: pending-contract
+    authorization_ref: null
+    catalog_ref: null
+    supports_historical_pit: false
+    supports_revisions: false
+    historical_time_fields: []
   hk:
     primary: licensed-hk-primary
     backup: licensed-hk-backup
     authorized: false
     sla_name: pending-contract
+    authorization_ref: null
+    catalog_ref: null
+    supports_historical_pit: false
+    supports_revisions: false
+    historical_time_fields: []
   jp:
     primary: licensed-jp-primary
     backup: licensed-jp-backup
     authorized: false
     sla_name: pending-contract
+    authorization_ref: null
+    catalog_ref: null
+    supports_historical_pit: false
+    supports_revisions: false
+    historical_time_fields: []
 cache_ttl:
   daily_bars_seconds: 86400
   events_seconds: 3600

@@ -674,8 +674,6 @@ class PromotionGatePolicy(BaseModel):
             "deep_learning",
             "patchtst",
             "tcn",
-            "gru",
-            "lstm",
             "itransformer",
         ]
     )
