@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--groups", nargs="+", choices=("prices", "events", "macro"))
     parser.add_argument("--timeout-seconds", type=int, default=7200)
     parser.add_argument("--max-symbols", type=int, default=None, help="Optional development cap; scheduled research runs enumerate the full public CN universe by default.")
+    parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use the configured fixed CN research symbols; do not enumerate the public universe.")
     parser.add_argument("--rebuild-timeout-seconds", type=int, default=1800)
     parser.add_argument("--skip-rebuild", action="store_true", help="Collect raw payloads only; the default also rebuilds CN standard/snapshot/feature/sample layers.")
     parser.add_argument("--skip-collection", action="store_true", help="Do not contact public providers; use with --skip-rebuild to freeze an already generated prediction file.")
@@ -77,6 +78,8 @@ def main() -> int:
         ]
         if args.max_symbols is not None:
             command.extend(["--max-symbols-per-market", str(args.max_symbols)])
+        if args.no_discover_cn_universe:
+            command.append("--no-discover-cn-universe")
         item: dict[str, object] = {"market": market, "group": group, "command": command}
         try:
             completed = subprocess.run(

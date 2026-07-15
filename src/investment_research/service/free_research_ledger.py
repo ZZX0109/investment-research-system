@@ -103,7 +103,7 @@ def build_coverage_ledgers(
         successes = {
             item.symbol
             for item in market_records
-            if item.dataset == "daily_bars" and item.status == "backfilled" and item.symbol
+            if item.dataset.startswith("daily_bars") and item.status in {"backfilled", "complete"} and item.symbol
         }
         unavailable = sorted(requested - successes)
         event_records = [

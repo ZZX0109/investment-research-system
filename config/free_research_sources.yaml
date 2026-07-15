@@ -26,6 +26,7 @@ collection:
   raw_retention: append_only
   provider_timeout_seconds: 20
   incremental_overlap_trading_days: 5
+  incremental_lookback_calendar_days: 730
   cross_check_daily_ratio: 0.20
   primary_requests_per_second: 2
   backup_requests_per_second: 1

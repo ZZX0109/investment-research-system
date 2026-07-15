@@ -22,10 +22,14 @@ class ResearchForecastService:
         existing = self.uow.research_forecasts.for_run(str(bundle.run.id))
         if existing is not None:
             return existing
-        prediction = bundle.predictions[0] if bundle.predictions else None
+        # Compatibility analysis runs may contain a legacy risk prediction, but
+        # that artifact has old cutoff semantics. Research mode must never
+        # promote it into the new four-task contract; only a verified
+        # scope-specific ResearchModelRoster may provide task outputs.
+        prediction = None
         as_of = bundle.snapshot.as_of or bundle.snapshot.captured_at
         synthetic = bundle.snapshot.synthetic_share > 0 or "synthetic" in bundle.snapshot.source_types
-        feature_coverage = 0.0 if prediction is None else prediction.feature_coverage
+        feature_coverage = 0.0
         stale = bool(bundle.snapshot.stale_reasons) or bundle.snapshot.price_freshness_status in {"stale", "expired", "unavailable"}
         quality = "failed" if synthetic else "degraded" if stale or (refresh is not None and refresh.state == "degraded") else "passed"
         cache_state = "stale_usable" if refresh is not None and refresh.cache_hit and quality != "failed" else "fresh" if quality != "failed" else "unavailable"
@@ -33,31 +37,25 @@ class ResearchForecastService:
             *bundle.snapshot.fallback_reasons,
             *bundle.snapshot.stale_reasons,
             *([] if not synthetic else ["synthetic_data_forbidden_in_research_output"]),
+            "research_roster_required_legacy_model_disabled",
         ]))
-        drift_verdict = None if prediction is None else self.uow.agent_runtime.latest_drift_verdict(prediction.model_name)
-        if drift_verdict == "hold":
-            reasons.append("runtime_drift_gate_requested_abstention")
         # The legacy analysis path has no qualified formal-PIT catalog proof.
         # It can remain useful for research comparison, but must never surface
         # as an approved forecast simply because an old prediction carried an
         # approval bit.
-        risk_available_for_research = bool(prediction and not synthetic and feature_coverage >= 0.85 and drift_verdict != "hold")
-        if prediction is not None and feature_coverage < 0.85:
-            reasons.append("research_feature_coverage_below_85pct")
-        elif feature_coverage < 0.95:
-            reasons.append("research_feature_coverage_degraded")
-        risk_status = "research_only" if risk_available_for_research else "abstain"
+        risk_available_for_research = False
+        risk_status = "unavailable"
         tasks = [
-            ModelTaskStatus(task="direction_1d", status="unavailable", gating_reasons=["No independently approved 1-day direction model is frozen for this run"]),
-            ModelTaskStatus(task="direction_5d", status="unavailable", gating_reasons=["No independently approved 5-day direction model is frozen for this run"]),
-            ModelTaskStatus(task="return_20d", status="unavailable", gating_reasons=["No independently approved 20-day return distribution model is frozen for this run"]),
+            ModelTaskStatus(task="direction_1d", status="unavailable", gating_reasons=["research_roster_missing"]),
+            ModelTaskStatus(task="direction_5d", status="unavailable", gating_reasons=["research_roster_missing"]),
+            ModelTaskStatus(task="return_20d", status="unavailable", gating_reasons=["research_roster_missing"]),
             ModelTaskStatus(
                 task="drawdown_20d",
                 status=risk_status,
                 model_name=None if prediction is None else prediction.model_name,
                 model_version=None if prediction is None else prediction.model_version,
                 manifest_version=None if prediction is None else prediction.manifest_version,
-                gating_reasons=[] if risk_available_for_research else ["Research drawdown model unavailable or runtime gate failed"],
+                gating_reasons=["research_roster_required_legacy_model_disabled"],
             ),
         ]
         frozen = ResearchForecastBundle(
@@ -101,7 +99,7 @@ class ResearchForecastService:
             ),
             tasks=tasks,
             gating_reasons=[*reasons, *[reason for task in tasks for reason in task.gating_reasons]],
-            influence_facts=[] if prediction is None else [prediction.rationale],
+            influence_facts=[],
             risk_level=(
                 "unavailable" if prediction is None or prediction.risk_probability is None
                 else "high" if prediction.risk_probability >= 0.65

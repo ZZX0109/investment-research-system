@@ -1,5 +1,8 @@
 from datetime import date, datetime, timezone
 import json
+from types import SimpleNamespace
+import importlib.util
+from pathlib import Path
 
 from investment_research.training.cn_free_providers import (
     compare_public_daily_payloads,
@@ -18,6 +21,15 @@ from investment_research.training.cn_research_collection import (
     call_with_retry,
 )
 from investment_research.training.models import PreparedPriceBar
+
+
+def _load_free_fetcher():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "fetch_free_research_data.py"
+    spec = importlib.util.spec_from_file_location("free_fetcher_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _bar(symbol: str, day: int, amount: float = 1000) -> PreparedPriceBar:
@@ -112,3 +124,48 @@ def test_research_cache_expires_after_three_trading_days() -> None:
     assert cache.state(as_of=date(2026, 7, 13)) == "fresh"
     assert cache.state(as_of=date(2026, 7, 15)) == "stale_usable"
     assert cache.state(as_of=date(2026, 7, 16)) == "expired"
+
+
+def test_cn_primary_failure_uses_baostock_and_never_yfinance(monkeypatch, tmp_path) -> None:
+    module = _load_free_fetcher()
+
+    class Primary:
+        name = "akshare"
+
+        def fetch(self, *args, **kwargs):
+            raise RuntimeError("akshare outage")
+
+    class Backup:
+        name = "baostock"
+
+        def fetch(self, *args, **kwargs):
+            return SimpleNamespace(payload='[{"日期":"2026-07-14","收盘":10}]'.encode(), row_count=1)
+
+    class BackupContext:
+        def __enter__(self):
+            return Backup()
+
+        def __exit__(self, *args):
+            return None
+
+    class Service:
+        def persist(self, **kwargs):
+            return SimpleNamespace(payload_hash="a" * 64)
+
+    monkeypatch.setattr(module, "AkshareDailyResearchProvider", Primary)
+    monkeypatch.setattr(module, "BaostockDailyResearchProvider", BackupContext)
+    output = module._collect_cn_prices(
+        Service(), ["600519"], full_history=False, lookback_days=3,
+        cross_check_ratio=0, cursor_store=module.CursorStore(tmp_path / "cursor.json"),
+        config={"primary_requests_per_second": 100, "backup_requests_per_second": 100, "max_attempts": 1, "retry_backoff_seconds": [0]},
+    )
+    assert output
+    assert all(item["provider"] == "baostock" for item in output)
+    assert all(item["provider_chain"] == ["akshare", "baostock"] for item in output)
+
+
+def test_cn_generic_compatibility_path_is_fail_closed() -> None:
+    module = _load_free_fetcher()
+    result = module._collect_price(None, "cn", "600519", {"markets": {"cn": {"prices": "akshare"}}})
+    assert result["status"] == "fetch_failed"
+    assert result["provider_chain"] == ["akshare", "baostock"]

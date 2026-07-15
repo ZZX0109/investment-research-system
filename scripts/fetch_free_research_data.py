@@ -116,7 +116,8 @@ def main() -> int:
     # A partial retry replaces only the requested dataset groups, retaining
     # successful coverage records from groups that were not run this time.
     group_by_dataset = {
-        "daily_bars": "prices", "security_master": "events", "filings": "events",
+        "daily_bars": "prices", "daily_bars_raw": "prices", "daily_bars_qfq": "prices",
+        "security_master": "events", "filings": "events",
         "companyfacts": "events", "events": "events", "macro_series_bundle": "macro",
     }
     retained = [
@@ -170,6 +171,7 @@ def _collect_cn_prices(
     )
     primary_limiter = SerialRateLimiter(primary_policy.requests_per_second)
     backup_limiter = SerialRateLimiter(backup_policy.requests_per_second)
+    primary_failed_modes: set[str] = set()
     output: list[dict] = []
     try:
         backup_context = BaostockDailyResearchProvider()
@@ -188,6 +190,8 @@ def _collect_cn_prices(
             if configured_start is not None and start < configured_start:
                 start = configured_start
             try:
+                if adjustment_mode in primary_failed_modes:
+                    raise RuntimeError(f"akshare_circuit_open:{adjustment_mode}")
                 primary_payload, primary_attempts = call_with_retry(
                     lambda: primary.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
                     policy=primary_policy, limiter=primary_limiter,
@@ -202,6 +206,7 @@ def _collect_cn_prices(
                     payload_hash=primary_batch.payload_hash,
                 ))
             except Exception as primary_exc:
+                primary_failed_modes.add(adjustment_mode)
                 if backup is None:
                     output.append({
                         "market": "cn", "dataset": f"daily_bars_{adjustment_mode}", "symbol": symbol,
@@ -299,6 +304,15 @@ def _collect_cn_prices(
 
 
 def _collect_price(service, market: str, symbol: str, config: dict) -> dict:
+    # CN is collected by ``_collect_cn_prices``. Keep this compatibility path
+    # fail-closed so an AKShare error can never become a yfinance CN record.
+    if market == "cn":
+        return {
+            "market": "cn", "dataset": "daily_bars", "symbol": symbol,
+            "provider": "akshare", "provider_chain": ["akshare", "baostock"],
+            "status": "fetch_failed",
+            "reason": "cn_generic_price_path_disabled_use_akshare_baostock_adapter",
+        }
     provider = config["markets"][market]["prices"]
     try:
         if provider == "akshare":
@@ -312,21 +326,6 @@ def _collect_price(service, market: str, symbol: str, config: dict) -> dict:
         _persist(service, provider, "daily_bars", symbol, payload)
         return {"market": market, "dataset": "daily_bars", "symbol": symbol, "provider": provider, "status": "backfilled", "rows_or_bytes": len(payload)}
     except Exception as exc:
-        if market == "cn" and provider == "akshare":
-            try:
-                import yfinance as yf
-                fallback_symbol = _cn_yfinance_symbol(symbol)
-                raw = yf.download(fallback_symbol, period="max", interval="1d", progress=False, auto_adjust=False)
-                payload = raw.reset_index().to_json(orient="records", date_format="iso").encode()
-                _persist(service, "yfinance", "daily_bars", symbol, payload)
-                return {
-                    "market": market, "dataset": "daily_bars", "symbol": symbol,
-                    "provider": "yfinance", "provider_chain": ["akshare", "yfinance"],
-                    "status": "backfilled", "rows_or_bytes": len(payload),
-                    "degraded_reason": f"akshare_failed:{type(exc).__name__}",
-                }
-            except Exception as fallback_exc:
-                return {"market": market, "dataset": "daily_bars", "symbol": symbol, "provider": provider, "status": "fetch_failed", "reason": f"primary={type(exc).__name__}:{exc};fallback={type(fallback_exc).__name__}:{fallback_exc}"}
         return {"market": market, "dataset": "daily_bars", "symbol": symbol, "provider": provider, "status": "fetch_failed", "reason": f"{type(exc).__name__}:{exc}"}
 
 
@@ -504,10 +503,6 @@ def _persist(
         coverage_start=None if coverage_start is None else datetime.combine(coverage_start, datetime.min.time(), timezone.utc),
         coverage_end=None if coverage_end is None else datetime.combine(coverage_end, datetime.max.time(), timezone.utc),
     )
-
-
-def _cn_yfinance_symbol(symbol: str) -> str:
-    return f"{symbol}.SS" if symbol.startswith(("5", "6", "9")) else f"{symbol}.SZ"
 
 
 def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: bool = False) -> dict[str, list[str]]:
