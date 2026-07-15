@@ -194,12 +194,21 @@ def main() -> int:
                     sys.executable, "scripts/run_free_research_cycle.py",
                     "--skip-collection", "--skip-rebuild", "--freeze-shadow",
                     "--prediction-file", str(prediction),
+                    # A demo run is immutable evidence.  Keep its shadow
+                    # sessions isolated from prior runs so a rerun cannot
+                    # collide with an existing session file and turn an
+                    # otherwise valid freeze into a false failure.
+                    "--shadow-directory",
+                    str(PROJECT / "artifacts" / "research_shadow" / "runs" / report["run_id"] / cohort),
                 ],
                 report, allow_failure=True,
             )
             report["shadow"][cohort] = {
                 "status": "frozen" if shadow_stdout else "unavailable",
                 "prediction_ref": _portable_ref(prediction_path),
+                "shadow_root_ref": _portable_ref(
+                    PROJECT / "artifacts" / "research_shadow" / "runs" / report["run_id"] / cohort
+                ),
             }
         # A failed collection/rebuild stage is itself a blocking evidence
         # condition, even when a later stage can replay older valid layers.
