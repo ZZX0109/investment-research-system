@@ -180,21 +180,37 @@ def main() -> int:
         return_code = 2
     finally:
         report["completed_at"] = datetime.now(timezone.utc).isoformat()
+        run_report_path = args.report.with_name(f"{report['run_id']}.json")
+        report["run_report_ref"] = _portable_ref(run_report_path)
         acceptance_path = args.report.with_name(f"{args.report.stem}-backend-acceptance.json")
         report["backend_acceptance_ref"] = _portable_ref(acceptance_path)
+        run_acceptance_path = run_report_path.with_name(f"{run_report_path.stem}-backend-acceptance.json")
+        report["run_backend_acceptance_ref"] = _portable_ref(run_acceptance_path)
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        serialized = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+        args.report.write_text(serialized, encoding="utf-8")
+        if run_report_path != args.report:
+            run_report_path.write_text(serialized, encoding="utf-8")
         subprocess.run(
             [sys.executable, "scripts/generate_cn_research_acceptance.py",
              "--run-report", str(args.report), "--output", str(acceptance_path)],
             cwd=PROJECT, text=True, capture_output=True, check=False,
         )
+        if run_report_path != args.report:
+            subprocess.run(
+                [sys.executable, "scripts/generate_cn_research_acceptance.py",
+                 "--run-report", str(run_report_path), "--output", str(run_acceptance_path)],
+                cwd=PROJECT, text=True, capture_output=True, check=False,
+            )
         # Keep the one-click report self-contained as well as emitting the
         # separately consumable acceptance document.  This makes a copied
         # run report sufficient to audit provider, task and shadow outcomes.
         try:
             report["backend_acceptance"] = json.loads(acceptance_path.read_text(encoding="utf-8"))
-            args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            serialized = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+            args.report.write_text(serialized, encoding="utf-8")
+            if run_report_path != args.report:
+                run_report_path.write_text(serialized, encoding="utf-8")
         except (OSError, ValueError):
             report.setdefault("backend_acceptance", {"status": "blocked", "gating_reasons": ["acceptance_report_missing"]})
         print(args.report)
