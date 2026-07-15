@@ -1,7 +1,7 @@
 """Walk-forward orchestration for true sequence challengers."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date
 from hashlib import sha256
 import json
@@ -48,7 +48,13 @@ def split_sequence_examples(examples: list[SequenceExample], *, horizon: int) ->
         validation = [item for item in development if fold.validation_start <= date.fromisoformat(item.decision_time[:10]) <= fold.validation_end]
         if train and validation:
             materialized.append((fold, train, validation))
-    fold_hash = sha256(json.dumps([asdict(fold) for fold, _train, _validation in materialized], default=str, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    fold_payload = [
+        fold.model_dump(mode="json") if hasattr(fold, "model_dump") else fold
+        for fold, _train, _validation in materialized
+    ]
+    fold_hash = sha256(
+        json.dumps(fold_payload, default=str, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     return development, materialized, holdout, stress, fold_hash
 
 
@@ -76,7 +82,7 @@ def run_sequence_experiment(
             runner = SequenceTaskRunner(config, seed=seed).fit(train, validation)
             oof_predictions.extend(runner.predict_raw(validation))
             oof_targets.extend([item.target for item in validation])
-            oof_fold_ids.extend([fold.fold.fold_id] * len(validation))
+            oof_fold_ids.extend([fold.fold_id] * len(validation))
         seed_metrics[str(seed)] = evaluate_predictions(task, oof_predictions, oof_targets)
         artifact_hashes[str(seed)] = sha256(json.dumps(seed_metrics[str(seed)], sort_keys=True).encode()).hexdigest()
     # Final model is trained only on development and evaluated once on the
@@ -116,6 +122,16 @@ def evaluate_predictions(task: str, predictions: list[list[float]], targets: lis
     import numpy as np
     from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, log_loss, mean_absolute_error, roc_auc_score
     if task.startswith("direction_"):
+        # Torch softmax is numerically normalized, but sklearn's strict
+        # probability validation can still reject tiny floating-point drift.
+        # Normalize only for evaluation; the saved model and raw predictions
+        # remain untouched.
+        normalized = []
+        for row in predictions:
+            values = np.asarray(row, dtype=float)
+            total = float(values.sum())
+            normalized.append((values / total if total > 0 else np.full(3, 1.0 / 3.0)).tolist())
+        predictions = normalized
         actual = [("up", "down", "flat").index(str(value)) for value in targets]
         predicted = [int(np.argmax(row)) for row in predictions]
         result = {"sample_count": float(len(actual)), "macro_f1": float(f1_score(actual, predicted, average="macro", zero_division=0)), "balanced_accuracy": float(balanced_accuracy_score(actual, predicted)), "accuracy": float(accuracy_score(actual, predicted)), "log_loss": float(log_loss(actual, predictions, labels=[0, 1, 2]))}

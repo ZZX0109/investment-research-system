@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    output_root = args.output_root if args.output_root.is_absolute() else PROJECT / args.output_root
     manifests = [json.loads(path.read_text(encoding="utf-8")) for path in args.sample_manifest]
     if not manifests or any(item.get("data_tier") != DataTier.RESEARCH_PIT.value for item in manifests):
         raise SystemExit("sequence training requires research_pit sample manifests")
@@ -72,7 +73,7 @@ def main() -> int:
         raise SystemExit("sequence scope has no valid windows")
     result = run_sequence_experiment(examples, task=args.task, architecture=args.architecture, window_sessions=args.window)
     run_id = args.training_run_id or f"sequence-{args.task}-{args.architecture}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
-    scope = args.output_root / "cn" / "close_confirmed" / args.cohort / args.task / "sequence" / args.architecture
+    scope = output_root / "cn" / "close_confirmed" / args.cohort / args.task / "sequence" / args.architecture
     scope.mkdir(parents=True, exist_ok=True)
     report = scope / "sequence_evaluation.json"
     model_path = scope / "model.pt"

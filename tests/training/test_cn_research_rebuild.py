@@ -68,6 +68,14 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
     assert rows
     assert {row["market_snapshot_id"] for row in rows} == {close["snapshot_id"]}
     assert {row["market_snapshot_hash"] for row in rows} == {close["snapshot_hash"]}
+    assert {row["data_tier"] for row in rows} == {"research_pit"}
+    assert {row["data_quality_status"] for row in rows} == {"degraded"}
+    assert all(
+        json.loads(row["event_missing_mask"]).get("event_source_unavailable") == 1.0
+        if isinstance(row["event_missing_mask"], str)
+        else row["event_missing_mask"].get("event_source_unavailable") == 1.0
+        for row in rows
+    )
     leakage = json.loads(Path(close["leakage_report_ref"]).read_text(encoding="utf-8"))
     assert leakage["research_error_count"] == 0
     assert leakage["formal_release_blocked"] is True

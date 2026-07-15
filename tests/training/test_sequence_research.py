@@ -4,6 +4,7 @@ from investment_research.training.models import InstrumentType, LabelSet, Market
 from investment_research.training.sequence_dataset import build_sequence_examples
 from investment_research.training.sequence_models import SequenceModelConfig, SequenceTaskRunner, sequence_input_width
 from investment_research.training.sequence_calibration import decide_with_disagreement, fit_direction_calibrators, weighted_direction_ensemble
+from investment_research.training.sequence_experiment import split_sequence_examples
 
 
 def _rows(n=28):
@@ -41,6 +42,30 @@ def test_sequence_builder_preserves_quality_channels_and_snapshot():
     assert row.market_snapshot_hash == "a" * 64
     assert row.data_tier == "research_pit"
     assert sequence_input_width(row) == 2 * len(row.feature_order) + 9
+
+
+def test_sequence_builder_uses_decision_availability_not_source_timestamp():
+    rows = _rows(25)
+    for row in rows:
+        row.as_of = row.feature_cutoff
+        # A public provider can timestamp the bar at midnight while the
+        # close-confirmed feature cutoff is later on the same local date.
+        row.as_of_time = row.feature_cutoff - timedelta(hours=8)
+    examples = build_sequence_examples(rows, target_name="direction_1d", window_sessions=20)
+    assert examples
+
+
+def test_sequence_walk_forward_fold_hash_uses_pydantic_fold_contract():
+    examples = build_sequence_examples(_rows(1000), target_name="direction_1d", window_sessions=20)
+    development, folds, holdout, stress, fold_hash = split_sequence_examples(
+        examples, horizon=1
+    )
+    assert development
+    assert folds
+    assert holdout
+    assert stress
+    assert len(fold_hash) == 64
+    assert folds[0][0].fold_id.startswith("wf-")
 
 
 def test_sequence_runner_fits_true_window_and_is_reproducible(tmp_path):

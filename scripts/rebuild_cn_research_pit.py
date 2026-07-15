@@ -322,6 +322,19 @@ def _build_samples(
         item.model_copy(update={
             "market_snapshot_id": snapshot["market_snapshot_id"],
             "market_snapshot_hash": snapshot["market_snapshot_hash"],
+            "data_tier": DataTier.RESEARCH_PIT.value,
+            "data_quality_status": "degraded",
+            "data_quality_mask": {"historical_visibility_unproven": 1.0},
+            "event_missing_mask": {"event_source_unavailable": 1.0},
+            "provider_id": standard.get("provider"),
+            "revision_id": standard.get("normalized_hash") or standard.get("raw_payload_hash"),
+            "cache_state": standard.get("cache_state", "fresh"),
+            "input_revision_ids": [
+                value for value in (
+                    standard.get("raw_payload_hash"),
+                    standard.get("normalized_hash"),
+                ) if value
+            ],
             "data_issues": sorted(set([*item.data_issues, RESEARCH_VISIBILITY_ASSUMPTION, "event_coverage:unsupported"])),
         })
         for item in samples

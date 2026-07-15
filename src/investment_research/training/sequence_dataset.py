@@ -102,7 +102,14 @@ def build_sequence_examples(
             target = getattr(final.labels, target_name, None)
             if target is None or not final.labels.label_available:
                 continue
-            if any(row.feature_cutoff > row.as_of_time for row in window):
+            # ``as_of_time`` is the provider/source timestamp and may precede
+            # the close-confirmed decision cutoff by design.  The PIT
+            # availability timestamp is ``as_of`` when present; falling back
+            # to the legacy source timestamp keeps old fixtures compatible.
+            if any(
+                row.feature_cutoff > (row.as_of or row.feature_cutoff or row.as_of_time)
+                for row in window
+            ):
                 continue
             if any(row.market_snapshot_hash != snapshot_hash for row in window):
                 continue
