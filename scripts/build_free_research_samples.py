@@ -72,6 +72,18 @@ def main() -> int:
     samples = [item.model_copy(update={
         "market_snapshot_id": snapshot["market_snapshot_id"],
         "market_snapshot_hash": snapshot_hash,
+        "data_tier": DataTier.RESEARCH_PIT.value,
+        # Public historical backfills have no provable historical availability;
+        # preserve that limitation in the sequence quality channel even when
+        # the OHLC rows themselves pass structural checks.
+        "data_quality_status": "degraded",
+        "data_quality_mask": {"historical_visibility_unproven": 1.0},
+        "event_missing_mask": {"event_source_unavailable": 1.0},
+        "provider_id": standard.get("provider"),
+        "revision_id": standard.get("normalized_hash") or standard.get("payload_hash"),
+        "source_delay_seconds": _source_delay(standard, snapshot),
+        "cache_state": standard.get("cache_state", "fresh"),
+        "input_revision_ids": [value for value in (standard.get("payload_hash"), standard.get("normalized_hash")) if value],
     }) for item in samples]
     ref, payload_hash, schema_hash, row_count = store.write_partition(
         samples, market=market.value, dataset="research_samples",
@@ -106,6 +118,17 @@ def _coverage(market: Market) -> CoverageGroup:
         Market.CN: CoverageGroup.CN_A_SHARE, Market.US: CoverageGroup.US_CORE,
         Market.HK: CoverageGroup.HK_PROXY, Market.JP: CoverageGroup.JP_PROXY,
     }[market]
+
+
+def _source_delay(standard: dict, snapshot: dict) -> float | None:
+    source = standard.get("source_time") or standard.get("available_at")
+    fetched = snapshot.get("frozen_at") or snapshot.get("created_at")
+    if not source or not fetched:
+        return None
+    try:
+        return max(0.0, (datetime.fromisoformat(str(fetched).replace("Z", "+00:00")) - datetime.fromisoformat(str(source).replace("Z", "+00:00"))).total_seconds())
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

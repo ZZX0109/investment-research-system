@@ -16,6 +16,8 @@ sys.path.insert(0, str(PROJECT / "src"))
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.training.models import PreparedPriceBar, TrainingSample
 from investment_research.training.parquet_store import PITParquetStore
+from investment_research.training.sequence_dataset import build_sequence_examples
+from investment_research.training.sequence_models import SequenceTaskRunner
 from investment_research.pipeline.research_roster import load_verified_research_roster
 
 TASKS = ("drawdown_20d", "direction_1d", "direction_5d", "return_20d")
@@ -47,7 +49,8 @@ def main() -> int:
     standard = _standard_by_symbol(index)
     predictions = []
     for symbol in args.symbols:
-        sample = _latest_sample(context, args.cohort, symbol, store)
+        symbol_samples = _samples_for_symbol(context, args.cohort, symbol, store)
+        sample = max(symbol_samples, key=lambda item: item.as_of_time)
         reference_price = _latest_price(standard[symbol], store)
         influence = [
             f"{name}={sample.features[name]:.4g}"
@@ -70,7 +73,23 @@ def main() -> int:
                 "evidence_coverage": sample.feature_coverage,
                 "influence_facts": influence,
                 "cache_state": args.cache_state,
+                "data_quality_mask": dict(sample.data_quality_mask),
+                "event_missing_mask": dict(sample.event_missing_mask),
+                "provider_id": sample.provider_id or sample.provider,
+                "revision_id": sample.revision_id,
+                "source_delay_seconds": sample.source_delay_seconds,
+                "candidate_predictions": _sequence_challenger_predictions(scope, symbol_samples, task),
+                "ensemble_weights": {},
             }
+            if not roster_path.is_file():
+                record.update(
+                    status="unavailable", prediction_status="unavailable", prediction={},
+                    model_artifact_hashes={}, abstained=True,
+                    abstain_reasons=["research_roster_missing"],
+                    gating_reasons=["research_roster_missing"],
+                )
+                predictions.append(record)
+                continue
             try:
                 roster = load_verified_research_roster(
                     roster_path, market="cn", decision_context=args.decision_context,
@@ -90,6 +109,13 @@ def main() -> int:
                         raise ValueError("research fallback component mismatch") from primary_exc
                     prediction, disagreement = _predict_fallback(package, sample)
                     role = "fallback"
+                ensemble_prediction, ensemble_weights, sequence_disagreement = _ensemble_with_sequence_challengers(
+                    task, prediction, record["candidate_predictions"]
+                )
+                if ensemble_prediction is not None:
+                    prediction = {**prediction, "ensemble": ensemble_prediction}
+                    record["ensemble_weights"] = ensemble_weights
+                    disagreement = max(float(disagreement or 0.0), sequence_disagreement)
                 reasons = _abstain_reasons(
                     task=task, sample=sample, package=package, disagreement=disagreement,
                     cache_state=args.cache_state,
@@ -97,6 +123,9 @@ def main() -> int:
                 )
                 record.update(
                     prediction={} if reasons else prediction,
+                    status="abstain" if reasons else "research_only",
+                    prediction_status="abstain" if reasons else "research_only",
+                    gating_reasons=reasons,
                     model_artifact_hashes=dict(roster.primary.artifact_hashes),
                     model_disagreement=disagreement,
                     model_role=role, model_candidate=(roster.primary if role == "primary" else roster.fallback).candidate_name,
@@ -105,9 +134,12 @@ def main() -> int:
                 )
             except Exception as exc:
                 record.update(
+                    status="unavailable" if isinstance(exc, FileNotFoundError) else "abstain",
+                    prediction_status="unavailable" if isinstance(exc, FileNotFoundError) else "abstain",
                     prediction={}, model_artifact_hashes={},
                     inference_blocking_reason=f"{type(exc).__name__}:{exc}",
                     abstained=True, abstain_reasons=["roster_or_artifact_validation_failed"],
+                    gating_reasons=["roster_or_artifact_validation_failed"],
                 )
             predictions.append(record)
     payload = {
@@ -122,6 +154,11 @@ def main() -> int:
 
 
 def _latest_sample(context: dict, cohort: str, symbol: str, store: PITParquetStore) -> TrainingSample:
+    """Compatibility helper for callers that need one frozen latest row."""
+    return max(_samples_for_symbol(context, cohort, symbol, store), key=lambda item: item.as_of_time)
+
+
+def _samples_for_symbol(context: dict, cohort: str, symbol: str, store: PITParquetStore) -> list[TrainingSample]:
     paths = [Path(path) for path in context["sample_manifests"].get(cohort, [])]
     matches = [path for path in paths if json.loads(path.read_text(encoding="utf-8"))["symbol"] == symbol]
     if not matches:
@@ -133,10 +170,11 @@ def _latest_sample(context: dict, cohort: str, symbol: str, store: PITParquetSto
             raise ValueError("sample manifest snapshot mismatch")
         rows.extend(store.read_partition(manifest["sample_parquet_ref"]))
     samples = [TrainingSample.model_validate(_restore_maps(row)) for row in rows]
-    latest = max(samples, key=lambda item: item.as_of_time)
-    if (latest.market_snapshot_id, latest.market_snapshot_hash) != (context["snapshot_id"], context["snapshot_hash"]):
+    if not samples:
+        raise ValueError(f"symbol has no frozen samples:{symbol}")
+    if any((item.market_snapshot_id, item.market_snapshot_hash) != (context["snapshot_id"], context["snapshot_hash"]) for item in samples):
         raise ValueError("sample row snapshot mismatch")
-    return latest
+    return samples
 
 
 def _latest_price(manifest: dict, store: PITParquetStore) -> float:
@@ -153,6 +191,96 @@ def _standard_by_symbol(index: dict) -> dict[str, dict]:
         manifest = json.loads(Path(ref).read_text(encoding="utf-8"))
         output[manifest["symbol"]] = manifest
     return output
+
+
+def _sequence_challenger_evidence(scope: Path) -> dict[str, dict]:
+    """Expose frozen sequence challenger evidence without bypassing roster.
+
+    A challenger is never promoted by this helper.  It only reports the
+    independently hashed sequence artifacts that can later be evaluated by a
+    dedicated sequence inference runner.
+    """
+    root = scope / "sequence"
+    output: dict[str, dict] = {}
+    if not root.is_dir():
+        return output
+    for manifest_path in root.glob("*/sequence_manifest.json"):
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        output[str(payload.get("architecture", manifest_path.parent.name))] = {
+            "status": payload.get("status", "research_only"),
+            "artifact_ref": payload.get("artifact_ref"),
+            "artifact_hash": payload.get("artifact_hash"),
+            "report_ref": payload.get("report_ref"),
+            "report_hash": payload.get("report_hash"),
+            "fold_hash": payload.get("fold_hash"),
+        }
+    return output
+
+
+def _sequence_challenger_predictions(scope: Path, samples: list[TrainingSample], task: str) -> dict[str, dict]:
+    root = scope / "sequence"
+    output: dict[str, dict] = {}
+    if not root.is_dir():
+        return output
+    target = {"direction_1d": "direction_1d", "direction_5d": "direction_5d", "return_20d": "future_return_20d", "drawdown_20d": "future_max_drawdown_20d"}[task]
+    for manifest_path in root.glob("*/sequence_manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            artifact = (PROJECT / manifest["artifact_ref"]).resolve()
+            if not artifact.is_file():
+                continue
+            examples = build_sequence_examples(samples, target_name=target, window_sessions=int(manifest["window_sessions"]))
+            if not examples:
+                continue
+            runner = SequenceTaskRunner.load(artifact)
+            latest = max(examples, key=lambda item: item.decision_time)
+            output[str(manifest.get("architecture", manifest_path.parent.name))] = {
+                "status": "research_only", "raw_prediction": runner.predict_raw([latest])[0],
+                "artifact_ref": manifest.get("artifact_ref"), "artifact_hash": manifest.get("artifact_hash"),
+                "fold_hash": manifest.get("fold_hash"),
+            }
+        except (OSError, ValueError, KeyError, RuntimeError, IndexError):
+            continue
+    return output
+
+
+def _ensemble_with_sequence_challengers(task: str, base: dict, candidates: dict[str, dict]) -> tuple[dict | None, dict[str, float], float]:
+    """Combine raw challenger outputs without promoting them or bypassing calibration.
+
+    The base roster model remains the calibrated primary.  The returned
+    ensemble is an explicitly labelled research diagnostic; disagreement is
+    still fed into the normal abstain gate.
+    """
+    usable = {name: value for name, value in candidates.items() if isinstance(value, dict) and isinstance(value.get("raw_prediction"), list)}
+    if not usable:
+        return None, {}, 0.0
+    weights = {"tabular_primary": 0.5}
+    challenger_weight = 0.5 / len(usable)
+    weights.update({name: challenger_weight for name in usable})
+    if task.startswith("direction_"):
+        base_values = (base.get("raw_probability") or base.get("calibrated_probability") or {})
+        labels = ("up", "down", "flat")
+        values = [float(base_values.get(label, 0.0)) for label in labels]
+        challenger_values = [[float(row) for row in usable[name]["raw_prediction"][:3]] for name in usable]
+        combined = [weights["tabular_primary"] * value + sum(challenger_weight * row[index] for row in challenger_values) for index, value in enumerate(values)]
+        total = sum(combined) or 1.0
+        combined = [value / total for value in combined]
+        disagreement = max((max(row[index] for row in challenger_values) - min(row[index] for row in challenger_values) for index in range(3)), default=0.0)
+        return {label: value for label, value in zip(labels, combined)}, weights, min(1.0, disagreement)
+    if task == "return_20d":
+        base_values = [float(base.get(key, 0.0)) for key in ("p10", "p50", "p90")]
+        challenger_values = [[float(row[index]) for index in range(3)] for name in usable for row in [usable[name]["raw_prediction"]]]
+        combined = [weights["tabular_primary"] * value + sum(challenger_weight * row[index] for row in challenger_values) for index, value in enumerate(base_values)]
+        disagreement = max((max(row[index] for row in challenger_values) - min(row[index] for row in challenger_values) for index in range(3)), default=0.0)
+        return {key: value for key, value in zip(("p10", "p50", "p90"), combined)}, weights, min(1.0, disagreement)
+    base_value = float((base.get("calibrated_probability") or base.get("raw_probability") or 0.0))
+    challenger_values = [float(usable[name]["raw_prediction"][0]) for name in usable]
+    combined = weights["tabular_primary"] * base_value + sum(challenger_weight * value for value in challenger_values)
+    disagreement = max(challenger_values) - min(challenger_values) if challenger_values else 0.0
+    return {"probability": combined}, weights, min(1.0, disagreement)
 
 
 def _predict(package: dict, sample: TrainingSample) -> tuple[dict, float | None]:

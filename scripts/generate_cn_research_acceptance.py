@@ -129,6 +129,7 @@ def _artifact_evidence(run: dict[str, Any]) -> dict[str, Any]:
     """
     entries: list[dict[str, Any]] = []
     missing: list[str] = []
+    sequence_entries: list[dict[str, Any]] = []
     model_hashes: dict[str, list[str]] = {}
     for scope, record in (run.get("tasks") or {}).items():
         task = scope.rsplit("/", 1)[-1]
@@ -159,8 +160,27 @@ def _artifact_evidence(run: dict[str, Any]) -> dict[str, Any]:
         if payload.get("deployment_ready") is not False:
             reasons.append("deployment_ready_governance_violation")
         entries.append({"scope": scope, "status": "complete" if not reasons else "blocked", "manifest_ref": _portable_ref(path), "task": payload.get("task"), "model_hash": model_hash, "reasons": reasons})
+        for architecture, challenger in (record.get("sequence_challengers") or {}).items() if isinstance(record, dict) else []:
+            if not isinstance(challenger, dict):
+                continue
+            artifact_ref = challenger.get("artifact_ref")
+            report_ref = challenger.get("report_ref")
+            artifact_path = _resolve(Path(str(artifact_ref))) if artifact_ref else None
+            report_path = _resolve(Path(str(report_ref))) if report_ref else None
+            challenger_reasons: list[str] = []
+            if not artifact_path or not artifact_path.is_file():
+                challenger_reasons.append("sequence_artifact_missing")
+            elif challenger.get("artifact_hash") and _sha256(artifact_path) != challenger.get("artifact_hash"):
+                challenger_reasons.append("sequence_artifact_hash_mismatch")
+            if not report_path or not report_path.is_file():
+                challenger_reasons.append("sequence_report_missing")
+            elif challenger.get("report_hash") and _sha256(report_path) != challenger.get("report_hash"):
+                challenger_reasons.append("sequence_report_hash_mismatch")
+            if challenger.get("task") != task:
+                challenger_reasons.append("sequence_task_mismatch")
+            sequence_entries.append({"scope": scope, "task": task, "architecture": architecture, "status": "complete" if not challenger_reasons else "blocked", "artifact_ref": _portable_ref(artifact_path) if artifact_path else None, "report_ref": _portable_ref(report_path) if report_path else None, "reasons": challenger_reasons})
     reused = {key: scopes for key, scopes in model_hashes.items() if len({item.rsplit("/", 1)[-1] for item in scopes}) > 1}
-    return {"entries": entries, "missing_tasks": missing, "reused_model_hashes": reused}
+    return {"entries": entries, "sequence_entries": sequence_entries, "missing_tasks": missing, "reused_model_hashes": reused}
 
 
 def _quality_status(item: dict[str, Any]) -> str:
@@ -229,6 +249,16 @@ def _portable_ref(path: Path) -> str:
         return resolved.relative_to(PROJECT.resolve()).as_posix()
     except ValueError:
         return str(resolved)
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 if __name__ == "__main__":

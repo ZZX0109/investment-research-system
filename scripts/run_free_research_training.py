@@ -176,6 +176,7 @@ def main() -> int:
                     "minimum_qualifying_regimes": 2,
                     "automatic_primary_replacement": False,
                 },
+                "sequence_challenger_artifacts": [],
                 "blocking_reasons": list(RESEARCH_TIER_REASONS),
             }
             manifest_path = scope / "task_manifest.json"

@@ -93,6 +93,15 @@ class FormalPITDataset(BaseModel):
                         if record.data_quality_status == PITDataQualityStatus.PASSED
                         else [f"pit_quality:{record.data_quality_status.value}"]
                     ),
+                    data_tier=record.data_tier.value,
+                    data_quality_status=record.data_quality_status.value,
+                    data_quality_mask=dict(record.data_quality_mask),
+                    event_missing_mask=dict(record.event_missing_mask),
+                    provider_id=record.provider_id,
+                    revision_id=record.revision_id or (record.input_revision_ids[-1] if record.input_revision_ids else None),
+                    source_delay_seconds=record.source_delay_seconds,
+                    cache_state=record.cache_state,
+                    input_revision_ids=list(record.input_revision_ids),
                 )
             )
         if not output:
@@ -380,7 +389,7 @@ class PITCatalogAdapter:
 
 def _restore_maps(row: dict[str, Any]) -> dict[str, Any]:
     restored = dict(row)
-    for key in ("features", "labels", "missing_mask"):
+    for key in ("features", "labels", "missing_mask", "data_quality_mask", "event_missing_mask"):
         if isinstance(restored.get(key), str):
             restored[key] = json.loads(restored[key])
     if isinstance(restored.get("input_revision_ids"), str):

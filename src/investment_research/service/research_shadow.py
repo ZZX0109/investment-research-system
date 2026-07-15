@@ -40,6 +40,13 @@ class ResearchShadowSession(BaseModel):
     roster_hash: str | None = Field(default=None, min_length=64, max_length=64)
     model_candidate: str | None = None
     frozen_prediction: dict[str, Any] = Field(default_factory=dict)
+    candidate_predictions: dict[str, Any] = Field(default_factory=dict)
+    ensemble_weights: dict[str, float] = Field(default_factory=dict)
+    data_quality_mask: dict[str, float] = Field(default_factory=dict)
+    event_missing_mask: dict[str, float] = Field(default_factory=dict)
+    provider_id: str | None = None
+    revision_id: str | None = None
+    source_delay_seconds: float | None = None
     prediction_price: float | None = Field(default=None, gt=0)
     evidence_coverage: float = Field(default=0, ge=0, le=1)
     model_disagreement: float | None = Field(default=None, ge=0, le=1)
@@ -278,7 +285,10 @@ class ResearchShadowController:
         influence_facts: list[str] | None = None, cache_state: str = "fresh",
         provider_conflict: bool = False, out_of_distribution_ratio: float = 0.0,
         roster_hash: str | None = None, model_candidate: str | None = None,
-        market_regime: str = "unknown",
+        market_regime: str = "unknown", candidate_predictions: dict[str, Any] | None = None,
+        ensemble_weights: dict[str, float] | None = None, data_quality_mask: dict[str, float] | None = None,
+        event_missing_mask: dict[str, float] | None = None, provider_id: str | None = None,
+        revision_id: str | None = None, source_delay_seconds: float | None = None,
     ) -> ResearchShadowSession:
         reasons: list[str] = []
         if coverage_ratio < 0.85:
@@ -301,6 +311,9 @@ class ResearchShadowController:
             coverage_ratio=coverage_ratio, event_coverage_status=event_coverage_status,
             provider_chain=provider_chain, model_artifact_hashes=model_artifact_hashes,
             frozen_prediction=prediction, prediction_price=prediction_price,
+            candidate_predictions=candidate_predictions or {}, ensemble_weights=ensemble_weights or {},
+            data_quality_mask=data_quality_mask or {}, event_missing_mask=event_missing_mask or {},
+            provider_id=provider_id, revision_id=revision_id, source_delay_seconds=source_delay_seconds,
             evidence_coverage=evidence_coverage, model_disagreement=model_disagreement,
             influence_facts=influence_facts or [], abstained=bool(reasons),
             abstain_reasons=reasons, cache_state=cache_state,

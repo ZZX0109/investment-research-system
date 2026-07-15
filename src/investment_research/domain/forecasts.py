@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -224,7 +224,7 @@ class ResearchRosterEntry(BaseModel):
 
 
 class ResearchModelRoster(BaseModel):
-    schema_version: str = "cn-research-model-roster-v1"
+    schema_version: str = "cn-research-model-roster-v2"
     data_tier: DataTier = DataTier.RESEARCH_PIT
     status: Literal["research_only"] = "research_only"
     deployment_ready: Literal[False] = False
@@ -242,6 +242,7 @@ class ResearchModelRoster(BaseModel):
     primary: ResearchRosterEntry
     fallback: ResearchRosterEntry
     challengers: list[ResearchRosterEntry] = Field(default_factory=list)
+    sequence_challengers: list[dict[str, Any]] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     abstain_rules: list[str] = Field(default_factory=list)
     roster_hash: str = Field(min_length=64, max_length=64)

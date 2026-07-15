@@ -24,6 +24,8 @@ from investment_research.training.sources import (
 from investment_research.training.trainers import LinearBaselineTrainerSpec, OptionalDependencyTrainerSpec, default_trainer_specs
 from investment_research.training.validation import build_walk_forward_folds, infer_market_regime
 from investment_research.training.workflow import WalkForwardTrainingRunner
+from investment_research.training.sequence_dataset import SequenceExample, SequenceBuildConfig, build_sequence_examples
+from investment_research.training.sequence_models import SequenceModelConfig, SequenceTaskRunner
 
 __all__ = [
     "LinearRiskBaseline",
@@ -53,4 +55,9 @@ __all__ = [
     "prepare_price_bars",
     "resolve_coverage_preset",
     "select_point_in_time_events",
+    "SequenceExample",
+    "SequenceBuildConfig",
+    "build_sequence_examples",
+    "SequenceModelConfig",
+    "SequenceTaskRunner",
 ]

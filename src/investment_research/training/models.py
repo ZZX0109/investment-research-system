@@ -433,6 +433,17 @@ class TrainingSample(BaseModel):
     source_url: str | None = None
     raw_hash: str | None = None
     normalized_hash: str | None = None
+    # Research sequence provenance.  These fields are optional for legacy
+    # tabular rows and mandatory for the new sequence builder's output.
+    data_tier: str = "formal_pit"
+    data_quality_status: str = "passed"
+    data_quality_mask: dict[str, float] = Field(default_factory=dict)
+    event_missing_mask: dict[str, float] = Field(default_factory=dict)
+    provider_id: str | None = None
+    revision_id: str | None = None
+    source_delay_seconds: float | None = None
+    cache_state: str | None = None
+    input_revision_ids: list[str] = Field(default_factory=list)
 
 
 class CalibratedPrediction(BaseModel):

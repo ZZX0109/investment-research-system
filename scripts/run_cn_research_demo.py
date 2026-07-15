@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -28,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols-per-cohort", type=int, default=3)
     parser.add_argument("--skip-collection", action="store_true")
     parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use configured fixed research symbols instead of Baostock universe discovery.")
+    parser.add_argument("--skip-sequence-challengers", action="store_true", help="Skip true-window deep challenger runs; tabular research tasks remain unchanged.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=PROJECT / "artifacts/cn_research_demo/latest.json")
     return parser.parse_args()
@@ -60,6 +62,10 @@ def main() -> int:
         "inference": {},
         "shadow": {},
     }
+    # Keep each run's immutable evidence in isolated roots so a same-day
+    # rerun cannot collide with a previous source ledger or snapshot.
+    run_rebuild_root = PROJECT / "artifacts/free_research_rebuild/runs" / report["run_id"]
+    run_model_root = PROJECT / "artifacts/free_research_models/runs" / report["run_id"]
     blocked = False
     try:
         if not args.skip_collection:
@@ -72,7 +78,7 @@ def main() -> int:
 
         rebuild_stdout = _run(
             "quality_audit_fixed_cohort_and_snapshot",
-            [sys.executable, "scripts/rebuild_cn_research_pit.py"], report,
+            [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root)], report,
             allow_failure=True,
         )
         rebuild_path = _path_from_stdout(rebuild_stdout)
@@ -114,12 +120,19 @@ def main() -> int:
                 train_stdout = _run(
                     f"same_fold_model_comparison:{cohort}/{task}",
                     [sys.executable, "scripts/run_free_research_training.py", "--cohort", cohort,
+                     "--output-root", str(run_model_root),
                      "--tasks", task, "--training-run-id", train_id,
                      "--sample-manifest", *manifests],
                     report, timeout=24 * 60 * 60, allow_failure=True,
                 )
                 summary_path = _path_from_stdout(train_stdout)
                 task_record = _training_task_record(summary_path, task)
+                if task_record.get("status") == "research_only" and not args.skip_sequence_challengers:
+                    task_record["sequence_challengers"] = _run_sequence_challengers(
+                        cohort=cohort, task=task, manifests=manifests,
+                        run_id=train_id, report=report, output_root=run_model_root,
+                    )
+                    _attach_sequence_challengers_to_roster(task_record)
                 report["tasks"][f"{cohort}/{task}"] = task_record
                 if task_record["status"] in {"blocked", "unavailable"}:
                     blocked = True
@@ -129,12 +142,12 @@ def main() -> int:
                 cohort_report.update(status="blocked", blocking_reasons=["cohort_has_no_members"])
                 blocked = True
                 continue
-            prediction = PROJECT / "artifacts" / "predictions" / f"cn-research-{cohort}.json"
+            prediction = PROJECT / "artifacts" / "predictions" / "runs" / report["run_id"] / f"cn-research-{cohort}.json"
             inference_stdout = _run(
                 f"roster_bound_hash_verified_inference:{cohort}",
                 [
                     sys.executable, "scripts/run_cn_research_inference.py",
-                    "--rebuild-index", str(rebuild_path), "--cohort", cohort,
+                    "--rebuild-index", str(rebuild_path), "--roster-root", str(run_model_root), "--cohort", cohort,
                     "--symbols", *symbols, "--output", str(prediction),
                 ],
                 report, allow_failure=True,
@@ -281,6 +294,53 @@ def _training_task_record(path: Path | None, task: str) -> dict[str, Any]:
             except (OSError, ValueError):
                 record.setdefault("gating_reasons", []).append("task_manifest_invalid")
     return record
+
+
+def _run_sequence_challengers(*, cohort: str, task: str, manifests: list[str], run_id: str, report: dict[str, Any], output_root: Path | None = None) -> dict[str, Any]:
+    architectures = ("patchtst", "tcn", "itransformer", "deep_mlp")
+    window = 20 if task == "direction_1d" else 60 if task == "direction_5d" else 120
+    output: dict[str, Any] = {}
+    for architecture in architectures:
+        command = [sys.executable, "scripts/run_sequence_research_training.py", "--cohort", cohort,
+             "--task", task, "--architecture", architecture, "--window", str(window),
+             "--training-run-id", f"{run_id}-sequence-{architecture}", "--sample-manifest", *manifests]
+        if output_root is not None:
+            command.extend(["--output-root", str(output_root)])
+        stdout = _run(
+            f"sequence_challenger:{cohort}/{task}/{architecture}",
+            command,
+            report, timeout=24 * 60 * 60, allow_failure=True,
+        )
+        artifact = _path_from_stdout(stdout)
+        if artifact is None:
+            output[architecture] = {"status": "unavailable", "gating_reasons": ["sequence_manifest_missing"]}
+            continue
+        manifest = artifact.parent / "sequence_manifest.json"
+        output[architecture] = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {"status": "unavailable", "gating_reasons": ["sequence_manifest_missing"]}
+    return output
+
+
+def _attach_sequence_challengers_to_roster(task_record: dict[str, Any]) -> None:
+    """Bind separately trained sequence artifacts into the exact task roster."""
+    roster_ref = task_record.get("roster")
+    manifest_ref = task_record.get("manifest")
+    challengers = list(task_record.get("sequence_challengers", {}).values())
+    if not roster_ref or not manifest_ref:
+        return
+    manifest_path = PROJECT / str(manifest_ref)
+    roster_path = PROJECT / str(roster_ref)
+    if not manifest_path.is_file() or not roster_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sequence_challenger_artifacts"] = challengers
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    roster = json.loads(roster_path.read_text(encoding="utf-8"))
+    roster["sequence_challengers"] = challengers
+    payload = dict(roster)
+    for key in ("schema_version", "data_tier", "status", "deployment_ready", "roster_hash", "feature_contract_version"):
+        payload.pop(key, None)
+    roster["roster_hash"] = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    roster_path.write_text(json.dumps(roster, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _portable_ref(path: Path) -> str:

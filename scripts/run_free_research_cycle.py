@@ -241,6 +241,12 @@ def _freeze_prediction_file(path: Path, *, root: Path) -> list[dict[str, str]]:
             roster_hash=record.get("roster_hash"),
             model_candidate=record.get("model_candidate"),
             market_regime=record.get("market_regime", "unknown"),
+            candidate_predictions=dict(record.get("candidate_predictions", {})),
+            ensemble_weights={str(key): float(value) for key, value in record.get("ensemble_weights", {}).items()},
+            data_quality_mask={str(key): float(value) for key, value in record.get("data_quality_mask", {}).items()},
+            event_missing_mask={str(key): float(value) for key, value in record.get("event_missing_mask", {}).items()},
+            provider_id=record.get("provider_id"), revision_id=record.get("revision_id"),
+            source_delay_seconds=record.get("source_delay_seconds"),
         )
         output.append({"market": "cn", "session_id": str(session.id), "status": "abstain" if session.abstained else "frozen"})
     return output

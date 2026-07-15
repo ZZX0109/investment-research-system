@@ -72,6 +72,13 @@ def feature_coverage_report(samples: list) -> dict[str, Any]:
             sum(float(getattr(sample, "feature_coverage", 1.0)) for sample in samples) / len(samples)
             if samples else 0.0
         ),
+        "quality_mask_coverage": {
+            "data_quality_mask": sum(bool(getattr(sample, "data_quality_mask", {})) for sample in samples) / len(samples) if samples else 0.0,
+            "event_missing_mask": sum(bool(getattr(sample, "event_missing_mask", {})) for sample in samples) / len(samples) if samples else 0.0,
+            "provider_id": sum(bool(getattr(sample, "provider_id", None)) for sample in samples) / len(samples) if samples else 0.0,
+            "revision_id": sum(bool(getattr(sample, "revision_id", None)) for sample in samples) / len(samples) if samples else 0.0,
+            "source_delay_seconds": sum(getattr(sample, "source_delay_seconds", None) is not None for sample in samples) / len(samples) if samples else 0.0,
+        },
         "features": rows,
     }
 

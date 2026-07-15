@@ -148,6 +148,12 @@ class PITFeatureRecord(BaseModel):
     input_revision_ids: list[str] = Field(default_factory=list)
     features: dict[str, float | None]
     feature_hash: str = Field(min_length=64, max_length=64)
+    data_quality_mask: dict[str, float] = Field(default_factory=dict)
+    event_missing_mask: dict[str, float] = Field(default_factory=dict)
+    provider_id: str | None = None
+    revision_id: str | None = None
+    source_delay_seconds: float | None = Field(default=None, ge=0)
+    cache_state: str | None = None
 
     @classmethod
     def hash_features(cls, features: dict[str, float | None]) -> str:
@@ -200,6 +206,12 @@ class PITSampleRecord(BaseModel):
     features: dict[str, float | None]
     labels: dict[str, float | str | bool | None]
     sample_hash: str = Field(min_length=64, max_length=64)
+    data_quality_mask: dict[str, float] = Field(default_factory=dict)
+    event_missing_mask: dict[str, float] = Field(default_factory=dict)
+    provider_id: str | None = None
+    revision_id: str | None = None
+    source_delay_seconds: float | None = Field(default=None, ge=0)
+    cache_state: str | None = None
 
 
 class PITDatasetManifest(BaseModel):

@@ -66,6 +66,7 @@ def build_research_roster(
         "primary": primary.model_dump(mode="json"),
         "fallback": fallback.model_dump(mode="json"),
         "challengers": [item.model_dump(mode="json") for item in challengers],
+        "sequence_challengers": list(task_manifest.get("sequence_challenger_artifacts", [])),
         "limitations": [
             "research_grade_public_data", "not_real_time", "not_investment_advice",
             "historical_available_at_unproven_public_backfill",
@@ -90,7 +91,10 @@ def load_verified_research_roster(
         market, decision_context, cohort_version, task,
     ):
         raise ValueError("research roster exact scope mismatch")
-    payload = roster.model_dump(mode="json", exclude={"schema_version", "data_tier", "status", "deployment_ready", "roster_hash", "feature_contract_version"})
+    excluded = {"schema_version", "data_tier", "status", "deployment_ready", "roster_hash", "feature_contract_version"}
+    if roster.schema_version == "cn-research-model-roster-v1":
+        excluded.add("sequence_challengers")
+    payload = roster.model_dump(mode="json", exclude=excluded)
     expected = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     if expected != roster.roster_hash:
         raise ValueError("research roster hash mismatch")
@@ -109,6 +113,20 @@ def load_verified_research_roster(
             ).hexdigest()
             if body.get("report_hash") != digest or recalculated != digest:
                 raise ValueError(f"research report hash mismatch:{name}")
+    for challenger in roster.sequence_challengers:
+        artifact_ref = challenger.get("artifact_ref")
+        artifact_hash = challenger.get("artifact_hash")
+        if not artifact_ref or not artifact_hash:
+            raise ValueError("sequence challenger artifact evidence is incomplete")
+        artifact = _safe_project_path(project_root, Path(str(artifact_ref)))
+        if not artifact.is_file() or sha256(artifact.read_bytes()).hexdigest() != artifact_hash:
+            raise ValueError("sequence challenger artifact hash mismatch")
+        report_ref = challenger.get("report_ref")
+        report_hash = challenger.get("report_hash")
+        if report_ref and report_hash:
+            report = _safe_project_path(project_root, Path(str(report_ref)))
+            if not report.is_file() or sha256(report.read_bytes()).hexdigest() != report_hash:
+                raise ValueError("sequence challenger report hash mismatch")
     return roster
 
 
