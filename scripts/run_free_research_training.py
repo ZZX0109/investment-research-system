@@ -80,6 +80,10 @@ def main() -> int:
             raise SystemExit("sample manifest lacks a valid market_snapshot_hash")
         for row in rows:
             sample = TrainingSample.model_validate(_restore_maps(row))
+            if sample.data_tier != DataTier.RESEARCH_PIT.value:
+                raise SystemExit(
+                    f"sample row is not research_pit for {sample.symbol}:{sample.as_of_date}"
+                )
             if (sample.market_snapshot_id, sample.market_snapshot_hash) != expected_snapshot:
                 raise SystemExit(
                     f"sample row snapshot differs from manifest for {sample.symbol}:{sample.as_of_date}"
