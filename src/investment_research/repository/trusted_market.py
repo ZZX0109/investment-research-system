@@ -71,8 +71,8 @@ class TrustedMarketRepository:
                 raise ValueError("Provider request_id was reused with different payload bytes")
             return existing
         self.connection.execute(
-            "INSERT INTO raw_data_batches (id,provider,request_id,dataset,fetched_at,available_at,quality_status,payload_json) VALUES (?,?,?,?,?,?,?,?)",
-            (str(item.id), item.provider, item.request_id, item.dataset, item.fetched_at.isoformat(), item.available_at.isoformat(), item.quality_status, item.model_dump_json()),
+            "INSERT INTO raw_data_batches (id,provider,request_id,dataset,fetched_at,available_at,quality_status,data_tier,time_semantics,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (str(item.id), item.provider, item.request_id, item.dataset, item.fetched_at.isoformat(), item.available_at.isoformat(), item.quality_status, item.data_tier.value, item.time_semantics, item.model_dump_json()),
         )
         self.connection.commit()
         return item

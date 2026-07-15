@@ -4,8 +4,26 @@ import json
 import hashlib
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
+
+
+@pytest.mark.parametrize(
+    "starting_revision",
+    ["0013_pit_data_catalog", "0014_shadow_run_sessions", "0015_shadow_run_outcomes"],
+)
+def test_upgrade_from_recent_catalog_revisions(starting_revision: str, tmp_path: Path) -> None:
+    database_path = tmp_path / f"upgrade-{starting_revision}.db"
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+    command.upgrade(config, starting_revision)
+    command.upgrade(config, "head")
+    connection = sqlite3.connect(database_path)
+    assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+        "0016_research_data_qualification",
+    )
+    connection.close()
 
 
 def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None:
@@ -32,7 +50,7 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
     version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     connection.close()
 
-    assert version == ("0013_pit_data_catalog",)
+    assert version == ("0016_research_data_qualification",)
     assert {
         "pit_dataset_partitions",
         "standard_event_revisions",
@@ -41,6 +59,8 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
         "trading_cost_schedules",
         "pit_dataset_manifests",
         "model_approval_evidence",
+        "shadow_run_sessions",
+        "shadow_run_outcomes",
     } <= tables
     assert {"market_snapshots", "provider_coverage_runs", "model_artifact_sets"} <= tables
     assert {
@@ -119,3 +139,37 @@ def test_trusted_migration_backfills_real_cn_legacy_rows_without_synthetic(tmp_p
     assert connection.execute("SELECT COUNT(*) FROM market_snapshot_events").fetchone()[0] == 1
     assert connection.execute("SELECT quality_status FROM versioned_market_bars").fetchone()[0] == "degraded"
     connection.close()
+
+
+def test_legacy_free_batches_are_downgraded_to_research_pit(tmp_path: Path) -> None:
+    database_path = tmp_path / "legacy-free.db"
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+    command.upgrade(config, "0015_shadow_run_outcomes")
+    connection = sqlite3.connect(database_path)
+    payload = {
+        "provider": "akshare", "request_id": "free-akshare-daily-1",
+        "dataset": "daily_bars_raw", "payload_ref": "file-object://raw.json",
+        "payload_hash": "a" * 64, "schema_version": "v1", "symbol": "600519",
+        "fetched_at": "2026-07-14T08:00:00+00:00",
+        "available_at": "2026-07-14T08:00:00+00:00",
+        "quality_status": "passed",
+    }
+    connection.execute(
+        "INSERT INTO raw_data_batches (id,provider,request_id,dataset,fetched_at,available_at,quality_status,payload_json) VALUES (?,?,?,?,?,?,?,?)",
+        ("free-1", "akshare", "free-akshare-daily-1", "daily_bars_raw",
+         "2026-07-14T08:00:00+00:00", "2026-07-14T08:00:00+00:00", "passed", json.dumps(payload)),
+    )
+    connection.commit()
+    connection.close()
+
+    command.upgrade(config, "head")
+    connection = sqlite3.connect(database_path)
+    row = connection.execute(
+        "SELECT data_tier,time_semantics,quality_status,payload_json FROM raw_data_batches WHERE id='free-1'"
+    ).fetchone()
+    connection.close()
+    assert row[:3] == ("research_pit", "legacy_time_semantics", "degraded")
+    migrated = json.loads(row[3])
+    assert migrated["data_tier"] == "research_pit"
+    assert "historical_available_at_unproven_public_backfill" in migrated["quality_issues"]

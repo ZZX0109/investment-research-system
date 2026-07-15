@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from investment_research.domain.data_tier import DataTier
+from investment_research.domain.data_tier import formal_data_blocking_reasons
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.service.trusted_ingestion import RawPayloadIngestionService
@@ -26,3 +27,12 @@ def test_duplicate_payloads_share_bytes_but_keep_fetch_observations(tmp_path: Pa
     assert len(list((tmp_path / "raw").rglob("*.json"))) == 1
     assert len(uow.trusted_market.raw_batches(dataset="daily_bars_raw")) == 2
     uow.close()
+
+
+def test_formal_gate_rejects_free_provider_and_request_prefix_independently() -> None:
+    assert formal_data_blocking_reasons(
+        data_tier=DataTier.FORMAL_PIT, provider="akshare", request_id="licensed-looking",
+    ) == ["free_research_provider_forbidden_in_formal_path"]
+    assert formal_data_blocking_reasons(
+        data_tier=DataTier.FORMAL_PIT, provider="licensed-cn", request_id="free-manual-1",
+    ) == ["free_request_prefix_forbidden_in_formal_path"]

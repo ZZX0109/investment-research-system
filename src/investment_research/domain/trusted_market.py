@@ -66,6 +66,10 @@ class SecurityStateRecord(BaseModel):
 class RawDataBatch(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     data_tier: DataTier = DataTier.FORMAL_PIT
+    time_semantics: Literal[
+        "formal_pit", "research_collection_time_semantics", "legacy_time_semantics",
+        "test_fixture",
+    ] = "formal_pit"
     provider: str
     request_id: str
     dataset: str

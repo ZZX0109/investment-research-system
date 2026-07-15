@@ -14,7 +14,7 @@ from investment_research.domain.pit import (
     PITFeatureRecord,
     PITSampleRecord,
 )
-from investment_research.domain.data_tier import DataTier
+from investment_research.domain.data_tier import DataTier, formal_data_blocking_reasons
 from investment_research.domain.trusted_market import MarketSnapshot
 from investment_research.domain.trusted_market import RawDataBatch
 from investment_research.training.parquet_store import PITParquetStore
@@ -233,6 +233,13 @@ class PITCatalogAdapter:
             raise PITCatalogIntegrityError("frozen feature row references missing raw payload batch")
         for payload_hash in expected:
             batch = by_hash[payload_hash]
+            blocking = formal_data_blocking_reasons(
+                data_tier=batch.data_tier, provider=batch.provider, request_id=batch.request_id,
+            )
+            if blocking:
+                raise PITCatalogIntegrityError(
+                    "formal raw lineage rejected:" + ",".join(blocking)
+                )
             key = _object_key(batch.payload_ref)
             if batch.payload_ref.startswith("s3://"):
                 expected_bucket = getattr(self.parquet.object_store, "bucket", None)

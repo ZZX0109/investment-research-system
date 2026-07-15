@@ -43,6 +43,7 @@ from investment_research.repository.market_observation import MarketObservationR
 from investment_research.repository.trusted_market import IngestionJobRepository, TrustedMarketRepository
 from investment_research.repository.forecasts import ResearchForecastRepository
 from investment_research.repository.pit_catalog import PITCatalogRepository
+from investment_research.repository.shadow_runs import ShadowRunOutcomeRepository, ShadowRunRepository
 
 _MIGRATED_DATABASES: set[str] = set()
 
@@ -129,6 +130,8 @@ class SQLiteUnitOfWork:
         self.ingestion_jobs = IngestionJobRepository(self.connection)
         self.research_forecasts = ResearchForecastRepository(self.connection)
         self.pit_catalog = PITCatalogRepository(self.connection)
+        self.shadow_runs = ShadowRunRepository(self.connection)
+        self.shadow_outcomes = ShadowRunOutcomeRepository(self.connection)
 
     def close(self) -> None:
         self.connection.close()
@@ -171,6 +174,8 @@ class PostgresUnitOfWork(SQLiteUnitOfWork):
         self.ingestion_jobs = IngestionJobRepository(self.connection)
         self.research_forecasts = ResearchForecastRepository(self.connection)
         self.pit_catalog = PITCatalogRepository(self.connection)
+        self.shadow_runs = ShadowRunRepository(self.connection)
+        self.shadow_outcomes = ShadowRunOutcomeRepository(self.connection)
 
 
 def create_unit_of_work() -> SQLiteUnitOfWork:

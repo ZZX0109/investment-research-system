@@ -51,6 +51,11 @@ class RawPayloadIngestionService:
         payload_ref = self.object_store.put(key, payload, content_type="application/json")
         batch = RawDataBatch(
             data_tier=data_tier,
+            time_semantics=(
+                "research_collection_time_semantics" if data_tier == DataTier.RESEARCH_PIT
+                else "test_fixture" if data_tier == DataTier.TEST_FIXTURE
+                else "formal_pit"
+            ),
             provider=provider,
             request_id=request_id,
             dataset=dataset,

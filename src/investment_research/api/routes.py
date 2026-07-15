@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
@@ -84,9 +85,16 @@ from investment_research.service.market_observation import MarketObservation, Ma
 from investment_research.service.directional_forecast import DirectionalForecastResponse, DirectionalForecastService
 from investment_research.domain.trusted_market import IngestionJob
 from investment_research.service.ingestion_jobs import IngestionJobService
-from investment_research.domain.forecasts import ResearchForecastBundle
+from investment_research.domain.forecasts import ResearchForecastBundle, ResearchModelRoster
+from investment_research.pipeline.research_roster import load_verified_research_roster
 from investment_research.service.research_forecasts import ResearchForecastService
 from investment_research.service.research_review import ResearchReviewService, ResearchReviewSummary
+from investment_research.service.research_shadow import (
+    FileResearchShadowStore,
+    ResearchShadowOutcome,
+    ResearchShadowSession,
+    ResearchShadowSummary,
+)
 
 router = APIRouter()
 
@@ -322,6 +330,76 @@ def research_reviews(
     return ResearchReviewService(uow).summarize(user=user, group_by=group_by)
 
 
+def _research_shadow_store() -> FileResearchShadowStore:
+    return FileResearchShadowStore(
+        Path.cwd() / "artifacts" / "research_shadow"
+    )
+
+
+@router.get("/api/v1/research-shadow/sessions", response_model=list[ResearchShadowSession])
+def research_shadow_sessions(
+    market: Literal["cn"] | None = Query(default="cn"),
+    decision_context: Literal["close_confirmed", "pre_open"] | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    task: Literal["bundle", "direction_1d", "direction_5d", "return_20d", "drawdown_20d"] | None = Query(default=None),
+    user: User = Depends(get_authenticated_user),
+) -> list[ResearchShadowSession]:
+    del user
+    return _research_shadow_store().list_sessions(
+        market=market, decision_context=decision_context, symbol=symbol, task=task
+    )
+
+
+@router.get("/api/v1/research-shadow/summary", response_model=ResearchShadowSummary)
+def research_shadow_summary(
+    market: Literal["cn"] | None = Query(default="cn"),
+    decision_context: Literal["close_confirmed", "pre_open"] | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    task: Literal["bundle", "direction_1d", "direction_5d", "return_20d", "drawdown_20d"] | None = Query(default=None),
+    user: User = Depends(get_authenticated_user),
+) -> ResearchShadowSummary:
+    del user
+    return _research_shadow_store().summarize(
+        market=market, decision_context=decision_context, symbol=symbol, task=task
+    )
+
+
+@router.get(
+    "/api/v1/research-shadow/sessions/{session_id}/outcomes",
+    response_model=list[ResearchShadowOutcome],
+)
+def research_shadow_outcomes(
+    session_id: UUID,
+    user: User = Depends(get_authenticated_user),
+) -> list[ResearchShadowOutcome]:
+    del user
+    store = _research_shadow_store()
+    if store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Research shadow session not found")
+    return store.list_outcomes(session_id)
+
+
+@router.get("/api/v1/research-model-rosters", response_model=list[ResearchModelRoster])
+def research_model_rosters(
+    user: User = Depends(get_authenticated_user),
+) -> list[ResearchModelRoster]:
+    del user
+    project = Path.cwd()
+    root = project / "artifacts/free_research_models/cn/close_confirmed"
+    output: list[ResearchModelRoster] = []
+    for path in sorted(root.glob("*/*/research_model_roster.json")):
+        try:
+            payload = ResearchModelRoster.model_validate_json(path.read_text(encoding="utf-8"))
+            output.append(load_verified_research_roster(
+                path, market="cn", decision_context="close_confirmed",
+                cohort_version=payload.cohort_version, task=payload.task,
+                project_root=project,
+            ))
+        except (OSError, ValueError):
+            continue
+    return output
+
+
 @router.get(
     "/api/v1/assets/{asset_id}/historical-analogies",
     response_model=list[HistoricalScenario],
@@ -488,10 +566,10 @@ def model_deployment_status(user: User = Depends(get_authenticated_user)) -> dic
     artifact_root = root.parent
     manifest = root / "model_manifest.json"
     features = root / "feature_order.json"
-    if not manifest.exists():
-        raise HTTPException(status_code=503, detail="Model manifest unavailable")
+    coverage_path = artifact_root.parent / "artifacts" / "free_research_coverage.json"
+    formal_manifest = json.loads(manifest.read_text()) if manifest.exists() else {}
     return {
-        "manifest": json.loads(manifest.read_text()),
+        "manifest": formal_manifest,
         "feature_contract": json.loads(features.read_text())
         if features.exists()
         else {},
@@ -505,6 +583,26 @@ def model_deployment_status(user: User = Depends(get_authenticated_user)) -> dic
             if (artifact_root / "public_experiment_manifest.json").exists()
             else {}
         ),
+        "research_mode": {
+            "data_tier": "research_pit",
+            "status": "research_only",
+            "deployment_ready": False,
+            "market": "cn",
+            "decision_contexts": ["close_confirmed"],
+            "disabled_decision_contexts": ["pre_open"],
+            "providers": ["akshare", "baostock"],
+            "non_advice": True,
+            "coverage": (
+                json.loads(coverage_path.read_text())
+                if coverage_path.exists()
+                else {}
+            ),
+        },
+        "formal_release": {
+            "status": "blocked",
+            "reason": "licensed_formal_pit_unavailable",
+            "preserved_for_future_extension": True,
+        },
     }
 
 

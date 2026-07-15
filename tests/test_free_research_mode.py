@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 
 import pytest
@@ -105,6 +105,35 @@ def test_research_shadow_controller_freezes_prediction_and_abstains_on_disagreem
     )
     assert session.abstained
     assert "model_disagreement" in session.abstain_reasons
+    assert session.evidence_valid
+
+
+def test_research_shadow_forward_reports_require_20_and_60_valid_dates(tmp_path) -> None:
+    store = FileResearchShadowStore(tmp_path)
+    controller = ResearchShadowController(store)
+    day = date(2026, 1, 5)
+    created = 0
+    while created < 60:
+        if day.weekday() < 5:
+            controller.freeze_prediction(
+                market="cn", decision_context="close_confirmed", cohort="cn_equity_core",
+                task="direction_1d", symbol="600519", trade_date=day,
+                frozen_at=datetime.combine(day, datetime.min.time(), timezone.utc),
+                market_snapshot_id=f"snapshot-{created}", market_snapshot_hash=sha256(str(created).encode()).hexdigest(),
+                prediction={"calibrated_probability": {"up": 0.5, "down": 0.3, "flat": 0.2}},
+                prediction_price=100, model_artifact_hashes={"model": "a" * 64},
+                coverage_ratio=0.99, event_coverage_status=EventCoverageStatus.CONFIRMED_NONE,
+                provider_chain=["akshare"], roster_hash="b" * 64,
+                model_candidate="constant-class", market_regime="range",
+            )
+            created += 1
+        day += timedelta(days=1)
+    summary = store.summarize(market="cn", decision_context="close_confirmed")
+    assert summary.valid_session_count == 60
+    assert summary.forward_report_20_status == "ready"
+    assert summary.primary_change_60_status == "eligible_for_review"
+    assert store.generate_forward_report(minimum_sessions=20).is_file()
+    assert store.generate_forward_report(minimum_sessions=60).is_file()
 
 
 def test_research_shadow_price_backfill_uses_effective_entry_price(tmp_path) -> None:
