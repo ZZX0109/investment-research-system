@@ -31,8 +31,10 @@ from investment_research.training.models import TrainingSample
 from investment_research.training.parquet_store import PITParquetStore
 from investment_research.training.research_evaluation import (
     research_scope_reports,
+    select_research_roster_candidates,
     write_research_reports,
 )
+from investment_research.pipeline.research_roster import build_research_roster
 from investment_research.service.object_store import LocalObjectStore
 
 
@@ -62,6 +64,7 @@ def main() -> int:
     market = _single_value(sources, "market")
     context = _single_value(sources, "decision_context")
     cohort = args.cohort or _single_value(sources, "cohort", default="cn_equity_core")
+    cohort_version = _single_value(sources, "cohort_version", default=f"legacy-{cohort}")
     if any(source.get("cohort", "cn_equity_core") != cohort for source in sources):
         raise SystemExit("all sample manifests must belong to the selected cohort")
     store = PITParquetStore(LocalObjectStore(args.object_store))
@@ -111,11 +114,13 @@ def main() -> int:
             result = _run(task, samples=samples, market=market, context=context,
                           dataset_hash=dataset_hash, ledger=ledger)
             result_payload = _jsonable(result)
+            primary_candidate, fallback_candidate, challenger_candidates = select_research_roster_candidates(task, result)
             evaluation_path = scope / "evaluation.json"
             evaluation_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             evaluation_hash = sha256(evaluation_path.read_bytes()).hexdigest()
             artifact_hashes = _freeze_research_artifacts(
                 task=task, result=result, samples=samples, scope=scope,
+                primary_candidate=primary_candidate, fallback_candidate=fallback_candidate,
             )
             snapshot_hash = next(iter(snapshot_refs))[1]
             assert snapshot_hash is not None
@@ -132,6 +137,7 @@ def main() -> int:
                 "market": market,
                 "decision_context": context,
                 "cohort": cohort,
+                "cohort_version": cohort_version,
                 "task": task,
                 "training_run_id": run_id,
                 "dataset_manifest_refs": [_portable_ref(path) for path in args.sample_manifest],
@@ -144,6 +150,8 @@ def main() -> int:
                 ],
                 "fold_hash": result_payload["fold_hash"],
                 "selected_candidate": result_payload["selected_candidate"],
+                "roster_primary_candidate": primary_candidate,
+                "roster_fallback_candidate": fallback_candidate,
                 "evaluation_ref": _portable_ref(evaluation_path),
                 "artifact_hashes": {"evaluation.json": evaluation_hash, **artifact_hashes},
                 "report_hashes": report_hashes,
@@ -166,8 +174,21 @@ def main() -> int:
                 },
                 "blocking_reasons": list(RESEARCH_TIER_REASONS),
             }
-            (scope / "task_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-            outcomes.append({"task": task, "status": "research_only", "manifest": str(scope / "task_manifest.json")})
+            manifest_path = scope / "task_manifest.json"
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            dependency_hash = sha256((PROJECT / "pyproject.toml").read_bytes()).hexdigest()
+            roster = build_research_roster(
+                task_manifest=manifest, primary_candidate=primary_candidate,
+                fallback_candidate=fallback_candidate, challenger_candidates=[],
+                cohort_version=cohort_version, dependency_hash=dependency_hash,
+            )
+            roster_path = scope / "research_model_roster.json"
+            roster_path.write_text(roster.model_dump_json(indent=2), encoding="utf-8")
+            outcomes.append({
+                "task": task, "status": "research_only",
+                "manifest": _portable_ref(manifest_path), "roster": _portable_ref(roster_path),
+                "unevaluated_challengers": challenger_candidates,
+            })
         except Exception as exc:
             outcomes.append({"task": task, "status": "blocked", "reason": f"{type(exc).__name__}:{exc}"})
     summary = {
@@ -258,7 +279,10 @@ def _jsonable(value):
     return value
 
 
-def _freeze_research_artifacts(*, task: str, result, samples: list[TrainingSample], scope: Path) -> dict[str, str]:
+def _freeze_research_artifacts(
+    *, task: str, result, samples: list[TrainingSample], scope: Path,
+    primary_candidate: str, fallback_candidate: str,
+) -> dict[str, str]:
     samples = _eligible_samples(task, samples)
     feature_order = sorted({name for sample in samples for name in sample.features})
     if not feature_order:
@@ -269,9 +293,16 @@ def _freeze_research_artifacts(*, task: str, result, samples: list[TrainingSampl
         "status": "research_only", "deployment_ready": False,
         "task": task, "selected_candidate": result.selected_candidate,
         "feature_order": feature_order,
+        "feature_bounds": {
+            name: [
+                min(float(sample.features.get(name, 0.0)) for sample in samples),
+                max(float(sample.features.get(name, 0.0)) for sample in samples),
+            ]
+            for name in feature_order
+        },
     }
     matrix = [[float(sample.features.get(name, 0.0)) for name in feature_order] for sample in samples]
-    selected = result.selected_candidate
+    selected = primary_candidate
     if task == "drawdown_20d":
         from investment_research.training.calibration import compare_calibrators
         from investment_research.training.formal_risk_runner import _estimator, _label
@@ -289,12 +320,9 @@ def _freeze_research_artifacts(*, task: str, result, samples: list[TrainingSampl
             estimator = _estimator(selected)
             estimator.fit(matrix, labels)
             package.update(kind="risk_classifier", estimator=estimator, calibrator=calibrator)
-        alternatives = sorted(
-            (item for item in result.candidates if item.name not in {selected, "time-oof-weighted-ensemble"}),
-            key=lambda item: item.brier,
-        )
+        alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
-            alternative = alternatives[0].name
+            alternative = fallback_candidate
             if alternative == "historical-distribution":
                 package["comparator"] = {"kind": "constant_risk", "probability": sum(labels) / len(labels), "name": alternative}
             else:
@@ -324,12 +352,9 @@ def _freeze_research_artifacts(*, task: str, result, samples: list[TrainingSampl
             estimator = _estimator(selected)
             estimator.fit(matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
             package.update(kind="direction_classifier", estimator=estimator, calibrators=calibrators, horizon=horizon)
-        alternatives = sorted(
-            (item for item in result.candidates if item.name not in {selected, "time-oof-weighted-ensemble"}),
-            key=lambda item: item.log_loss,
-        )
+        alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
-            alternative = alternatives[0].name
+            alternative = fallback_candidate
             component = {
                 "kind": alternative, "name": alternative,
                 "class_probabilities": ({label: 1 / len(CLASSES) for label in CLASSES} if alternative == "random" else frequencies),
@@ -352,6 +377,21 @@ def _freeze_research_artifacts(*, task: str, result, samples: list[TrainingSampl
                 estimator.fit(matrix, targets)
                 estimators.append(estimator)
             package.update(kind="return_quantile", estimators=estimators, quantiles=list(QUANTILES))
+        fallback_estimators = []
+        if fallback_candidate == "historical-distribution":
+            package["comparator"] = {
+                "kind": "constant_quantiles", "name": fallback_candidate,
+                "quantiles": [_quantile(targets, value) for value in QUANTILES],
+            }
+        else:
+            for quantile in QUANTILES:
+                estimator = _estimator(fallback_candidate, quantile)
+                estimator.fit(matrix, targets)
+                fallback_estimators.append(estimator)
+            package["comparator"] = {
+                "kind": "return_quantile", "name": fallback_candidate,
+                "estimators": fallback_estimators, "quantiles": list(QUANTILES),
+            }
     model_path = scope / "research_model.joblib"
     feature_path = scope / "feature_order.json"
     joblib.dump(package, model_path)

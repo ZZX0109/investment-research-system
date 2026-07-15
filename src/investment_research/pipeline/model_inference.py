@@ -161,7 +161,13 @@ class SnapshotFeatureBuilder:
                 ordered_values.append(float(values_by_name[name]))
             else:
                 ordered_values.append(self._default_missing(name, missing))
-        unique_missing = list(dict.fromkeys(missing))
+        # A task manifest is allowed to consume a strict subset of the shared
+        # V2 contract.  Missing fields outside that frozen feature order must
+        # not lower this task's coverage or force an unrelated abstention.
+        requested_features = set(feature_order)
+        unique_missing = list(dict.fromkeys(
+            name for name in missing if name in requested_features
+        ))
         coverage = 1.0 - (len(unique_missing) / max(1, len(feature_order)))
         return SnapshotFeatureVector(
             feature_order=feature_order,

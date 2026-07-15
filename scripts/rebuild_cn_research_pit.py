@@ -224,7 +224,8 @@ def main() -> int:
             for member in cohort.members:
                 try:
                     manifests = _build_samples(
-                        symbol=member.symbol, cohort=cohort.cohort, context=context,
+                        symbol=member.symbol, cohort=cohort.cohort,
+                        cohort_version=cohort.cohort_version, context=context,
                         bars=bars_by_symbol[member.symbol], standard=standard_by_symbol[member.symbol],
                         snapshot=snapshot, parquet=parquet, output_root=args.output_root,
                     )
@@ -297,7 +298,7 @@ def _freeze_snapshot(
 
 
 def _build_samples(
-    *, symbol: str, cohort: str, context: str, bars: list[PreparedPriceBar],
+    *, symbol: str, cohort: str, cohort_version: str, context: str, bars: list[PreparedPriceBar],
     standard: dict, snapshot: dict, parquet: PITParquetStore, output_root: Path,
 ) -> list[Path]:
     # A public backfill cannot prove historical availability.  This explicit
@@ -343,6 +344,7 @@ def _build_samples(
             "formal_pit_eligible": False, "deployment_ready": False,
             "blocking_reasons": list(RESEARCH_TIER_REASONS),
             "market": "cn", "symbol": symbol, "cohort": cohort,
+            "cohort_version": cohort_version,
             "decision_context": context, "trade_year": year,
             "feature_version": "investment-risk-features-v2",
             "market_snapshot_id": snapshot["market_snapshot_id"],

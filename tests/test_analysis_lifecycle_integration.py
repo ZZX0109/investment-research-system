@@ -111,7 +111,11 @@ def test_analysis_lifecycle_flows_from_asset_inputs_into_report(tmp_path) -> Non
                 "evidence_type": "research_note",
                 "title": "Legacy demand check",
                 "summary": "Operator note still exists, but it is stale and should force a refresh recommendation.",
-                "collected_at": (now - timedelta(days=8)).isoformat(),
+                "collected_at": (now - timedelta(days=9)).isoformat(),
+                # PIT availability is explicit: this fixture represents an
+                # already-published stale note, not a note entered today with
+                # a backdated event date.
+                "published_at": (now - timedelta(days=9)).isoformat(),
                 "data_mode": DataMode.REAL.value,
                 "source_type": DataSourceType.MANUAL_OVERRIDE.value,
                 "source_name": "research-desk",

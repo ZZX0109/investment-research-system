@@ -151,6 +151,74 @@ def research_scope_reports(
     return reports
 
 
+def select_research_roster_candidates(task: str, result: Any) -> tuple[str, str, list[str]]:
+    """Keep a simple baseline unless the task's research gate is evidenced."""
+    candidates = {item.name: item for item in result.candidates}
+    simple_names = {
+        "drawdown_20d": ["historical-distribution", "linear-baseline"],
+        "direction_1d": ["constant-class", "index-direction", "momentum", "random"],
+        "direction_5d": ["constant-class", "index-direction", "momentum", "random"],
+        "return_20d": ["historical-distribution", "linear-quantile"],
+    }[task]
+    present_baselines = [candidates[name] for name in simple_names if name in candidates]
+    if len(present_baselines) < 2:
+        raise ValueError("research roster requires two independent simple baselines")
+    if task.startswith("direction_"):
+        best_baseline = min(present_baselines, key=lambda item: item.log_loss)
+        selected = candidates[result.selected_candidate]
+        regime_values = [item.get("macro_f1", 0.0) for item in selected.regime_metrics.values()]
+        passed = (
+            selected.macro_f1 >= 0.45 and selected.balanced_accuracy >= 0.45
+            and selected.log_loss <= 1.05 and selected.ece <= 0.15
+            and selected.macro_f1 >= best_baseline.macro_f1
+            and regime_values and min(regime_values) >= 0.35
+            and _direction_macro_f1(result.holdout_probabilities, result.holdout_labels) >= 0.40
+            and _direction_macro_f1(result.stress_probabilities, result.stress_labels) >= 0.40
+        )
+    elif task == "return_20d":
+        best_baseline = min(present_baselines, key=lambda item: item.mean_pinball_loss)
+        selected = candidates[result.selected_candidate]
+        passed = (
+            selected.mean_pinball_loss < best_baseline.mean_pinball_loss
+            and selected.p50_mae <= best_baseline.p50_mae
+            and selected.direction_accuracy >= best_baseline.direction_accuracy
+            and 0.75 <= selected.interval_coverage <= 0.85
+            and selected.spearman_ic > 0
+            and all(
+                value["mean_pinball_loss"]
+                <= best_baseline.regime_metrics.get(regime, value)["mean_pinball_loss"] * 1.05
+                for regime, value in selected.regime_metrics.items()
+            )
+        )
+    else:
+        best_baseline = min(present_baselines, key=lambda item: item.brier)
+        selected = candidates[result.selected_candidate]
+        positive_regimes = sum(
+            float(values.get("drawdown_lift") or 0.0) > 0
+            for values in selected.regime_metrics.values()
+        )
+        passed = (
+            (selected.auroc or 0.0) >= 0.68 and selected.alert_precision >= 0.50
+            and selected.ece <= 0.15 and selected.brier <= best_baseline.brier + 0.01
+            and selected.drawdown_lift > 0 and positive_regimes >= 3
+        )
+    primary = selected if passed else best_baseline
+    fallback = next(item for item in present_baselines if item.name != primary.name)
+    challengers = [
+        item.name for item in result.candidates
+        if item.name not in {primary.name, fallback.name, "time-oof-weighted-ensemble"}
+    ]
+    return primary.name, fallback.name, challengers
+
+
+def _direction_macro_f1(probabilities: list[dict[str, float]], labels: list[str]) -> float:
+    if not labels:
+        return 0.0
+    from sklearn.metrics import f1_score
+    predicted = [max(row, key=row.get) for row in probabilities]
+    return float(f1_score(labels, predicted, labels=["up", "down", "flat"], average="macro", zero_division=0))
+
+
 def write_research_reports(root: Path, reports: dict[str, dict[str, Any]]) -> dict[str, str]:
     root.mkdir(parents=True, exist_ok=True)
     hashes: dict[str, str] = {}

@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from investment_research.domain.forecasts import (
     DataStatus,
+    DirectionDistribution,
     DrawdownDistribution,
     ModelTaskStatus,
     ResearchForecastBundle,
+    ReturnDistribution,
 )
+from investment_research.domain.data_tier import DataTier, RESEARCH_VISIBILITY_ASSUMPTION
+from investment_research.domain.pit import EventCoverageStatus
 from investment_research.pipeline.models import AnalysisBundle
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 
@@ -28,13 +32,21 @@ class ResearchForecastService:
         reasons = list(dict.fromkeys([
             *bundle.snapshot.fallback_reasons,
             *bundle.snapshot.stale_reasons,
-            *([] if not synthetic else ["synthetic_data_forbidden_in_formal_forecast"]),
+            *([] if not synthetic else ["synthetic_data_forbidden_in_research_output"]),
         ]))
         drift_verdict = None if prediction is None else self.uow.agent_runtime.latest_drift_verdict(prediction.model_name)
         if drift_verdict == "hold":
             reasons.append("runtime_drift_gate_requested_abstention")
-        risk_approved = bool(prediction and prediction.deployment_approved and not synthetic and feature_coverage >= 0.75 and drift_verdict != "hold")
-        risk_status = "approved" if risk_approved else "abstain"
+        # The legacy analysis path has no qualified formal-PIT catalog proof.
+        # It can remain useful for research comparison, but must never surface
+        # as an approved forecast simply because an old prediction carried an
+        # approval bit.
+        risk_available_for_research = bool(prediction and not synthetic and feature_coverage >= 0.85 and drift_verdict != "hold")
+        if prediction is not None and feature_coverage < 0.85:
+            reasons.append("research_feature_coverage_below_85pct")
+        elif feature_coverage < 0.95:
+            reasons.append("research_feature_coverage_degraded")
+        risk_status = "research_only" if risk_available_for_research else "abstain"
         tasks = [
             ModelTaskStatus(task="direction_1d", status="unavailable", gating_reasons=["No independently approved 1-day direction model is frozen for this run"]),
             ModelTaskStatus(task="direction_5d", status="unavailable", gating_reasons=["No independently approved 5-day direction model is frozen for this run"]),
@@ -45,7 +57,7 @@ class ResearchForecastService:
                 model_name=None if prediction is None else prediction.model_name,
                 model_version=None if prediction is None else prediction.model_version,
                 manifest_version=None if prediction is None else prediction.manifest_version,
-                gating_reasons=[] if risk_approved else ["Approved drawdown model unavailable or runtime gate failed"],
+                gating_reasons=[] if risk_available_for_research else ["Research drawdown model unavailable or runtime gate failed"],
             ),
         ]
         frozen = ResearchForecastBundle(
@@ -57,10 +69,13 @@ class ResearchForecastService:
             decision_time=bundle.snapshot.decision_time,
             feature_built_at=bundle.snapshot.feature_built_at,
             as_of=as_of,
-            drawdown_20d=None if not risk_approved or prediction is None or prediction.risk_probability is None else DrawdownDistribution(threshold_probability=prediction.risk_probability),
+            drawdown_20d=None if not risk_available_for_research or prediction is None or prediction.risk_probability is None else DrawdownDistribution(threshold_probability=prediction.risk_probability),
             evidence_coverage=bundle.snapshot.real_share,
             feature_coverage=feature_coverage,
             data_status=DataStatus(
+                data_tier=DataTier.RESEARCH_PIT,
+                research_only=True,
+                historical_visibility_assumption=RESEARCH_VISIBILITY_ASSUMPTION,
                 as_of=as_of,
                 latest_source_time=bundle.snapshot.latest_price_timestamp,
                 fetched_at=bundle.snapshot.captured_at,
@@ -79,13 +94,21 @@ class ResearchForecastService:
                 coverage_ratio=bundle.snapshot.real_share,
                 quality_status=quality,
                 cache_state=cache_state,
+                event_coverage_status=_event_coverage(bundle.snapshot.event_coverage_status),
                 degraded_symbols=[bundle.asset.ticker] if quality != "passed" else [],
                 provider_chain=[name for name in [bundle.snapshot.price_provider_name, bundle.snapshot.evidence_provider_name] if name != "unknown"],
                 reasons=reasons,
             ),
             tasks=tasks,
             gating_reasons=[*reasons, *[reason for task in tasks for reason in task.gating_reasons]],
-            abstained=not risk_approved,
+            influence_facts=[] if prediction is None else [prediction.rationale],
+            risk_level=(
+                "unavailable" if prediction is None or prediction.risk_probability is None
+                else "high" if prediction.risk_probability >= 0.65
+                else "medium" if prediction.risk_probability >= 0.45
+                else "low"
+            ),
+            abstained=not risk_available_for_research,
         )
         return self.uow.research_forecasts.add(frozen)
 
@@ -94,3 +117,84 @@ class ResearchForecastService:
         if item is None:
             raise ValueError("Research forecast bundle not found")
         return item
+
+    def freeze_formal_from_analysis(self, bundle: AnalysisBundle, *, market: str, inference) -> ResearchForecastBundle:
+        """Freeze four independently routed formal task results for one run.
+
+        This is separate from the legacy compatibility path above. Callers that
+        select formal research must provide the formal inference boundary; no
+        root-model or synthetic fallback is consulted here.
+        """
+        existing = self.uow.research_forecasts.for_run(str(bundle.run.id))
+        if existing is not None:
+            return existing
+        snapshot = bundle.snapshot
+        as_of = snapshot.as_of or snapshot.captured_at
+        synthetic = snapshot.synthetic_share > 0 or "synthetic" in snapshot.source_types
+        tasks: list[ModelTaskStatus] = []
+        values = {}
+        reasons: list[str] = []
+        for task in ("drawdown_20d", "direction_1d", "direction_5d", "return_20d"):
+            if synthetic:
+                tasks.append(ModelTaskStatus(task=task, status="abstain", gating_reasons=["synthetic_data_forbidden_in_formal_forecast"]))
+                continue
+            try:
+                prediction = inference.predict(
+                    snapshot=snapshot, market=market,
+                    decision_context=snapshot.decision_context, task=task,
+                )
+                values[task] = prediction
+                tasks.append(ModelTaskStatus(
+                    task=task, status=prediction.model_status,
+                    model_name=prediction.model_name, model_version=prediction.model_version,
+                    fallback_from=prediction.fallback_from,
+                ))
+            except Exception as exc:
+                reason = f"formal_{task}_unavailable:{type(exc).__name__}"
+                reasons.append(reason)
+                tasks.append(ModelTaskStatus(task=task, status="abstain", gating_reasons=[reason]))
+        risk = values.get("drawdown_20d")
+        direction_1d = values.get("direction_1d")
+        direction_5d = values.get("direction_5d")
+        returns = values.get("return_20d")
+        coverage = min((item.feature_coverage for item in values.values()), default=0.0)
+        abstained = any(item.status == "abstain" for item in tasks)
+        quality = "failed" if synthetic else "degraded" if abstained else "passed"
+        return self.uow.research_forecasts.add(ResearchForecastBundle(
+            analysis_run_id=bundle.run.id, asset_id=bundle.asset.id, market=market,
+            data_tier=DataTier.FORMAL_PIT,
+            market_snapshot_id=snapshot.market_snapshot_id, market_snapshot_hash=snapshot.market_snapshot_hash,
+            decision_context=snapshot.decision_context, decision_time=snapshot.decision_time,
+            feature_built_at=snapshot.feature_built_at, as_of=as_of,
+            direction_1d=None if direction_1d is None else DirectionDistribution(
+                horizon_days=1, **{key: direction_1d.values[key] for key in ("up", "down", "flat")}),
+            direction_5d=None if direction_5d is None else DirectionDistribution(
+                horizon_days=5, **{key: direction_5d.values[key] for key in ("up", "down", "flat")}),
+            return_20d=None if returns is None else ReturnDistribution(
+                p10=returns.values["p10"], p50=returns.values["p50"], p90=returns.values["p90"]),
+            drawdown_20d=None if risk is None else DrawdownDistribution(
+                threshold_probability=risk.values["threshold_probability"]),
+            evidence_coverage=snapshot.real_share, feature_coverage=coverage,
+            data_status=DataStatus(
+                data_tier=DataTier.FORMAL_PIT,
+                research_only=False,
+                historical_visibility_assumption=None,
+                as_of=as_of, latest_source_time=snapshot.latest_price_timestamp,
+                fetched_at=snapshot.captured_at, received_at=snapshot.captured_at,
+                coverage_ratio=snapshot.real_share, quality_status=quality,
+                cache_state="unavailable" if abstained else "fresh",
+                event_coverage_status=_event_coverage(snapshot.event_coverage_status),
+                degraded_symbols=[bundle.asset.ticker] if quality != "passed" else [],
+                provider_chain=[name for name in [snapshot.price_provider_name, snapshot.evidence_provider_name] if name != "unknown"],
+                reasons=reasons,
+            ),
+            tasks=tasks, gating_reasons=reasons, abstained=abstained,
+        ))
+
+
+def _event_coverage(value: str) -> EventCoverageStatus:
+    aliases = {"complete": "events_present", "none": "confirmed_none", "unknown": "unsupported"}
+    try:
+        return EventCoverageStatus(aliases.get(value, value))
+    except ValueError:
+        return EventCoverageStatus.UNSUPPORTED
