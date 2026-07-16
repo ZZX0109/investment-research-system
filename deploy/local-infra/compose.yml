@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: workbuddy
-      POSTGRES_USER: workbuddy
-      POSTGRES_PASSWORD: ${WORKBUDDY_POSTGRES_PASSWORD:?set WORKBUDDY_POSTGRES_PASSWORD}
+      POSTGRES_DB: investment_research
+      POSTGRES_USER: investment_research
+      POSTGRES_PASSWORD: ${INVESTMENT_RESEARCH_POSTGRES_PASSWORD:?set INVESTMENT_RESEARCH_POSTGRES_PASSWORD}
     ports:
       - "127.0.0.1:54329:5432"
     volumes:
-      - workbuddy-postgres:/var/lib/postgresql/data
+      - investment-research-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U workbuddy -d workbuddy"]
+      test: ["CMD-SHELL", "pg_isready -U investment_research -d investment_research"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -19,13 +19,13 @@ services:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: ${WORKBUDDY_MINIO_ACCESS_KEY:?set WORKBUDDY_MINIO_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${WORKBUDDY_MINIO_SECRET_KEY:?set WORKBUDDY_MINIO_SECRET_KEY}
+      MINIO_ROOT_USER: ${INVESTMENT_RESEARCH_MINIO_ACCESS_KEY:?set INVESTMENT_RESEARCH_MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${INVESTMENT_RESEARCH_MINIO_SECRET_KEY:?set INVESTMENT_RESEARCH_MINIO_SECRET_KEY}
     ports:
       - "127.0.0.1:59000:9000"
       - "127.0.0.1:59001:9001"
     volumes:
-      - workbuddy-minio:/data
+      - investment-research-minio:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 3s
@@ -33,5 +33,5 @@ services:
       retries: 20
 
 volumes:
-  workbuddy-postgres:
-  workbuddy-minio:
+  investment-research-postgres:
+  investment-research-minio:

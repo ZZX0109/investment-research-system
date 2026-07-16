@@ -208,7 +208,7 @@ class DocumentService:
         allowed = tuple(
             item.strip().lower()
             for item in os.getenv(
-                "WORKBUDDY_DOCUMENT_SOURCE_ALLOWLIST",
+                "RESEARCH_DOCUMENT_SOURCE_ALLOWLIST",
                 ",".join(DEFAULT_SOURCE_ALLOWLIST),
             ).split(",")
             if item.strip()

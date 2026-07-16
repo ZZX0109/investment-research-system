@@ -49,7 +49,7 @@ def main() -> int:
     existing = {item["Name"] for item in client.list_buckets().get("Buckets", [])}
     if bucket not in existing:
         client.create_bucket(Bucket=bucket)
-    payload = f"workbuddy-infra-validation:{uuid4()}".encode()
+    payload = f"investment-research-infra-validation:{uuid4()}".encode()
     key = f"validation/{hashlib.sha256(payload).hexdigest()}.txt"
     client.put_object(Bucket=bucket, Key=key, Body=payload, ContentType="text/plain")
     restored = client.get_object(Bucket=bucket, Key=key)["Body"].read()

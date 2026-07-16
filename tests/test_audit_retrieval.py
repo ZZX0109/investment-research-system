@@ -47,7 +47,7 @@ def test_authority_retrieval_enforces_allowlist_domain_and_total_budgets(
 
 
 def test_authority_retrieval_is_offline_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("WORKBUDDY_AUDIT_NETWORK_ENABLED", raising=False)
+    monkeypatch.delenv("RESEARCH_AUDIT_NETWORK_ENABLED", raising=False)
 
     results, rounds = BoundedAuthorityRetriever().retrieve(["https://www.sec.gov/a"])
 

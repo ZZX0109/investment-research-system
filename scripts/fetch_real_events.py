@@ -351,7 +351,7 @@ def _load_hkex_news_payload() -> dict:
         return _HKEX_NEWS_CACHE
     response = requests.get(
         HKEX_NEWS_URL,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; WorkBuddyResearch/1.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; AshareResearchPlatform/1.0)"},
         timeout=SEC_TIMEOUT,
     )
     response.raise_for_status()

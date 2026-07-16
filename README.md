@@ -1,6 +1,6 @@
-# WorkBuddy Research System
+# A 股量化研究平台
 
-WorkBuddy currently ships as a **zero-budget, research-grade, reproducible and evidence-driven A-share quantitative research platform**. The active path uses public AKShare data with Baostock fallback/cross-check, A-share daily bars and a small fixed ETF benchmark cohort. Every public-data artifact is permanently `research_pit / research_only / deployment_ready=false`. It is suitable for experiments, backtests and close/pre-open research updates; it is not real-time market data, an executable trading service or investment advice.
+本项目是一个**零预算、研究级、可复现、证据驱动的 A 股量化研究平台**。当前主线使用公开 AKShare 数据与 Baostock 回退/交叉校验、A 股日线和固定 ETF 基准池。所有公开数据产物永久标记为 `research_pit / research_only / deployment_ready=false`，可用于实验、回测及收盘后/盘前研究更新；它不是实时行情、可执行交易服务或投资建议。
 
 The four-market licensed PIT architecture remains available as a future extension. It fails closed when authorization, SLA and historical visibility evidence are missing, so free public backfills can never be presented as formal PIT data.
 
@@ -20,7 +20,7 @@ Install Python and Node dependencies, then start the API, scheduler, and web wor
 ```bash
 python3 -m pip install -e ".[dev,documents]"
 npm install
-npm run dev:workbuddy
+npm run dev:research-platform
 ```
 
 Default URLs:

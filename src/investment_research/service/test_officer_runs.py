@@ -45,7 +45,7 @@ class MissionRunService:
         idempotency_key = str(uuid.uuid4())
         api_payload = {
             "organizationId": os.getenv("AI_TEST_OFFICER_ORGANIZATION", "local"),
-            "actor": "workbuddy-api",
+            "actor": "research-platform-api",
             "idempotencyKey": idempotency_key,
             "input": {
                 "appUrl": payload.baseUrl,
@@ -75,8 +75,8 @@ class MissionRunService:
         try:
             run = call("/v1/runs", api_payload, "POST")["run"]
             run_id = str(run["id"])
-            run = call(f"/v1/runs/{run_id}/plan-approval", {"expectedVersion": run["version"], "actor": "workbuddy-api", "idempotencyKey": f"{idempotency_key}:plan"}, "POST")["run"]
-            run = call(f"/v1/runs/{run_id}/permissions", {"expectedVersion": run["version"], "actor": "workbuddy-api", "idempotencyKey": f"{idempotency_key}:permission"}, "POST")["run"]
+            run = call(f"/v1/runs/{run_id}/plan-approval", {"expectedVersion": run["version"], "actor": "research-platform-api", "idempotencyKey": f"{idempotency_key}:plan"}, "POST")["run"]
+            run = call(f"/v1/runs/{run_id}/permissions", {"expectedVersion": run["version"], "actor": "research-platform-api", "idempotencyKey": f"{idempotency_key}:permission"}, "POST")["run"]
             deadline = time.monotonic() + self.timeout_seconds
             terminal = {"completed", "failed", "blocked", "cancelled", "awaiting-human-review"}
             while str(run["state"]) not in terminal:

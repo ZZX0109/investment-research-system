@@ -71,22 +71,22 @@ class HttpVisionProvider:
 
 
 def build_vision_provider() -> VisionProvider:
-    mode = os.getenv("WORKBUDDY_VISION_PROVIDER", "disabled").strip().lower()
+    mode = os.getenv("RESEARCH_VISION_PROVIDER", "disabled").strip().lower()
     if mode == "ollama":
         return HttpVisionProvider(
             name="ollama",
             endpoint=os.getenv(
-                "WORKBUDDY_OLLAMA_VISION_ENDPOINT",
+                "RESEARCH_OLLAMA_VISION_ENDPOINT",
                 "http://127.0.0.1:11434/api/generate",
             ),
-            model=os.getenv("WORKBUDDY_OLLAMA_VISION_MODEL", "llava"),
+            model=os.getenv("RESEARCH_OLLAMA_VISION_MODEL", "llava"),
         )
     if mode == "generic_http":
-        endpoint = os.getenv("WORKBUDDY_VISION_ENDPOINT")
+        endpoint = os.getenv("RESEARCH_VISION_ENDPOINT")
         if endpoint:
             return HttpVisionProvider(
                 name="generic_http",
                 endpoint=endpoint,
-                model=os.getenv("WORKBUDDY_VISION_MODEL"),
+                model=os.getenv("RESEARCH_VISION_MODEL"),
             )
     return DisabledVisionProvider()

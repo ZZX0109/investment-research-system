@@ -22,16 +22,9 @@ sys.path.insert(0, str(PROJECT / "src"))
 from investment_research.training.catalog import TARGET_MARKET_TYPE_COUNTS, UNIVERSE_PRESETS, iter_market_presets
 
 
-class PackageRenameUnpickler(pickle.Unpickler):
-    def find_class(self, module: str, name: str):
-        if module.startswith("investment_workbuddy"):
-            module = module.replace("investment_workbuddy", "investment_research", 1)
-        return super().find_class(module, name)
-
-
 def load_pickle(path: Path):
     with open(path, "rb") as f:
-        return PackageRenameUnpickler(f).load()
+        return pickle.load(f)
 
 
 def load_json(path: Path) -> dict:

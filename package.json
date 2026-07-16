@@ -1,5 +1,5 @@
 {
-  "name": "workbuddy-research-system",
+  "name": "a-share-research-platform",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "build:workbench": "vite build --config workbench-ui/vite.config.ts",
     "dev:app-under-test": "node app-under-test/server.mjs",
     "dev:workbench": "vite --config workbench-ui/vite.config.ts",
-    "dev:workbuddy": "python3 scripts/start_workbuddy.py",
+    "dev:research-platform": "python3 scripts/start_research_platform.py",
     "run:cli": "npm --prefix ai-test-officer run commit-check",
     "ci:test-officer": "npm --prefix ai-test-officer run commit-check:strict",
     "commit-check": "npm --prefix ai-test-officer run commit-check",

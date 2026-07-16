@@ -26,7 +26,7 @@ class AuthSettings:
             raise RuntimeError(
                 "INVESTMENT_RESEARCH_SECRET_KEY is required unless INVESTMENT_RESEARCH_ENV is development, demo, or test"
             )
-        self.secret_key = configured_secret or "workbuddy-development-secret-key-change-me"
+        self.secret_key = configured_secret or "investment-research-development-secret-key-change-me"
         self.previous_secret_keys = _parse_previous_secret_keys()
         self.access_ttl_minutes = int(os.getenv("INVESTMENT_RESEARCH_ACCESS_TTL_MINUTES", "15"))
         self.refresh_ttl_days = int(os.getenv("INVESTMENT_RESEARCH_REFRESH_TTL_DAYS", "14"))

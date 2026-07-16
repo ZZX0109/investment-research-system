@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Start the WorkBuddy API, scheduler, and Vite workbench."
+        description="Start the A-share research API, scheduler, and Vite workbench."
     )
     parser.add_argument("--api-port", type=int, default=8000)
     parser.add_argument("--web-port", type=int, default=5173)
@@ -79,8 +79,8 @@ def main() -> int:
             env=env,
         ),
     ]
-    print(f"WorkBuddy API: http://127.0.0.1:{args.api_port}", flush=True)
-    print(f"WorkBuddy web: http://127.0.0.1:{args.web_port}", flush=True)
+    print(f"Research API: http://127.0.0.1:{args.api_port}", flush=True)
+    print(f"Research web: http://127.0.0.1:{args.web_port}", flush=True)
 
     def stop(*_args) -> None:
         for process in processes:

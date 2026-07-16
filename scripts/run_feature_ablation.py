@@ -18,13 +18,6 @@ from investment_research.training.trust_framework import (  # noqa: E402
 )
 
 
-class RenamingUnpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        if module.startswith("investment_workbuddy"):
-            module = module.replace("investment_workbuddy", "investment_research", 1)
-        return super().find_class(module, name)
-
-
 def _finite(value: object) -> bool:
     try:
         return math.isfinite(float(value)) and abs(float(value)) <= 1_000
@@ -106,7 +99,7 @@ def _run(samples: list, features: list[str], model_name: str) -> dict:
 def main() -> int:
     results = json.loads((ROOT / "output" / "results.json").read_text(encoding="utf-8"))
     with (ROOT / "temp" / "all_samples.pkl").open("rb") as handle:
-        samples = RenamingUnpickler(handle).load().get("samples", [])
+        samples = pickle.load(handle).get("samples", [])
     samples = sorted([s for s in samples if getattr(s.labels, PRIMARY_TASK) is not None], key=lambda s: (s.as_of_date, s.symbol))
     groups = {"no_event": PRICE_FEATURES, "with_event": PRICE_FEATURES + EVENT_FEATURES, "with_event_reference": PRICE_FEATURES + EVENT_FEATURES + REFERENCE_FEATURES}
     current_hash = sample_snapshot_hash(samples)

@@ -43,13 +43,13 @@ class BoundedAuthorityRetriever:
         self.enabled = (
             enabled
             if enabled is not None
-            else os.getenv("WORKBUDDY_AUDIT_NETWORK_ENABLED", "false").lower() == "true"
+            else os.getenv("RESEARCH_AUDIT_NETWORK_ENABLED", "false").lower() == "true"
         )
         self.max_evidence = max_evidence
         self.max_rounds = max_rounds
         self.per_domain = per_domain
         configured = os.getenv(
-            "WORKBUDDY_AUDIT_SOURCE_ALLOWLIST", ",".join(DEFAULT_AUDIT_ALLOWLIST)
+            "RESEARCH_AUDIT_SOURCE_ALLOWLIST", ",".join(DEFAULT_AUDIT_ALLOWLIST)
         )
         self.allowlist = tuple(
             item.strip().lower() for item in configured.split(",") if item.strip()
@@ -86,7 +86,7 @@ class BoundedAuthorityRetriever:
                     request = Request(
                         url,
                         headers={
-                            "User-Agent": "WorkBuddyResearch/1.0",
+                            "User-Agent": "AshareResearchPlatform/1.0",
                             "Range": "bytes=0-65535",
                         },
                     )

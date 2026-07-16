@@ -140,18 +140,9 @@ warnings.filterwarnings(
 )
 
 
-class PackageRenameUnpickler(pickle.Unpickler):
-    """Read training artifacts pickled before the package rename."""
-
-    def find_class(self, module: str, name: str):
-        if module.startswith("investment_workbuddy"):
-            module = module.replace("investment_workbuddy", "investment_research", 1)
-        return super().find_class(module, name)
-
-
 def load_pickle(path: Path):
     with open(path, "rb") as f:
-        return PackageRenameUnpickler(f).load()
+        return pickle.load(f)
 
 
 def dump_pickle(path: Path, data) -> None:

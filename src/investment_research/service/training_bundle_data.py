@@ -61,7 +61,7 @@ class LivePublicPriceDataStore:
                     PriceSeries(
                         id=uuid5(
                             NAMESPACE_URL,
-                            f"workbuddy:live-series:{asset.id}:{role}:{symbol}:{points[-1].timestamp.isoformat()}",
+                            f"investment-research:live-series:{asset.id}:{role}:{symbol}:{points[-1].timestamp.isoformat()}",
                         ),
                         asset_id=asset.id,
                         interval="1d",
@@ -97,7 +97,7 @@ class LivePublicPriceDataStore:
         return PricePoint(
             id=uuid5(
                 NAMESPACE_URL,
-                f"workbuddy:live-price:{asset_id}:{symbol}:{bar.trade_date.isoformat()}",
+                f"investment-research:live-price:{asset_id}:{symbol}:{bar.trade_date.isoformat()}",
             ),
             asset_id=asset_id,
             timestamp=bar.published_at,
@@ -153,7 +153,7 @@ class TrainingBundleDataStore:
                 PriceSeries(
                     id=uuid5(
                         NAMESPACE_URL,
-                        f"workbuddy:series:{asset.id}:{role}:{symbol}:{observed_at.isoformat()}",
+                        f"investment-research:series:{asset.id}:{role}:{symbol}:{observed_at.isoformat()}",
                     ),
                     asset_id=asset.id,
                     interval="1d",
@@ -230,7 +230,7 @@ class TrainingBundleDataStore:
         return PricePoint(
             id=uuid5(
                 NAMESPACE_URL,
-                f"workbuddy:price:{asset_id}:{symbol}:{bar.trade_date.isoformat()}",
+                f"investment-research:price:{asset_id}:{symbol}:{bar.trade_date.isoformat()}",
             ),
             asset_id=asset_id,
             timestamp=bar.published_at,
@@ -260,7 +260,7 @@ class TrainingBundleDataStore:
         )
         return Evidence(
             id=uuid5(
-                NAMESPACE_URL, f"workbuddy:evidence:{asset_id}:{event_type}:{identity}"
+                NAMESPACE_URL, f"investment-research:evidence:{asset_id}:{event_type}:{identity}"
             ),
             asset_id=asset_id,
             evidence_type=evidence_type,
