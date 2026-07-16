@@ -150,6 +150,16 @@ export function useDeploymentStatusQuery() {
   });
 }
 
+export function useResearchAcceptanceQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-acceptance", client.mode],
+    queryFn: () => client.getResearchAcceptance(),
+    enabled: client.mode === "research" || client.mode === "real",
+    retry: false
+  });
+}
+
 export function useMarketObservationQuery(assetId: string | null) {
   const client = useWorkbenchClient();
   return useQuery({ queryKey: ["market-observation", client.mode, assetId], queryFn: () => client.getMarketObservation(assetId ?? ""), enabled: ["research", "real"].includes(client.mode) && Boolean(assetId), refetchInterval: 300000, retry: false });

@@ -228,6 +228,7 @@ def main() -> int:
         run_report_path = args.report.with_name(f"{report['run_id']}.json")
         report["run_report_ref"] = _portable_ref(run_report_path)
         acceptance_path = args.report.with_name(f"{args.report.stem}-backend-acceptance.json")
+        fixed_acceptance_path = PROJECT / "artifacts" / "cn_research_demo" / "latest-backend-acceptance.json"
         report["backend_acceptance_ref"] = _portable_ref(acceptance_path)
         run_acceptance_path = run_report_path.with_name(f"{run_report_path.stem}-backend-acceptance.json")
         report["run_backend_acceptance_ref"] = _portable_ref(run_acceptance_path)
@@ -256,6 +257,9 @@ def main() -> int:
             args.report.write_text(serialized, encoding="utf-8")
             if run_report_path != args.report:
                 run_report_path.write_text(serialized, encoding="utf-8")
+            fixed_acceptance_path.write_text(
+                acceptance_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
         except (OSError, ValueError):
             report.setdefault("backend_acceptance", {"status": "blocked", "gating_reasons": ["acceptance_report_missing"]})
         print(args.report)

@@ -606,6 +606,41 @@ def model_deployment_status(user: User = Depends(get_authenticated_user)) -> dic
     }
 
 
+@router.get("/api/v1/research-acceptance")
+def research_acceptance(user: User = Depends(get_authenticated_user)) -> dict:
+    """Return the fixed, machine-readable research-only acceptance evidence.
+
+    The workbench consumes this endpoint instead of inspecting training
+    directories.  A missing report is itself an explicit blocked state.
+    """
+    del user
+    report_path = Path.cwd() / "artifacts" / "cn_research_demo" / "latest-backend-acceptance.json"
+    if not report_path.is_file():
+        return {
+            "status": "blocked",
+            "data_tier": "research_pit",
+            "research_only": True,
+            "deployment_ready": False,
+            "blocking_reasons": ["acceptance_report_missing"],
+            "run_report_ref": None,
+        }
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {
+            "status": "blocked",
+            "data_tier": "research_pit",
+            "research_only": True,
+            "deployment_ready": False,
+            "blocking_reasons": ["acceptance_report_invalid"],
+            "run_report_ref": "artifacts/cn_research_demo/latest-backend-acceptance.json",
+        }
+    payload["deployment_ready"] = False
+    payload["data_tier"] = "research_pit"
+    payload["research_only"] = True
+    return payload
+
+
 @router.get("/health")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}

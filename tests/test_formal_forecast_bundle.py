@@ -69,6 +69,10 @@ def test_formal_bundle_keeps_tasks_independent_and_does_not_fallback_to_legacy(t
     assert result.direction_5d is None
     assert result.return_20d is not None
     assert any(task.task == "direction_5d" and task.status == "abstain" for task in result.tasks)
+    assert result.training_status == "partial"
+    assert result.prediction_status == "abstain"
+    assert result.evidence_status == "partial"
+    assert result.abstain_reasons
 
 
 def test_formal_bundle_rejects_synthetic_before_any_model_call(tmp_path) -> None:
@@ -83,3 +87,5 @@ def test_formal_bundle_rejects_synthetic_before_any_model_call(tmp_path) -> None
     assert inference.calls == []
     assert result.abstained
     assert all(task.status == "abstain" for task in result.tasks)
+    assert result.prediction_status == "abstain"
+    assert result.evidence_status == "blocked"

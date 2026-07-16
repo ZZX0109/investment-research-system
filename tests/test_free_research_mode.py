@@ -6,6 +6,7 @@ import pytest
 from investment_research.domain.data_tier import DataTier, RESEARCH_VISIBILITY_ASSUMPTION
 from investment_research.domain.forecasts import TaskApprovalManifest
 from investment_research.domain.pit import EventCoverageStatus
+from investment_research.api.routes import research_acceptance
 from investment_research.service.free_research_ledger import build_coverage_ledgers
 from investment_research.service.research_shadow import (
     FileResearchShadowStore,
@@ -31,6 +32,15 @@ def test_free_coverage_ledger_does_not_turn_unavailable_events_into_zero() -> No
     assert us.unavailable_symbols == ["MSFT"]
     assert us.event_coverage_status == EventCoverageStatus.FETCH_FAILED
     assert "event_coverage:fetch_failed" in us.reasons
+
+
+def test_research_acceptance_missing_report_is_explicitly_blocked(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    payload = research_acceptance(None)
+    assert payload["status"] == "blocked"
+    assert payload["data_tier"] == "research_pit"
+    assert payload["deployment_ready"] is False
+    assert payload["blocking_reasons"] == ["acceptance_report_missing"]
 
 
 def test_public_event_success_plus_incomplete_source_is_partial_not_zero() -> None:

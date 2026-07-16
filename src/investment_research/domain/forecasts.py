@@ -128,6 +128,16 @@ class ResearchForecastBundle(BaseModel):
     gating_reasons: list[str] = Field(default_factory=list)
     influence_facts: list[str] = Field(default_factory=list)
     model_disagreement: dict[str, float] = Field(default_factory=dict)
+    # These top-level states are the UI contract.  ``tasks`` remains the
+    # detailed per-task evidence, while these fields make an unavailable or
+    # abstained result explicit instead of requiring clients to infer it from
+    # missing probability objects.
+    training_status: Literal["complete", "partial", "blocked", "unavailable"] = "partial"
+    model_status: Literal["approved", "fallback", "research_only", "unavailable", "abstain", "blocked"] = "unavailable"
+    prediction_status: Literal["approved", "fallback", "research_only", "unavailable", "abstain", "blocked"] = "unavailable"
+    evidence_status: Literal["valid", "partial", "missing", "blocked"] = "partial"
+    blocking_reasons: list[str] = Field(default_factory=list)
+    abstain_reasons: list[str] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high", "unavailable"] = "unavailable"
     explanation_is_causal: bool = False
     abstained: bool = False

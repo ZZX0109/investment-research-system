@@ -99,6 +99,12 @@ class ResearchForecastService:
             ),
             tasks=tasks,
             gating_reasons=[*reasons, *[reason for task in tasks for reason in task.gating_reasons]],
+            training_status="blocked",
+            model_status="unavailable",
+            prediction_status="unavailable",
+            evidence_status="missing" if feature_coverage == 0 else "partial",
+            blocking_reasons=list(dict.fromkeys([*reasons, "research_roster_missing"])),
+            abstain_reasons=list(dict.fromkeys([*reasons, "research_roster_missing"])),
             influence_facts=[],
             risk_level=(
                 "unavailable" if prediction is None or prediction.risk_probability is None
@@ -158,6 +164,17 @@ class ResearchForecastService:
         coverage = min((item.feature_coverage for item in values.values()), default=0.0)
         abstained = any(item.status == "abstain" for item in tasks)
         quality = "failed" if synthetic else "degraded" if abstained else "passed"
+        task_statuses = {item.status for item in tasks}
+        training_status = "blocked" if not values else "partial" if abstained else "complete"
+        if "approved" in task_statuses or "fallback" in task_statuses:
+            model_status = "blocked" if synthetic else "fallback" if "fallback" in task_statuses else "approved"
+        elif "abstain" in task_statuses:
+            model_status = "abstain"
+        else:
+            model_status = "unavailable"
+        prediction_status = "abstain" if abstained else model_status if values else "unavailable"
+        evidence_status = "blocked" if synthetic else "partial" if abstained else "valid"
+        abstain_reasons = [reason for task in tasks for reason in task.gating_reasons]
         return self.uow.research_forecasts.add(ResearchForecastBundle(
             analysis_run_id=bundle.run.id, asset_id=bundle.asset.id, market=market,
             data_tier=DataTier.FORMAL_PIT,
@@ -186,7 +203,14 @@ class ResearchForecastService:
                 provider_chain=[name for name in [snapshot.price_provider_name, snapshot.evidence_provider_name] if name != "unknown"],
                 reasons=reasons,
             ),
-            tasks=tasks, gating_reasons=reasons, abstained=abstained,
+            tasks=tasks, gating_reasons=reasons,
+            training_status=training_status,
+            model_status=model_status,
+            prediction_status=prediction_status,
+            evidence_status=evidence_status,
+            blocking_reasons=list(dict.fromkeys(reasons)),
+            abstain_reasons=list(dict.fromkeys(abstain_reasons)),
+            abstained=abstained,
         ))
 
 

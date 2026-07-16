@@ -59,6 +59,7 @@ import type {
   ReportSchedule,
   ResearchAudit,
   ResearchCard,
+  ResearchAcceptanceReport,
   Position,
   PriceSeries,
   RunComparisonSummary,
@@ -429,6 +430,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
       return apiFetch<DocumentArtifact>("/api/v1/documents", { method: "POST", body });
     },
     getDeploymentStatus: () => apiFetch<DeploymentStatus>("/api/v1/models/deployment-status"),
+    getResearchAcceptance: () => apiFetch<ResearchAcceptanceReport>("/api/v1/research-acceptance"),
     getMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation`),
     refreshMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation/refresh`, { method: "POST" }),
     getDirectionalForecast: (runId: string) => apiFetch<import("./types").DirectionalForecastResponse>(`/api/v1/analysis-runs/${runId}/directional-forecast`),

@@ -283,12 +283,41 @@ export interface ResearchForecastBundle {
   evidence_coverage: number;
   feature_coverage: number;
   data_status: DataStatus;
+  training_status: "complete" | "partial" | "blocked" | "unavailable";
+  model_status: "approved" | "fallback" | "research_only" | "unavailable" | "abstain" | "blocked";
+  prediction_status: "approved" | "fallback" | "research_only" | "unavailable" | "abstain" | "blocked";
+  evidence_status: "valid" | "partial" | "missing" | "blocked";
+  blocking_reasons: string[];
+  abstain_reasons: string[];
   tasks: Array<{ task: string; status: string; model_name?: string | null; model_version?: string | null; gating_reasons: string[] }>;
   gating_reasons: string[];
   influence_facts: string[];
   model_disagreement: Record<string, number>;
   risk_level: "low" | "medium" | "high" | "unavailable";
   abstained: boolean;
+}
+
+export interface ResearchAcceptanceReport {
+  status: "complete" | "partial" | "blocked";
+  data_tier: "research_pit";
+  research_only: true;
+  deployment_ready: false;
+  blocking_reasons: string[];
+  data?: {
+    market_coverage?: Array<Record<string, unknown>>;
+    provider_counts?: Record<string, number>;
+    akshare_success_count?: number;
+    baostock_success_count?: number;
+    failed_count?: number;
+    fallback_count?: number;
+  };
+  tasks?: Record<string, { status: string; gating_reasons?: string[]; scopes?: Record<string, unknown> }>;
+  shadow?: {
+    session_count?: number;
+    valid_session_count?: number;
+    abstain_count?: number;
+    completed_outcomes?: Record<string, number>;
+  };
 }
 
 export interface HistoricalScenario {
