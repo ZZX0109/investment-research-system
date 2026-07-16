@@ -1,5 +1,5 @@
 import { useDeferredValue, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { Panel } from "../../components/Panel";
 import { SourceBadge } from "../../components/SourceBadge";
 import { useAssetsQuery, useCreatePositionMutation, usePositionsQuery, useWatchlistsQuery } from "../../hooks/useWorkbenchQueries";
@@ -24,13 +24,17 @@ export function PortfolioPanel() {
   });
 
   return (
-    <Panel eyebrow="Portfolio" title="Assets, Positions, Watchlists">
-      <input
-        data-testid="asset-search-input"
-        placeholder="Search ticker or asset"
-        value={assetSearch}
-        onChange={(event) => setAssetSearch(event.target.value)}
-      />
+    <Panel eyebrow="Research universe" title="研究对象">
+      <label className="asset-search" htmlFor="asset-search-input">
+        <Search size={15} aria-hidden="true" />
+        <input
+          id="asset-search-input"
+          data-testid="asset-search-input"
+          placeholder="搜索代码或名称"
+          value={assetSearch}
+          onChange={(event) => setAssetSearch(event.target.value)}
+        />
+      </label>
       <div className="asset-list">
         {assets.map((asset) => (
           <button
@@ -43,6 +47,7 @@ export function PortfolioPanel() {
             <div>
               <strong>{asset.ticker}</strong>
               <div className="muted">{asset.name}</div>
+              <small className="asset-card__meta">{asset.exchange ?? "CN"} · {asset.asset_type} · {asset.status}</small>
             </div>
             <SourceBadge provenance={asset.provenance} />
           </button>

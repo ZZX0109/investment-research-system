@@ -1,5 +1,5 @@
 import { ModeSwitch } from "../components/ModeSwitch";
-import { Activity, Database, ShieldCheck } from "lucide-react";
+import { Activity, Clock3, Database, Globe2, LockKeyhole, ShieldCheck } from "lucide-react";
 import { AnalysisPanel } from "../features/analysis/AnalysisPanel";
 import { ResearchAuditPanel } from "../features/audit/ResearchAuditPanel";
 import { AuthCard } from "../features/auth/AuthCard";
@@ -24,11 +24,16 @@ export function WorkbenchPage() {
       <header className="app-header">
         <div className="brand-lockup">
           <Activity size={22} aria-hidden="true" />
-          <div><h1>A股量化研究平台</h1><span>零预算、研究级、可复现、证据驱动</span></div>
+          <div><h1>A股量化研究平台</h1><span>零预算 · 研究级 · 可复现 · 证据驱动</span></div>
+        </div>
+        <div className="app-header__context" aria-label="当前研究上下文">
+          <span><Globe2 size={14} /> CN / 沪深日线</span>
+          <span><Clock3 size={14} /> 收盘确认 · Asia/Shanghai</span>
         </div>
         <div className="app-header__status">
           <span className="system-status"><Database size={15} aria-hidden="true" /> {mode === "research" ? "research_pit" : mode} data</span>
           <span className="system-status"><ShieldCheck size={15} aria-hidden="true" /> strict gate</span>
+          {mode === "real" ? <span className="system-status system-status--blocked"><LockKeyhole size={14} /> blocked</span> : null}
           <ModeSwitch mode={mode} onChange={setMode} />
         </div>
       </header>
