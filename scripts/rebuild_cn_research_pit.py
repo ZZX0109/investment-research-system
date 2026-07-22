@@ -56,6 +56,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-equities", type=int, default=100)
     parser.add_argument("--minimum-equities", type=int, default=80)
     parser.add_argument("--minimum-history-sessions", type=int, default=756)
+    parser.add_argument(
+        "--minimum-training-sessions", type=int, default=960,
+        help="Minimum usable decision history for the longest 20-session task.",
+    )
     return parser.parse_args()
 
 
@@ -83,66 +87,56 @@ def main() -> int:
         if batch.symbol and batch.provider in {"akshare", "baostock"}:
             mode = "qfq" if batch.dataset.endswith("_qfq") else "raw"
             candidates[(batch.symbol, mode)].append(batch)
-    selected = {
-        key: sorted(values, key=lambda item: (item.provider != "akshare", -item.fetched_at.timestamp()))[0]
+    batch_groups = {
+        key: sorted(values, key=lambda item: (item.fetched_at, item.provider == "akshare"))
         for key, values in candidates.items()
     }
-    if not selected:
+    if not batch_groups:
         raise SystemExit("no CN AKShare/Baostock research payloads were found")
 
     standard_manifests: list[dict] = []
     all_bars: list[PreparedPriceBar] = []
     failures: list[dict[str, str]] = []
     standard_root = args.output_root / "standard"
-    symbols = sorted({symbol for symbol, _mode in selected})
+    symbols = sorted({symbol for symbol, _mode in batch_groups})
     provider_conflicts = _provider_conflict_symbols(args.coverage_ledger)
     quality_reports: list[dict] = []
     for symbol in symbols:
-        batch = selected.get((symbol, "raw"))
-        qfq_batch = selected.get((symbol, "qfq"))
-        if batch is None:
+        raw_batches = batch_groups.get((symbol, "raw"), [])
+        qfq_batches = batch_groups.get((symbol, "qfq"), [])
+        if not raw_batches:
             failures.append({"symbol": symbol, "stage": "standardize", "reason": "raw_adjustment_payload_missing"})
             continue
         try:
-            payload = raw_store.get(_object_key(batch.payload_ref))
-            if sha256(payload).hexdigest() != batch.payload_hash:
-                raise ValueError("raw_payload_hash_mismatch")
-            normalized = normalize_free_daily_payload(
-                payload, market="cn", symbol=symbol, provider=batch.provider,
-                received_at=batch.received_at or batch.fetched_at,
+            raw_by_date = _merge_batches(
+                raw_store, raw_batches, symbol=symbol, as_of=args.as_of,
             )
-            raw_bars = [
-                item.model_copy(update={
-                    "payload_ref": batch.payload_ref,
-                    "raw_hash": batch.payload_hash,
-                    "data_version": f"research-raw:{batch.payload_hash[:16]}",
-                })
-                for item in normalized.bars
-                if args.as_of is None or item.trade_date <= args.as_of
-            ]
-            if not raw_bars:
+            if not raw_by_date:
                 raise ValueError("no_normalized_rows_before_as_of")
-            qfq_by_date: dict[date, PreparedPriceBar] = {}
-            if qfq_batch is not None:
-                qfq_payload = raw_store.get(_object_key(qfq_batch.payload_ref))
-                if sha256(qfq_payload).hexdigest() != qfq_batch.payload_hash:
-                    raise ValueError("qfq_payload_hash_mismatch")
-                qfq_result = normalize_free_daily_payload(
-                    qfq_payload, market="cn", symbol=symbol, provider=qfq_batch.provider,
-                    received_at=qfq_batch.received_at or qfq_batch.fetched_at,
-                )
-                qfq_by_date = {item.trade_date: item for item in qfq_result.bars}
-            bars = [
-                item.model_copy(update={
-                    "close_normalized": qfq_by_date.get(item.trade_date, item).close_native,
-                    "open_normalized": qfq_by_date.get(item.trade_date, item).open_native,
-                    "high_normalized": qfq_by_date.get(item.trade_date, item).high_native,
-                    "low_normalized": qfq_by_date.get(item.trade_date, item).low_native,
-                    "adjustment_factor": qfq_by_date.get(item.trade_date, item).close_native / item.close_native,
-                    "data_version": f"research-raw-qfq:{batch.payload_hash[:8]}:{(qfq_batch.payload_hash if qfq_batch else batch.payload_hash)[:8]}",
-                })
-                for item in raw_bars
-            ]
+            qfq_by_date = _merge_batches(
+                raw_store, qfq_batches, symbol=symbol, as_of=args.as_of,
+            ) if qfq_batches else {}
+            bars: list[PreparedPriceBar] = []
+            for trade_date in sorted(raw_by_date):
+                item, raw_batch = raw_by_date[trade_date]
+                qfq_item, qfq_batch = qfq_by_date.get(trade_date, (item, raw_batch))
+                bars.append(item.model_copy(update={
+                    "payload_ref": raw_batch.payload_ref,
+                    "raw_hash": raw_batch.payload_hash,
+                    "close_normalized": qfq_item.close_native,
+                    "open_normalized": qfq_item.open_native,
+                    "high_normalized": qfq_item.high_native,
+                    "low_normalized": qfq_item.low_native,
+                    "adjustment_factor": qfq_item.close_native / item.close_native,
+                    "data_version": f"research-raw-qfq:{raw_batch.payload_hash[:8]}:{qfq_batch.payload_hash[:8]}",
+                }))
+            latest_raw_batch = max(raw_batches, key=lambda item: item.fetched_at)
+            latest_qfq_batch = max(qfq_batches, key=lambda item: item.fetched_at) if qfq_batches else None
+            lineage_hash = sha256(_canonical({
+                "raw": [item.payload_hash for item in raw_batches],
+                "qfq": [item.payload_hash for item in qfq_batches],
+            })).hexdigest()
+            provider_chain = sorted({item.provider for item in [*raw_batches, *qfq_batches]})
             report = audit_research_bars(
                 symbol, bars, as_of=args.as_of or bars[-1].trade_date,
                 provider_conflict=symbol in provider_conflicts,
@@ -158,7 +152,7 @@ def main() -> int:
                 ref, payload_hash, schema_hash, row_count = parquet.write_partition(
                     year_bars, market="cn", dataset="standard_daily_bars_research",
                     schema_version="free-research-standard-v1", trade_year=year,
-                    partition_id=f"{symbol}-{batch.payload_hash[:12]}",
+                    partition_id=f"{symbol}-{lineage_hash[:12]}",
                 )
                 refs.append({
                     "trade_year": year, "parquet_ref": ref, "payload_hash": payload_hash,
@@ -170,16 +164,21 @@ def main() -> int:
                 "mode": "research_only", "formal_pit_eligible": False,
                 "blocking_reasons": list(RESEARCH_TIER_REASONS),
                 "historical_visibility_assumption": RESEARCH_VISIBILITY_ASSUMPTION,
-                "market": "cn", "symbol": symbol, "provider": batch.provider,
-                "raw_batch_id": str(batch.id), "raw_payload_ref": batch.payload_ref,
-                "raw_payload_hash": batch.payload_hash, "partitions": refs,
-                "qfq_raw_batch_id": None if qfq_batch is None else str(qfq_batch.id),
-                "qfq_payload_hash": None if qfq_batch is None else qfq_batch.payload_hash,
+                "market": "cn", "symbol": symbol,
+                "provider": latest_raw_batch.provider, "provider_chain": provider_chain,
+                "raw_batch_id": str(latest_raw_batch.id),
+                "raw_payload_ref": latest_raw_batch.payload_ref,
+                "raw_payload_hash": latest_raw_batch.payload_hash,
+                "raw_input_batches": [_batch_lineage(item) for item in raw_batches],
+                "qfq_input_batches": [_batch_lineage(item) for item in qfq_batches],
+                "merged_lineage_hash": lineage_hash, "partitions": refs,
+                "qfq_raw_batch_id": None if latest_qfq_batch is None else str(latest_qfq_batch.id),
+                "qfq_payload_hash": None if latest_qfq_batch is None else latest_qfq_batch.payload_hash,
                 "adjustment_policy": "raw_market_state_plus_qfq_return_labels",
                 "quality_report": report.model_dump(mode="json"),
                 "row_count": len(bars),
             }
-            path = standard_root / f"{symbol}-{batch.payload_hash[:12]}.json"
+            path = standard_root / f"{symbol}-{lineage_hash[:12]}.json"
             _write_json(path, manifest)
             manifest["manifest_ref"] = _portable_path(path)
             standard_manifests.append(manifest)
@@ -196,8 +195,12 @@ def main() -> int:
             all_bars, as_of=as_of, max_symbols=args.max_equities,
             minimum_required_members=args.minimum_equities,
             minimum_history_sessions=args.minimum_history_sessions,
+            minimum_training_sessions=args.minimum_training_sessions,
         ),
-        build_cn_etf_benchmark(all_bars, as_of=as_of),
+        build_cn_etf_benchmark(
+            all_bars, as_of=as_of,
+            minimum_training_sessions=args.minimum_training_sessions,
+        ),
     ]
     cohort_paths: dict[str, Path] = {}
     for cohort in cohorts:
@@ -258,7 +261,9 @@ def main() -> int:
         "quality_reports": quality_reports,
         "training_blocked": len(cohorts[0].members) < args.minimum_equities,
         "training_blocking_reasons": ["eligible_equity_count_below_80"] if len(cohorts[0].members) < args.minimum_equities else [],
-        "rebuilt_from_latest_fetched_at": max(item.fetched_at for item in selected.values()).isoformat(),
+        "rebuilt_from_latest_fetched_at": max(
+            item.fetched_at for values in batch_groups.values() for item in values
+        ).isoformat(),
     }
     index_hash = sha256(_canonical({
         "snapshots": {key: value["snapshot_hash"] for key, value in contexts.items()},
@@ -268,6 +273,45 @@ def main() -> int:
     _write_json(output, index)
     print(output)
     return 0
+
+
+def _merge_batches(
+    raw_store: LocalObjectStore, batches: list, *, symbol: str, as_of: date | None,
+) -> dict[date, tuple[PreparedPriceBar, object]]:
+    """Merge append-only incremental payloads without truncating history.
+
+    Later observations replace only overlapping trade dates.  A same-time
+    AKShare observation wins over Baostock, while a genuinely newer Baostock
+    revision can still replace an older primary observation.
+    """
+    merged: dict[date, tuple[PreparedPriceBar, object]] = {}
+    ordered = sorted(
+        batches, key=lambda item: (item.fetched_at, item.provider == "akshare", item.payload_hash)
+    )
+    for batch in ordered:
+        payload = raw_store.get(_object_key(batch.payload_ref))
+        if sha256(payload).hexdigest() != batch.payload_hash:
+            raise ValueError(f"raw_payload_hash_mismatch:{batch.id}")
+        normalized = normalize_free_daily_payload(
+            payload, market="cn", symbol=symbol, provider=batch.provider,
+            received_at=batch.received_at or batch.fetched_at,
+        )
+        for bar in normalized.bars:
+            if as_of is None or bar.trade_date <= as_of:
+                merged[bar.trade_date] = (bar, batch)
+    return merged
+
+
+def _batch_lineage(batch) -> dict[str, str | None]:
+    return {
+        "batch_id": str(batch.id),
+        "provider": batch.provider,
+        "payload_ref": batch.payload_ref,
+        "payload_hash": batch.payload_hash,
+        "fetched_at": batch.fetched_at.isoformat(),
+        "coverage_start": None if batch.coverage_start is None else batch.coverage_start.isoformat(),
+        "coverage_end": None if batch.coverage_end is None else batch.coverage_end.isoformat(),
+    }
 
 
 def _freeze_snapshot(
@@ -286,7 +330,8 @@ def _freeze_snapshot(
         "schema_version": "cn-research-market-snapshot-v1",
         "data_tier": DataTier.RESEARCH_PIT.value, "market": "cn",
         "decision_context": context, "trade_date": as_of.isoformat(),
-        "adjustment_policy": "raw", "event_coverage_status": event_coverage_status,
+        "adjustment_policy": "raw_market_state_plus_qfq_return_labels",
+        "event_coverage_status": event_coverage_status,
         "constituents": constituents, "quality_failure_count": len(failures),
         "historical_visibility_assumption": RESEARCH_VISIBILITY_ASSUMPTION,
     }
@@ -312,7 +357,7 @@ def _build_samples(
         currency="CNY", exchange="XSHG" if symbol.startswith(("5", "6", "9")) else "XSHE",
     )
     samples = TrainingDatasetBuilder(
-        feature_version="investment-risk-features-v2",
+        feature_version="cn-research-feature-v3",
         data_version=f"research-snapshot:{snapshot['market_snapshot_hash'][:16]}",
     ).build_samples(
         instrument=instrument, price_bars=assumed, events=[],
@@ -348,18 +393,19 @@ def _build_samples(
     for year, year_samples in sorted(by_year.items()):
         ref, payload_hash, schema_hash, row_count = parquet.write_partition(
             year_samples, market="cn", dataset="research_samples",
-            schema_version="free-research-samples-v2", trade_year=year,
+            schema_version="free-research-samples-v3", trade_year=year,
             partition_id=f"{context}-{cohort}-{symbol}-{snapshot['market_snapshot_hash'][:12]}",
         )
         manifest = {
-            "schema_version": "free-research-sample-manifest-v2",
+            "schema_version": "free-research-sample-manifest-v3",
             "data_tier": DataTier.RESEARCH_PIT.value, "mode": "research_only",
             "formal_pit_eligible": False, "deployment_ready": False,
             "blocking_reasons": list(RESEARCH_TIER_REASONS),
             "market": "cn", "symbol": symbol, "cohort": cohort,
             "cohort_version": cohort_version,
             "decision_context": context, "trade_year": year,
-            "feature_version": "investment-risk-features-v2",
+            "feature_version": "cn-research-feature-v3",
+            "label_version": "cn-direction-volatility-label-v2",
             "market_snapshot_id": snapshot["market_snapshot_id"],
             "market_snapshot_hash": snapshot["market_snapshot_hash"],
             "standard_raw_payload_hash": standard["raw_payload_hash"],

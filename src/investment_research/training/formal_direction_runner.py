@@ -10,7 +10,8 @@ from investment_research.training.formal_training import (
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime
+from investment_research.training.numeric_safety import guarded_model_math, require_finite
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
 
 
 CLASSES = ("up", "down", "flat")
@@ -130,10 +131,11 @@ class FormalDirectionTrainingRunner:
         fold_ids: list[str] = []
         regimes: list[str] = []
         for fold in folds:
+            thresholds = fit_regime_thresholds(fold.train)
             probabilities.extend(self._fit_predict(name, fold.train, fold.validation, features, horizon))
             labels.extend(_direction(sample, horizon) for sample in fold.validation)
             fold_ids.extend([fold.fold.fold_id] * len(fold.validation))
-            regimes.extend(classify_market_regime(sample) for sample in fold.validation)
+            regimes.extend(classify_market_regime(sample, thresholds) for sample in fold.validation)
         return probabilities, labels, fold_ids, regimes
 
     def _fit_predict(self, name, train, evaluate, features, horizon):
@@ -146,22 +148,38 @@ class FormalDirectionTrainingRunner:
             source = "benchmark_ret_20d" if name == "index-direction" else "ret_5d"
             return [_heuristic(sample.features.get(source, 0.0)) for sample in evaluate]
         estimator = _estimator(name)
-        matrix = [_vector(item, features) for item in train]
+        matrix = _matrix(train, features)
+        evaluation = _matrix(evaluate, features)
         if name == "xgboost":
             encoded = [_class_index(label) for label in labels]
-            estimator.fit(matrix, encoded)
-            values = estimator.predict_proba([_vector(item, features) for item in evaluate])
+            with guarded_model_math():
+                estimator.fit(matrix, encoded)
+                values = estimator.predict_proba(evaluation)
+            require_finite(values, stage=f"direction:{name}")
             classes = [CLASSES[int(value)] for value in estimator.classes_]
             return [_map_probabilities(classes, row) for row in values]
-        estimator.fit(matrix, labels)
-        values = estimator.predict_proba([_vector(item, features) for item in evaluate])
+        with guarded_model_math():
+            estimator.fit(matrix, labels)
+            values = estimator.predict_proba(evaluation)
+        require_finite(values, stage=f"direction:{name}")
         return [_map_probabilities(estimator.classes_, row) for row in values]
 
 
 def _estimator(name):
     if name == "logistic-regression":
         from sklearn.linear_model import LogisticRegression
-        return LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
+        from sklearn.multiclass import OneVsRestClassifier
+        from sklearn.preprocessing import FunctionTransformer
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        return make_pipeline(
+            StandardScaler(),
+            FunctionTransformer(_clip_scaled_values),
+            OneVsRestClassifier(LogisticRegression(
+                solver="liblinear", C=0.01, max_iter=1000,
+                class_weight="balanced", random_state=42,
+            )),
+        )
     if name == "random-forest":
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(n_estimators=200, max_depth=6, min_samples_leaf=2, class_weight="balanced_subsample", random_state=42)
@@ -187,6 +205,21 @@ def _direction(sample: TrainingSample, horizon: int) -> str:
 
 def _vector(sample, features):
     return [float(sample.features.get(name, 0.0)) for name in features]
+
+
+def _matrix(samples, features):
+    import numpy as np
+    import pandas as pd
+
+    values = np.asarray([_vector(item, features) for item in samples], dtype=float)
+    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
+    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=features)
+
+
+def _clip_scaled_values(values):
+    import numpy as np
+
+    return np.clip(np.nan_to_num(values, nan=0.0, posinf=20.0, neginf=-20.0), -20.0, 20.0)
 
 
 def _frequencies(labels):

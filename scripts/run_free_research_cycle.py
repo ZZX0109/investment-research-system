@@ -43,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--groups", nargs="+", choices=("prices", "events", "macro"))
     parser.add_argument("--timeout-seconds", type=int, default=7200)
     parser.add_argument("--max-symbols", type=int, default=None, help="Optional development cap; scheduled research runs enumerate the full public CN universe by default.")
+    parser.add_argument("--full-history", action="store_true", help="Ignore incremental cursors and repair complete public daily history.")
     parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use the configured fixed CN research symbols; do not enumerate the public universe.")
     parser.add_argument("--rebuild-timeout-seconds", type=int, default=1800)
     parser.add_argument("--skip-rebuild", action="store_true", help="Collect raw payloads only; the default also rebuilds CN standard/snapshot/feature/sample layers.")
@@ -78,6 +79,8 @@ def main() -> int:
         ]
         if args.max_symbols is not None:
             command.extend(["--max-symbols-per-market", str(args.max_symbols)])
+        if args.full_history:
+            command.append("--full-history")
         if args.no_discover_cn_universe:
             command.append("--no-discover-cn-universe")
         item: dict[str, object] = {"market": market, "group": group, "command": command}
@@ -230,7 +233,11 @@ def _freeze_prediction_file(path: Path, *, root: Path) -> list[dict[str, str]]:
             market_snapshot_hash=record["market_snapshot_hash"],
             prediction=record["prediction"], prediction_price=record.get("prediction_price"),
             model_artifact_hashes=record.get("model_artifact_hashes", {}),
-            coverage_ratio=float(record["coverage_ratio"]),
+            # The aggregate row coverage deliberately includes unsupported
+            # optional event/reference features.  Shadow validity must use
+            # the same core price/market coverage gate as inference; otherwise
+            # a valid price prediction is rewritten as abstain during freeze.
+            coverage_ratio=_shadow_coverage(record),
             event_coverage_status=EventCoverageStatus(record["event_coverage_status"]),
             provider_chain=list(record.get("provider_chain", [])),
             evidence_coverage=float(record.get("evidence_coverage", 0.0)),
@@ -250,6 +257,17 @@ def _freeze_prediction_file(path: Path, *, root: Path) -> list[dict[str, str]]:
         )
         output.append({"market": "cn", "session_id": str(session.id), "status": "abstain" if session.abstained else "frozen"})
     return output
+
+
+def _shadow_coverage(record: dict) -> float:
+    """Resolve the price/market coverage used by the research Shadow gate.
+
+    Older prediction files did not separate core and optional evidence, so the
+    aggregate value remains a compatibility fallback.  New files always
+    provide ``core_feature_coverage`` and keep unsupported event evidence in a
+    separate degraded status and missing mask.
+    """
+    return float(record.get("core_feature_coverage", record["coverage_ratio"]))
 
 
 if __name__ == "__main__":

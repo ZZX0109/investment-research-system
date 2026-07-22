@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from math import log
+from math import isfinite, log
+
+from investment_research.training.numeric_safety import guarded_model_math, require_finite
 
 
 class CalibrationMethod(str, Enum):
@@ -49,13 +51,26 @@ class TimeOutOfFoldCalibrator:
             self._model = IsotonicRegression(out_of_bounds="clip").fit(clipped, labels)
         else:
             from sklearn.linear_model import LogisticRegression
+            from sklearn.pipeline import make_pipeline
+            from sklearn.preprocessing import StandardScaler
 
             matrix = (
                 [[log(value), -log(1.0 - value)] for value in clipped]
                 if self.method == CalibrationMethod.BETA
                 else [[_logit(value)] for value in clipped]
             )
-            self._model = LogisticRegression().fit(matrix, labels)
+            # OOF probabilities can be highly concentrated near zero or one.
+            # Scaling the bounded log/logit design and using a deterministic
+            # small-feature solver avoids overflow in sklearn's matrix
+            # operations without changing the temporal provenance contract.
+            with guarded_model_math():
+                self._model = make_pipeline(
+                    StandardScaler(),
+                    LogisticRegression(
+                        solver="liblinear", C=0.01,
+                        max_iter=1_000, random_state=42,
+                    ),
+                ).fit(matrix, labels)
         return self
 
     def predict_many(self, scores: list[float]) -> list[float]:
@@ -69,7 +84,10 @@ class TimeOutOfFoldCalibrator:
             if self.method == CalibrationMethod.BETA
             else [[_logit(value)] for value in clipped]
         )
-        return [float(row[1]) for row in self._model.predict_proba(matrix)]
+        with guarded_model_math():
+            probabilities = self._model.predict_proba(matrix)
+        require_finite(probabilities, stage=f"calibration:{self.method.value}")
+        return [float(row[1]) for row in probabilities]
 
 
 def compare_calibrators(
@@ -104,7 +122,10 @@ def compare_calibrators(
 
 
 def _clip(value: float) -> float:
-    return min(1.0 - 1e-6, max(1e-6, float(value)))
+    resolved = float(value)
+    if not isfinite(resolved):
+        raise ValueError("calibration scores must be finite")
+    return min(1.0 - 1e-6, max(1e-6, resolved))
 
 
 def _logit(value: float) -> float:

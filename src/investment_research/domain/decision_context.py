@@ -132,6 +132,7 @@ def build_market_decision_context(
     calendar_code: str,
     confirmation_delay_minutes: int = 10,
     trading_dates: list[date] | None = None,
+    next_trading_date: date | None = None,
 ) -> DecisionContext:
     """Build a decision cutoff from an exchange-local session, including DST."""
     code = calendar_code.strip().upper()
@@ -140,7 +141,7 @@ def build_market_decision_context(
     spec = EXCHANGE_SESSIONS[code]
     zone = ZoneInfo(spec.timezone)
     kind = DecisionContextType(context_type)
-    next_date = _next_trading_date(trade_date, trading_dates)
+    next_date = next_trading_date or _next_trading_date(trade_date, trading_dates)
     if kind == DecisionContextType.CLOSE_CONFIRMED:
         decision_time = datetime.combine(trade_date, spec.close_time, zone) + timedelta(
             minutes=confirmation_delay_minutes

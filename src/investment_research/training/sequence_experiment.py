@@ -83,7 +83,10 @@ def run_sequence_experiment(
             oof_predictions.extend(runner.predict_raw(validation))
             oof_targets.extend([item.target for item in validation])
             oof_fold_ids.extend([fold.fold_id] * len(validation))
-        seed_metrics[str(seed)] = evaluate_predictions(task, oof_predictions, oof_targets)
+        oof_regimes = [item.market_regime for fold, _train, validation in folds for item in validation]
+        seed_metrics[str(seed)] = evaluate_predictions(
+            task, oof_predictions, oof_targets, regimes=oof_regimes
+        )
         artifact_hashes[str(seed)] = sha256(json.dumps(seed_metrics[str(seed)], sort_keys=True).encode()).hexdigest()
     # Final model is trained only on development and evaluated once on the
     # immutable holdout; no holdout values affect selection or calibration.
@@ -100,8 +103,14 @@ def run_sequence_experiment(
         and (item.label_end is None or date.fromisoformat(item.label_end[:10]) < dev_validation_start)
     ]
     final_runner = SequenceTaskRunner(final_config, seed=seeds[0]).fit(final_train or development, final_validation or None)
-    holdout_metrics = evaluate_predictions(task, final_runner.predict_raw(holdout), [item.target for item in holdout])
-    stress_metrics = evaluate_predictions(task, final_runner.predict_raw(stress), [item.target for item in stress])
+    holdout_metrics = evaluate_predictions(
+        task, final_runner.predict_raw(holdout), [item.target for item in holdout],
+        regimes=[item.market_regime for item in holdout],
+    )
+    stress_metrics = evaluate_predictions(
+        task, final_runner.predict_raw(stress), [item.target for item in stress],
+        regimes=[item.market_regime for item in stress],
+    )
     artifact_hashes["final"] = final_runner.artifact_hash()
     calibration: dict[str, Any] = {"source": "time_oof_only", "status": "unavailable"}
     try:
@@ -116,7 +125,10 @@ def run_sequence_experiment(
     return SequenceExperimentResult(task=task, architecture=architecture, window_sessions=window_sessions, fold_hash=fold_hash, seeds=list(seeds), seed_metrics=seed_metrics, holdout_metrics=holdout_metrics, stress_metrics=stress_metrics, calibration=calibration, artifact_hashes=artifact_hashes, final_runner=final_runner)
 
 
-def evaluate_predictions(task: str, predictions: list[list[float]], targets: list[Any]) -> dict[str, float]:
+def evaluate_predictions(
+    task: str, predictions: list[list[float]], targets: list[Any],
+    *, regimes: list[str] | None = None,
+) -> dict[str, Any]:
     if not predictions or not targets:
         return {"sample_count": 0.0}
     import numpy as np
@@ -134,17 +146,43 @@ def evaluate_predictions(task: str, predictions: list[list[float]], targets: lis
         predictions = normalized
         actual = [("up", "down", "flat").index(str(value)) for value in targets]
         predicted = [int(np.argmax(row)) for row in predictions]
-        result = {"sample_count": float(len(actual)), "macro_f1": float(f1_score(actual, predicted, average="macro", zero_division=0)), "balanced_accuracy": float(balanced_accuracy_score(actual, predicted)), "accuracy": float(accuracy_score(actual, predicted)), "log_loss": float(log_loss(actual, predictions, labels=[0, 1, 2]))}
+        balanced = (
+            float(balanced_accuracy_score(actual, predicted))
+            if len(set(actual)) > 1
+            else float(accuracy_score(actual, predicted))
+        )
+        result = {"sample_count": float(len(actual)), "macro_f1": float(f1_score(actual, predicted, labels=[0, 1, 2], average="macro", zero_division=0)), "balanced_accuracy": balanced, "accuracy": float(accuracy_score(actual, predicted)), "log_loss": float(log_loss(actual, predictions, labels=[0, 1, 2]))}
         try:
             result["macro_auroc"] = float(roc_auc_score(actual, predictions, multi_class="ovr", average="macro"))
         except ValueError:
             result["macro_auroc"] = 0.0
-        return result
+        return _with_regime_metrics(result, task, predictions, targets, regimes)
     if task == "return_20d":
         values = np.asarray(targets, dtype=float)
         median = np.asarray([row[1] for row in predictions])
-        return {"sample_count": float(len(values)), "p50_mae": float(mean_absolute_error(values, median)), "pinball_loss": float(np.mean(np.maximum((values[:, None] - np.asarray(predictions)) * np.array([0.1, 0.5, 0.9]), (np.asarray(predictions) - values[:, None]) * np.array([0.9, 0.5, 0.1])))), "interval_coverage": float(np.mean((values >= np.asarray(predictions)[:, 0]) & (values <= np.asarray(predictions)[:, 2])))}
+        result = {"sample_count": float(len(values)), "p50_mae": float(mean_absolute_error(values, median)), "pinball_loss": float(np.mean(np.maximum((values[:, None] - np.asarray(predictions)) * np.array([0.1, 0.5, 0.9]), (np.asarray(predictions) - values[:, None]) * np.array([0.9, 0.5, 0.1])))), "interval_coverage": float(np.mean((values >= np.asarray(predictions)[:, 0]) & (values <= np.asarray(predictions)[:, 2])))}
+        return _with_regime_metrics(result, task, predictions, targets, regimes)
     actual = np.asarray(targets, dtype=float)
     probabilities = np.asarray(predictions).reshape(-1)
     labels = (actual <= -0.08).astype(int)
-    return {"sample_count": float(len(actual)), "brier": float(np.mean((probabilities - labels) ** 2)), "mean_probability": float(np.mean(probabilities))}
+    result = {"sample_count": float(len(actual)), "brier": float(np.mean((probabilities - labels) ** 2)), "mean_probability": float(np.mean(probabilities))}
+    return _with_regime_metrics(result, task, predictions, targets, regimes)
+
+
+def _with_regime_metrics(
+    result: dict[str, Any], task: str, predictions: list[list[float]],
+    targets: list[Any], regimes: list[str] | None,
+) -> dict[str, Any]:
+    if not regimes or len(regimes) != len(targets):
+        return result
+    grouped: dict[str, dict[str, Any]] = {}
+    for regime in sorted(set(regimes)):
+        indexes = [index for index, value in enumerate(regimes) if value == regime]
+        if not indexes:
+            continue
+        grouped[regime] = evaluate_predictions(
+            task,
+            [predictions[index] for index in indexes],
+            [targets[index] for index in indexes],
+        )
+    return {**result, "regime_metrics": grouped}

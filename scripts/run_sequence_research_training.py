@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window", type=int, choices=(20, 60, 120), default=60)
     parser.add_argument("--cohort", choices=("cn_equity_core", "cn_etf_benchmark"), required=True)
     parser.add_argument("--training-run-id", default=None)
+    parser.add_argument("--screen-symbols", type=int, default=20)
+    # 1,260 sessions leave enough history after a 120-session input window,
+    # task-label tail, 252-session holdout and 504/126 purged fold.  The former
+    # 960 default could produce no valid fold even with otherwise complete CN
+    # history.
+    parser.add_argument("--maximum-dates", type=int, default=1260)
     return parser.parse_args()
 
 
@@ -68,10 +74,21 @@ def main() -> int:
             rows.append(sample)
     if len(snapshots) != 1:
         raise SystemExit("sequence training cannot mix market snapshots")
+    symbols = sorted({item.symbol for item in rows})
+    if args.screen_symbols > 0 and len(symbols) > args.screen_symbols:
+        retained_symbols = set(symbols[: args.screen_symbols])
+        rows = [item for item in rows if item.symbol in retained_symbols]
+    dates = sorted({item.as_of_date for item in rows})
+    if len(dates) > args.maximum_dates:
+        retained_dates = set(dates[-args.maximum_dates:])
+        rows = [item for item in rows if item.as_of_date in retained_dates]
     examples = build_sequence_examples(rows, target_name=_target(args.task), window_sessions=args.window)
     if not examples:
         raise SystemExit("sequence scope has no valid windows")
-    result = run_sequence_experiment(examples, task=args.task, architecture=args.architecture, window_sessions=args.window)
+    result = run_sequence_experiment(
+        examples, task=args.task, architecture=args.architecture, window_sessions=args.window,
+        config_overrides={"hidden_size": 32, "max_epochs": 8, "patience": 3},
+    )
     run_id = args.training_run_id or f"sequence-{args.task}-{args.architecture}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     scope = output_root / "cn" / "close_confirmed" / args.cohort / args.task / "sequence" / args.architecture
     scope.mkdir(parents=True, exist_ok=True)
@@ -83,10 +100,10 @@ def main() -> int:
     snapshot_id, snapshot_hash = next(iter(snapshots))
     feature_order_hash = sha256(json.dumps(examples[0].feature_order, separators=(",", ":")).encode()).hexdigest()
     normalizer_hash = sha256(json.dumps(result.final_runner.stats if result.final_runner else {}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    payload = {"schema_version": "cn-sequence-evaluation-v1", "data_tier": "research_pit", "status": "research_only", "deployment_ready": False, "training_run_id": run_id, "task": args.task, "architecture": args.architecture, "window_sessions": args.window, "input_shape": [args.window, len(examples[0].feature_order) * 2 + 9], "feature_contract_version": "investment-risk-features-v3-sequence", "dataset_hash": dataset_hash, "market_snapshot_id": snapshot_id, "market_snapshot_hash": snapshot_hash, "feature_order_hash": feature_order_hash, "normalizer_hash": normalizer_hash, "quality_mask_schema": ["quality_passed", "coverage", "no_data_issues"], "event_mask_schema": ["event_missing", "event_source_available"], "historical_visibility_assumption": "historical_available_at_unproven_public_backfill", "result": result_payload, "model_hash": model_hash}
+    payload = {"schema_version": "cn-sequence-evaluation-v1", "data_tier": "research_pit", "status": "research_only", "deployment_ready": False, "training_run_id": run_id, "task": args.task, "architecture": args.architecture, "experiment_stage": "fixed_pool_screening", "training_symbol_count": len({item.symbol for item in rows}), "training_date_count": len({item.as_of_date for item in rows}), "window_sessions": args.window, "input_shape": [args.window, len(examples[0].feature_order) * 2 + 9], "feature_contract_version": "investment-risk-features-v3-sequence", "dataset_hash": dataset_hash, "market_snapshot_id": snapshot_id, "market_snapshot_hash": snapshot_hash, "feature_order_hash": feature_order_hash, "normalizer_hash": normalizer_hash, "quality_mask_schema": ["quality_passed", "coverage", "no_data_issues"], "event_mask_schema": ["event_missing", "event_source_available"], "historical_visibility_assumption": "historical_available_at_unproven_public_backfill", "result": result_payload, "model_hash": model_hash}
     report.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     artifact_hash = sha256(report.read_bytes()).hexdigest()
-    summary = {"task": args.task, "architecture": args.architecture, "window_sessions": args.window, "input_shape": [args.window, len(examples[0].feature_order) * 2 + 9], "feature_contract_version": "investment-risk-features-v3-sequence", "label_version": "four-market-tradeable-label-v1", "dataset_hash": dataset_hash, "market_snapshot_id": snapshot_id, "market_snapshot_hash": snapshot_hash, "feature_order_hash": feature_order_hash, "normalizer_hash": normalizer_hash, "artifact_ref": str(model_path.relative_to(PROJECT)), "report_ref": str(report.relative_to(PROJECT)), "artifact_hash": model_hash, "report_hash": artifact_hash, "fold_hash": result.fold_hash, "quality_mask_schema": ["quality_passed", "coverage", "no_data_issues"], "event_mask_schema": ["event_missing", "event_source_available"], "status": "research_only", "research_ready": False, "deployment_ready": False}
+    summary = {"task": args.task, "architecture": args.architecture, "experiment_stage": "fixed_pool_screening", "training_symbol_count": len({item.symbol for item in rows}), "training_date_count": len({item.as_of_date for item in rows}), "window_sessions": args.window, "input_shape": [args.window, len(examples[0].feature_order) * 2 + 9], "feature_contract_version": "cn-research-feature-v3-sequence", "label_version": "cn-direction-volatility-label-v2", "dataset_hash": dataset_hash, "market_snapshot_id": snapshot_id, "market_snapshot_hash": snapshot_hash, "feature_order_hash": feature_order_hash, "normalizer_hash": normalizer_hash, "artifact_ref": str(model_path.relative_to(PROJECT)), "report_ref": str(report.relative_to(PROJECT)), "artifact_hash": model_hash, "report_hash": artifact_hash, "fold_hash": result.fold_hash, "quality_mask_schema": ["quality_passed", "coverage", "no_data_issues"], "event_mask_schema": ["event_missing", "event_source_available"], "status": "research_only", "research_status": "exploratory", "research_ready": False, "eligible_for_ensemble": False, "ensemble_exclusion_reason": "deep_regime_promotion_gate_not_met", "deployment_ready": False}
     (scope / "sequence_manifest.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(report)
     return 0

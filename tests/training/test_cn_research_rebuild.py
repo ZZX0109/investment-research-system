@@ -39,7 +39,15 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
                 schema_version="test-fixture-v1", symbol=symbol,
                 available_at=now, received_at=now, data_tier=DataTier.RESEARCH_PIT,
             )
-    assert len(uow.trusted_market.raw_batches(dataset="daily_bars_raw", data_tier="research_pit")) == 2
+            incremental = json.dumps(json.loads(payload)[-10:], ensure_ascii=False).encode()
+            ingestion.persist(
+                provider="baostock", request_id=f"incremental-{symbol}-{adjustment_mode}",
+                dataset=f"daily_bars_{adjustment_mode}", payload=incremental,
+                schema_version="test-fixture-v1", symbol=symbol,
+                available_at=now + timedelta(seconds=1), received_at=now + timedelta(seconds=1),
+                data_tier=DataTier.RESEARCH_PIT,
+            )
+    assert len(uow.trusted_market.raw_batches(dataset="daily_bars_raw", data_tier="research_pit")) == 4
     uow.close()
 
     project = Path(__file__).resolve().parents[2]
@@ -50,8 +58,9 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
             "--research-object-store", str(parquet_root), "--output-root", str(output_root),
             "--coverage-ledger", str(tmp_path / "missing-coverage.json"),
             "--as-of", days[-1].isoformat(), "--max-equities", "1",
-            "--minimum-equities", "1",
-            "--minimum-history-sessions", "250",
+                "--minimum-equities", "1",
+                "--minimum-history-sessions", "250",
+                "--minimum-training-sessions", "250",
         ],
         cwd=project, text=True, capture_output=True, check=False,
     )
@@ -61,6 +70,14 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
     assert index["deployment_ready"] is False
     assert set(index["contexts"]) == {"close_confirmed"}
     close = index["contexts"]["close_confirmed"]
+    standard_manifest = next(
+        json.loads(Path(ref).read_text(encoding="utf-8"))
+        for ref in index["standard_manifest_refs"]
+        if "600000" in Path(ref).name
+    )
+    assert standard_manifest["row_count"] == 290
+    assert len(standard_manifest["raw_input_batches"]) == 2
+    assert len(standard_manifest["qfq_input_batches"]) == 2
     manifests = close["sample_manifests"]["cn_equity_core"]
     assert manifests
     manifest = json.loads(Path(manifests[-1]).read_text(encoding="utf-8"))

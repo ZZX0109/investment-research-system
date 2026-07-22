@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from hashlib import sha256
 from io import BytesIO
 import json
+from math import isfinite
 import random
 from typing import Iterable
 
@@ -71,11 +72,13 @@ def _matrix(examples: list[SequenceExample], stats: dict[str, tuple[float, float
             normalized = []
             for name, value in zip(feature_names, values):
                 mean, std = stats.get(name, (0.0, 1.0))
-                normalized.append((float(value) - mean) / max(std, 1e-6))
+                resolved = (float(value) - mean) / max(std, 1e-6)
+                normalized.append(max(-20.0, min(20.0, resolved)) if isfinite(resolved) else 0.0)
             missing = [1.0 if value else 0.0 for value in example.missing_mask[index]]
             quality = list(example.data_quality_mask[index])
             event = list(example.event_missing_mask[index])
-            delay = [min(float(example.source_delay_seconds[index]) / 86_400.0, 30.0)]
+            raw_delay = float(example.source_delay_seconds[index])
+            delay = [min(max(raw_delay / 86_400.0, 0.0), 30.0) if isfinite(raw_delay) else 0.0]
             provider = [(example.provider_ids[index] % 10_000) / 10_000.0]
             revision = [_stable_revision_value(example.revision_ids[index])]
             cache = [{"fresh": 0.0, "stale_usable": 0.33, "expired": 0.66, "unavailable": 1.0}.get(example.cache_states[index], 0.5)]
@@ -93,7 +96,14 @@ def fit_sequence_stats(examples: list[SequenceExample]) -> dict[str, tuple[float
     names = examples[0].feature_order
     stats: dict[str, tuple[float, float]] = {}
     for index, name in enumerate(names):
-        values = [float(row.values[position][index]) for row in examples for position in range(len(row.values))]
+        values = [
+            float(row.values[position][index])
+            for row in examples for position in range(len(row.values))
+            if isfinite(float(row.values[position][index]))
+        ]
+        if not values:
+            stats[name] = (0.0, 1.0)
+            continue
         mean = sum(values) / len(values)
         variance = sum((value - mean) ** 2 for value in values) / max(1, len(values))
         stats[name] = (mean, max(variance ** 0.5, 1e-6))
@@ -127,7 +137,7 @@ class _PatchTST(nn.Module):
         n_patches = max(1, (config.window_sessions - self.patch_len) // self.stride + 1)
         self.position = nn.Parameter(torch.zeros(1, n_patches, config.hidden_size))
         layer = nn.TransformerEncoderLayer(config.hidden_size, config.attention_heads, config.hidden_size * 2, config.dropout, batch_first=True)
-        self.encoder = nn.TransformerEncoder(layer, config.layers)
+        self.encoder = nn.TransformerEncoder(layer, config.layers, enable_nested_tensor=False)
         self.head = nn.Sequential(nn.LayerNorm(config.hidden_size), nn.Linear(config.hidden_size, output_dim))
 
     def forward(self, values):
@@ -173,7 +183,7 @@ class _iTransformer(nn.Module):
         self.value_projection = nn.Linear(config.window_sessions, config.hidden_size)
         self.variable_embedding = nn.Parameter(torch.zeros(1, width, config.hidden_size))
         layer = nn.TransformerEncoderLayer(config.hidden_size, config.attention_heads, config.hidden_size * 2, config.dropout, batch_first=True)
-        self.encoder = nn.TransformerEncoder(layer, config.layers)
+        self.encoder = nn.TransformerEncoder(layer, config.layers, enable_nested_tensor=False)
         self.head = nn.Sequential(nn.LayerNorm(config.hidden_size), nn.Linear(config.hidden_size, output_dim))
 
     def forward(self, values):
@@ -227,24 +237,33 @@ class SequenceTaskRunner:
         width = sequence_input_width(train[0])
         self.model = build_sequence_network(self.config, width, self.output_dim)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
-        train_x = _matrix(train, self.stats, quality_dropout=self.config.quality_dropout, training=True)
-        train_y = torch.tensor([task_target(item, self.config.task) for item in train])
-        val_x = _matrix(validation, self.stats) if validation else None
-        val_y = torch.tensor([task_target(item, self.config.task) for item in validation]) if validation else None
         best_state = None
         best_loss = float("inf")
         stale = 0
         for epoch in range(self.config.max_epochs):
             self.model.train()
-            optimizer.zero_grad()
-            loss = self._loss(self.model(train_x), train_y)
-            loss.backward()
-            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            optimizer.step()
+            epoch_loss = 0.0
+            batch_count = 0
+            generator = torch.Generator().manual_seed(self.seed + epoch)
+            order = torch.randperm(len(train), generator=generator).tolist()
+            for offset in range(0, len(order), self.config.batch_size):
+                batch = [train[index] for index in order[offset: offset + self.config.batch_size]]
+                train_x = _matrix(
+                    batch, self.stats, quality_dropout=self.config.quality_dropout, training=True,
+                )
+                train_y = torch.tensor([task_target(item, self.config.task) for item in batch])
+                optimizer.zero_grad()
+                loss = self._loss(self.model(train_x), train_y)
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                optimizer.step()
+                epoch_loss += float(loss.item())
+                batch_count += 1
             self.model.eval()
             with torch.no_grad():
-                validation_loss = float(self._loss(self.model(val_x), val_y).item()) if val_x is not None else float(loss.item())
-            self.training_curve.append({"epoch": float(epoch), "train_loss": float(loss.item()), "validation_loss": validation_loss})
+                validation_loss = self._evaluation_loss(validation) if validation else epoch_loss / max(1, batch_count)
+            train_loss = epoch_loss / max(1, batch_count)
+            self.training_curve.append({"epoch": float(epoch), "train_loss": train_loss, "validation_loss": validation_loss})
             if validation_loss < best_loss:
                 best_loss = validation_loss
                 best_state = {key: value.detach().clone() for key, value in self.model.state_dict().items()}
@@ -257,6 +276,15 @@ class SequenceTaskRunner:
             self.model.load_state_dict(best_state)
         self.model.eval()
         return self
+
+    def _evaluation_loss(self, examples: list[SequenceExample]) -> float:
+        losses: list[float] = []
+        for offset in range(0, len(examples), self.config.batch_size):
+            batch = examples[offset: offset + self.config.batch_size]
+            values = _matrix(batch, self.stats)
+            targets = torch.tensor([task_target(item, self.config.task) for item in batch])
+            losses.append(float(self._loss(self.model(values), targets).item()))
+        return sum(losses) / max(1, len(losses))
 
     def _loss(self, output, target):
         if self.config.task.startswith("direction_"):
@@ -280,13 +308,17 @@ class SequenceTaskRunner:
             raise RuntimeError("sequence model is not fitted")
         if not examples:
             return []
+        results: list[list[float]] = []
         with torch.no_grad():
-            output = self.model(_matrix(examples, self.stats))
-            if self.config.task.startswith("direction_"):
-                return torch.softmax(output, dim=1).tolist()
-            if self.config.task == "return_20d":
-                return output.tolist()
-            return torch.sigmoid(output).tolist()
+            for offset in range(0, len(examples), self.config.batch_size):
+                output = self.model(_matrix(examples[offset: offset + self.config.batch_size], self.stats))
+                if self.config.task.startswith("direction_"):
+                    results.extend(torch.softmax(output, dim=1).tolist())
+                elif self.config.task == "return_20d":
+                    results.extend(output.tolist())
+                else:
+                    results.extend(torch.sigmoid(output).tolist())
+        return results
 
     def artifact_hash(self) -> str:
         if self.model is None:

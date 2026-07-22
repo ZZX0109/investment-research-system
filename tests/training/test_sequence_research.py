@@ -4,7 +4,7 @@ from investment_research.training.models import InstrumentType, LabelSet, Market
 from investment_research.training.sequence_dataset import build_sequence_examples
 from investment_research.training.sequence_models import SequenceModelConfig, SequenceTaskRunner, sequence_input_width
 from investment_research.training.sequence_calibration import decide_with_disagreement, fit_direction_calibrators, weighted_direction_ensemble
-from investment_research.training.sequence_experiment import split_sequence_examples
+from investment_research.training.sequence_experiment import evaluate_predictions, split_sequence_examples
 
 
 def _rows(n=28):
@@ -41,7 +41,23 @@ def test_sequence_builder_preserves_quality_channels_and_snapshot():
     assert len(row.event_missing_mask[0]) == 2
     assert row.market_snapshot_hash == "a" * 64
     assert row.data_tier == "research_pit"
+    assert row.market_regime == "range"
     assert sequence_input_width(row) == 2 * len(row.feature_order) + 9
+
+
+def test_sequence_builder_masks_non_finite_features():
+    rows = _rows()
+    rows[3].features["ret_5d"] = float("nan")
+    rows[4].features["vol_20d"] = float("inf")
+    examples = build_sequence_examples(rows, target_name="direction_1d", window_sessions=20)
+    assert examples
+    first = examples[0]
+    ret_index = first.feature_order.index("ret_5d")
+    vol_index = first.feature_order.index("vol_20d")
+    assert first.values[3][ret_index] == 0.0
+    assert first.missing_mask[3][ret_index]
+    assert first.values[4][vol_index] == 0.0
+    assert first.missing_mask[4][vol_index]
 
 
 def test_sequence_builder_uses_decision_availability_not_source_timestamp():
@@ -106,3 +122,15 @@ def test_sequence_calibration_requires_time_oof_provenance():
         training_fold_ids=["train-1"],
     )
     assert set(calibrators) == {"up", "down", "flat"}
+
+
+def test_sequence_metrics_are_grouped_by_market_regime():
+    metrics = evaluate_predictions(
+        "direction_1d",
+        [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8], [0.7, 0.2, 0.1]],
+        ["up", "down", "flat", "up"],
+        regimes=["bull", "bear", "range", "bull"],
+    )
+
+    assert set(metrics["regime_metrics"]) == {"bull", "bear", "range"}
+    assert metrics["regime_metrics"]["bull"]["sample_count"] == 2.0

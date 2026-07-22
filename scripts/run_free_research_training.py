@@ -28,6 +28,7 @@ from investment_research.training.formal_return_runner import FormalReturnTraini
 from investment_research.training.formal_risk_runner import FormalRiskTrainingRunner
 from investment_research.training.formal_training import FinalHoldoutLedger
 from investment_research.training.models import TrainingSample
+from investment_research.training.numeric_safety import guarded_model_math
 from investment_research.training.parquet_store import PITParquetStore
 from investment_research.training.research_evaluation import (
     research_scope_reports,
@@ -66,6 +67,8 @@ def main() -> int:
     context = _single_value(sources, "decision_context")
     cohort = args.cohort or _single_value(sources, "cohort", default="cn_equity_core")
     cohort_version = _single_value(sources, "cohort_version", default=f"legacy-{cohort}")
+    feature_contract_version = _single_value(sources, "feature_version", default="investment-risk-features-v2")
+    label_version = _single_value(sources, "label_version", default="four-market-tradeable-label-v1")
     if any(source.get("cohort", "cn_equity_core") != cohort for source in sources):
         raise SystemExit("all sample manifests must belong to the selected cohort")
     store = PITParquetStore(LocalObjectStore(args.object_store))
@@ -124,10 +127,20 @@ def main() -> int:
                 task,
                 [item for item in samples if item.labels.label_available and item.labels.label_end is not None],
             )
+            task_samples = _recent_task_history(task_samples, maximum_dates=1260)
+            distinct_dates = len({item.as_of_date for item in task_samples})
+            required_dates = _minimum_task_dates(task)
+            if distinct_dates < required_dates:
+                raise ValueError(
+                    f"insufficient_training_history:{distinct_dates}<{required_dates}:{task}"
+                )
             result = _run(task, samples=task_samples, market=market, context=context,
                           dataset_hash=dataset_hash, ledger=ledger)
             result_payload = _jsonable(result)
-            primary_candidate, fallback_candidate, challenger_candidates = select_research_roster_candidates(task, result)
+            primary_candidate, fallback_candidate, challenger_candidates, research_ready = select_research_roster_candidates(
+                task, result, cohort=cohort,
+            )
+            research_status = "research_ready" if research_ready else "exploratory"
             evaluation_path = scope / "evaluation.json"
             evaluation_path.write_text(json.dumps(result_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             evaluation_hash = sha256(evaluation_path.read_bytes()).hexdigest()
@@ -143,7 +156,7 @@ def main() -> int:
             )
             report_hashes = write_research_reports(scope / "reports", reports)
             manifest = {
-                "schema_version": "free-research-task-manifest-v1",
+                "schema_version": "free-research-task-manifest-v2",
                 "data_tier": DataTier.RESEARCH_PIT.value,
                 "status": "research_only",
                 "deployment_ready": False,
@@ -153,18 +166,25 @@ def main() -> int:
                 "cohort_version": cohort_version,
                 "task": task,
                 "model_version": f"{run_id}:{task}:{result_payload['fold_hash'][:12]}",
-                "label_version": f"four-market-tradeable-label-v1:{task}",
-                "feature_contract_version": "investment-risk-features-v2",
-                "research_ready": False,
+                "label_version": f"{label_version}:{task}",
+                "feature_contract_version": feature_contract_version,
+                "research_ready": research_ready,
+                "research_status": research_status,
                 "training_run_id": run_id,
                 "dataset_manifest_refs": [_portable_ref(path) for path in args.sample_manifest],
                 "dataset_hash": dataset_hash,
                 "sample_count": len(task_samples),
                 "symbol_count": len({sample.symbol for sample in task_samples}),
+                "training_date_range": {
+                    "start": min(item.as_of_date for item in task_samples).isoformat(),
+                    "end": max(item.as_of_date for item in task_samples).isoformat(),
+                    "distinct_dates": len({item.as_of_date for item in task_samples}),
+                },
                 "market_snapshot_refs": [
                     {"market_snapshot_id": item[0], "market_snapshot_hash": item[1]}
                     for item in sorted(snapshot_refs, key=lambda value: (value[0] or "", value[1] or ""))
                 ],
+                "market_snapshot_hash": snapshot_hash,
                 "fold_hash": result_payload["fold_hash"],
                 # The manifest's selected candidate is the roster primary,
                 # after the research Gate has decided whether the raw
@@ -193,6 +213,12 @@ def main() -> int:
                     "minimum_qualifying_regimes": 2,
                     "automatic_primary_replacement": False,
                 },
+                "research_gate": {
+                    "passed": research_ready,
+                    "status": "passed" if research_ready else "failed",
+                    "reasons": _research_gate_reasons(task, result, research_ready, cohort),
+                    "primary_selection": "best_eligible_candidate" if research_ready else "simple_baseline_retained",
+                },
                 "sequence_challenger_artifacts": [],
                 "blocking_reasons": list(RESEARCH_TIER_REASONS),
             }
@@ -207,9 +233,12 @@ def main() -> int:
             roster_path = scope / "research_model_roster.json"
             roster_path.write_text(roster.model_dump_json(indent=2), encoding="utf-8")
             outcomes.append({
-                "task": task, "status": "research_only",
+                "task": task, "status": "research_only", "research_status": research_status,
                 "manifest": _portable_ref(manifest_path), "roster": _portable_ref(roster_path),
-                "unevaluated_challengers": challenger_candidates,
+                # These candidates were evaluated on the same folds but were
+                # not selected as primary/fallback.  The former field name
+                # `unevaluated_challengers` incorrectly implied missing work.
+                "evaluated_challengers": challenger_candidates,
             })
         except Exception as exc:
             outcomes.append({"task": task, "status": "blocked", "reason": f"{type(exc).__name__}:{exc}"})
@@ -220,6 +249,8 @@ def main() -> int:
         "cohort": cohort, "sample_count": len(samples),
         "symbol_count": len({sample.symbol for sample in samples}),
         "dataset_hash": dataset_hash,
+        "feature_contract_version": feature_contract_version,
+        "label_version": label_version,
     }
     summary_path = root / f"{run_id}.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -233,6 +264,38 @@ def _run(task, *, samples, market, context, dataset_hash, ledger):
     if task.startswith("direction_"):
         return FormalDirectionTrainingRunner().run(samples=samples, market=market, decision_context=context, horizon=int(task.split("_")[1][:-1]), dataset_hash=dataset_hash, holdout_ledger=ledger)
     return FormalReturnTrainingRunner().run(samples=samples, market=market, decision_context=context, dataset_hash=dataset_hash, holdout_ledger=ledger)
+
+
+def _minimum_task_dates(task: str) -> int:
+    horizon = 1 if task == "direction_1d" else 5 if task == "direction_5d" else 20
+    return 252 + 504 + 126 + (2 * horizon)
+
+
+def _research_gate_reasons(task: str, result, research_ready: bool, cohort: str) -> list[str]:
+    if research_ready:
+        return []
+    if cohort == "cn_etf_benchmark":
+        return ["etf_baseline_and_shadow_only", "cross_sectional_sample_insufficient"]
+    selected = next(item for item in result.candidates if item.name == result.selected_candidate)
+    reasons = ["task_metric_gate_not_met"]
+    regimes = getattr(selected, "regime_metrics", {})
+    if len(regimes) < 2 or sum(float(value.get("sample_count", 0)) >= 30 for value in regimes.values()) < 2:
+        reasons.append("regime_sample_insufficient")
+    if task.startswith("direction_"):
+        reasons.append("direction_calibration_or_macro_f1_gate_not_met")
+    elif task == "return_20d":
+        reasons.append("return_distribution_gate_not_met")
+    else:
+        reasons.append("risk_alert_or_regime_gate_not_met")
+    return list(dict.fromkeys(reasons))
+
+
+def _recent_task_history(samples: list[TrainingSample], *, maximum_dates: int) -> list[TrainingSample]:
+    dates = sorted({item.as_of_date for item in samples})
+    if len(dates) <= maximum_dates:
+        return samples
+    retained = set(dates[-maximum_dates:])
+    return [item for item in samples if item.as_of_date in retained]
 
 
 def _restore_maps(row: dict) -> dict:
@@ -283,6 +346,8 @@ def _code_hash() -> str:
         PROJECT / "src/investment_research/training/formal_direction_runner.py",
         PROJECT / "src/investment_research/training/formal_return_runner.py",
         PROJECT / "src/investment_research/training/formal_risk_runner.py",
+        PROJECT / "src/investment_research/training/research_evaluation.py",
+        PROJECT / "src/investment_research/training/labels.py",
     ]
     digest = sha256()
     for path in paths:
@@ -310,6 +375,7 @@ def _freeze_research_artifacts(
     if not feature_order:
         raise ValueError("research artifact has no feature order")
     selected = primary_candidate
+    matrix = _artifact_matrix(samples, feature_order)
     package = {
         "schema_version": "free-research-model-artifact-v1",
         "data_tier": DataTier.RESEARCH_PIT.value,
@@ -317,14 +383,10 @@ def _freeze_research_artifacts(
         "task": task, "selected_candidate": selected,
         "feature_order": feature_order,
         "feature_bounds": {
-            name: [
-                min(float(sample.features.get(name, 0.0)) for sample in samples),
-                max(float(sample.features.get(name, 0.0)) for sample in samples),
-            ]
+            name: [float(matrix[name].min()), float(matrix[name].max())]
             for name in feature_order
         },
     }
-    matrix = [[float(sample.features.get(name, 0.0)) for name in feature_order] for sample in samples]
     if task == "drawdown_20d":
         from investment_research.training.calibration import compare_calibrators
         from investment_research.training.formal_risk_runner import _estimator, _label
@@ -340,7 +402,8 @@ def _freeze_research_artifacts(
             package.update(kind="constant_risk", probability=sum(labels) / len(labels), calibrator=calibrator)
         else:
             estimator = _estimator(selected)
-            estimator.fit(matrix, labels)
+            with guarded_model_math():
+                estimator.fit(matrix, labels)
             package.update(kind="risk_classifier", estimator=estimator, calibrator=calibrator)
         alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
@@ -349,7 +412,8 @@ def _freeze_research_artifacts(
                 package["comparator"] = {"kind": "constant_risk", "probability": sum(labels) / len(labels), "name": alternative}
             else:
                 comparator = _estimator(alternative)
-                comparator.fit(matrix, labels)
+                with guarded_model_math():
+                    comparator.fit(matrix, labels)
                 package["comparator"] = {"kind": "risk_classifier", "estimator": comparator, "name": alternative}
     elif task.startswith("direction_"):
         from investment_research.training.calibration import CalibrationMethod, TimeOutOfFoldCalibrator
@@ -372,7 +436,8 @@ def _freeze_research_artifacts(
             package.update(kind=selected, class_probabilities=base_probabilities, calibrators=calibrators, horizon=horizon)
         else:
             estimator = _estimator(selected)
-            estimator.fit(matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
+            with guarded_model_math():
+                estimator.fit(matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
             package.update(kind="direction_classifier", estimator=estimator, calibrators=calibrators, horizon=horizon)
         alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
@@ -384,7 +449,8 @@ def _freeze_research_artifacts(
             }
             if alternative not in {"constant-class", "random", "index-direction", "momentum"}:
                 comparator = _estimator(alternative)
-                comparator.fit(matrix, [_class_index(value) for value in labels] if alternative == "xgboost" else labels)
+                with guarded_model_math():
+                    comparator.fit(matrix, [_class_index(value) for value in labels] if alternative == "xgboost" else labels)
                 component = {"kind": "direction_classifier", "name": alternative, "estimator": comparator, "horizon": horizon}
             package["comparator"] = component
     else:
@@ -396,7 +462,8 @@ def _freeze_research_artifacts(
             estimators = []
             for quantile in QUANTILES:
                 estimator = _estimator(selected, quantile)
-                estimator.fit(matrix, targets)
+                with guarded_model_math():
+                    estimator.fit(matrix, targets)
                 estimators.append(estimator)
             package.update(kind="return_quantile", estimators=estimators, quantiles=list(QUANTILES))
         fallback_estimators = []
@@ -408,7 +475,8 @@ def _freeze_research_artifacts(
         else:
             for quantile in QUANTILES:
                 estimator = _estimator(fallback_candidate, quantile)
-                estimator.fit(matrix, targets)
+                with guarded_model_math():
+                    estimator.fit(matrix, targets)
                 fallback_estimators.append(estimator)
             package["comparator"] = {
                 "kind": "return_quantile", "name": fallback_candidate,
@@ -422,6 +490,19 @@ def _freeze_research_artifacts(
         model_path.name: sha256(model_path.read_bytes()).hexdigest(),
         feature_path.name: sha256(feature_path.read_bytes()).hexdigest(),
     }
+
+
+def _artifact_matrix(samples: list[TrainingSample], feature_order: list[str]):
+    """Create the same finite, named matrix contract used by task runners."""
+    import numpy as np
+    import pandas as pd
+
+    values = np.asarray([
+        [float(sample.features.get(name, 0.0)) for name in feature_order]
+        for sample in samples
+    ], dtype=float)
+    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
+    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=feature_order)
 
 
 def _eligible_samples(task: str, samples: list[TrainingSample]) -> list[TrainingSample]:

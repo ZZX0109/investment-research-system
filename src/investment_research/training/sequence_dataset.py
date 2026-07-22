@@ -10,11 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from math import isfinite
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from investment_research.training.models import TrainingSample
+from investment_research.training.research_evaluation import classify_market_regime
 
 
 VALID_EVENT_STATES = {"events_present", "confirmed_none"}
@@ -42,6 +44,7 @@ class SequenceExample(BaseModel):
     market_snapshot_id: str | None = None
     market_snapshot_hash: str | None = None
     data_tier: str = "research_pit"
+    market_regime: str = "unknown"
     sequence_hash: str
 
 
@@ -113,8 +116,13 @@ def build_sequence_examples(
                 continue
             if any(row.market_snapshot_hash != snapshot_hash for row in window):
                 continue
-            values = [[float(row.features.get(name, 0.0)) for name in feature_order] for row in window]
-            missing = [[name in row.missing_features or name not in row.features for name in feature_order] for row in window]
+            values = [[_finite_feature(row, name) for name in feature_order] for row in window]
+            missing = [[
+                name in row.missing_features
+                or name not in row.features
+                or not _is_finite_feature(row.features.get(name))
+                for name in feature_order
+            ] for row in window]
             quality = [_quality_channels(row) for row in window]
             event_missing = [_event_channels(row) for row in window]
             provider_ids = [_stable_provider_id(row.provider_id or row.provider or "unknown") for row in window]
@@ -138,6 +146,7 @@ def build_sequence_examples(
                 "missing": missing,
                 "target": target,
                 "snapshot_hash": snapshot_hash,
+                "market_regime": classify_market_regime(final),
             }
             output.append(SequenceExample(
                 symbol=symbol,
@@ -161,6 +170,7 @@ def build_sequence_examples(
                 market_snapshot_id=snapshot_id,
                 market_snapshot_hash=snapshot_hash,
                 data_tier=final.data_tier,
+                market_regime=classify_market_regime(final),
                 sequence_hash=sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             ))
     return output
@@ -172,6 +182,18 @@ def _quality_channels(sample: TrainingSample) -> list[float]:
     coverage = max(0.0, min(1.0, float(sample.feature_coverage)))
     issues = 1.0 if sample.data_issues else 0.0
     return [passed, coverage, 1.0 - issues]
+
+
+def _is_finite_feature(value: object) -> bool:
+    try:
+        return isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _finite_feature(sample: TrainingSample, name: str) -> float:
+    value = sample.features.get(name)
+    return float(value) if _is_finite_feature(value) else 0.0
 
 
 def _event_channels(sample: TrainingSample) -> list[float]:

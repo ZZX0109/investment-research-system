@@ -91,6 +91,7 @@ def main() -> int:
                 "revision_id": sample.revision_id,
                 "source_delay_seconds": sample.source_delay_seconds,
                 "candidate_predictions": _sequence_challenger_predictions(scope, symbol_samples, task),
+                "excluded_candidates": _excluded_sequence_challengers(scope),
                 "ensemble_weights": {},
             }
             if not roster_path.is_file():
@@ -143,6 +144,11 @@ def main() -> int:
                     model_disagreement=disagreement,
                     model_role=role, model_candidate=(roster.primary if role == "primary" else roster.fallback).candidate_name,
                     roster_hash=roster.roster_hash,
+                    research_status=roster.research_status,
+                    research_limitations=(
+                        ["exploratory_result_not_a_research_ready_primary"]
+                        if roster.research_status == "exploratory" else []
+                    ),
                     abstained=bool(reasons), abstain_reasons=reasons,
                 )
             except Exception as exc:
@@ -242,6 +248,11 @@ def _sequence_challenger_predictions(scope: Path, samples: list[TrainingSample],
     for manifest_path in root.glob("*/sequence_manifest.json"):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # A challenger is evidence-only until its own time-OOF/regime gate
+            # permits ensemble participation.  This avoids a weak deep model
+            # manufacturing disagreement and unnecessary abstentions.
+            if not manifest.get("eligible_for_ensemble", False):
+                continue
             artifact = (PROJECT / manifest["artifact_ref"]).resolve()
             if not artifact.is_file():
                 continue
@@ -258,6 +269,23 @@ def _sequence_challenger_predictions(scope: Path, samples: list[TrainingSample],
         except (OSError, ValueError, KeyError, RuntimeError, IndexError):
             continue
     return output
+
+
+def _excluded_sequence_challengers(scope: Path) -> dict[str, str]:
+    root = scope / "sequence"
+    excluded: dict[str, str] = {}
+    if not root.is_dir():
+        return excluded
+    for manifest_path in root.glob("*/sequence_manifest.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not manifest.get("eligible_for_ensemble", False):
+            excluded[str(manifest.get("architecture", manifest_path.parent.name))] = str(
+                manifest.get("ensemble_exclusion_reason", "challenger_gate_not_met")
+            )
+    return excluded
 
 
 def _ensemble_with_sequence_challengers(task: str, base: dict, candidates: dict[str, dict]) -> tuple[dict | None, dict[str, float], float]:

@@ -25,6 +25,11 @@ TASKS = ("direction_1d", "direction_5d", "return_20d", "drawdown_20d")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the reproducible CN research demo")
+    parser.add_argument("--profile", choices=("full", "smoke"), default="full")
+    parser.add_argument(
+        "--candidate-universe-size", type=int, default=150,
+        help="Deterministic equity screening buffer used by the full 100-stock workflow.",
+    )
     parser.add_argument("--max-symbols", type=int, default=None, help="Development-only provider cap; omit for the fixed 100-stock plus 5-ETF workflow.")
     parser.add_argument("--symbols-per-cohort", type=int, default=3)
     parser.add_argument("--max-equities", type=int, default=None,
@@ -32,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-equities", type=int, default=80,
                         help="Minimum eligible equity members for this run (default: 80).")
     parser.add_argument("--minimum-history-sessions", type=int, default=756)
+    parser.add_argument("--minimum-training-sessions", type=int, default=960)
     parser.add_argument("--minimum-cohort-symbols", type=int, default=80,
                         help="Training gate for a cohort; lower only for an explicit small fixture run.")
     parser.add_argument("--skip-collection", action="store_true")
@@ -63,6 +69,7 @@ def main() -> int:
         "deployment_ready": False,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "run_id": f"cn-research-demo-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}",
+        "profile": args.profile,
         "stages": [],
         "cohorts": {},
         "tasks": {},
@@ -77,7 +84,13 @@ def main() -> int:
     try:
         if not args.skip_collection:
             command = [sys.executable, "scripts/run_free_research_cycle.py", "--skip-rebuild"]
-            if args.max_symbols is not None:
+            if args.profile == "full":
+                if args.max_symbols is not None or args.max_equities is not None:
+                    raise ValueError("full profile forbids development max-symbol overrides")
+                command.extend([
+                    "--full-history", "--max-symbols", str(args.candidate_universe_size),
+                ])
+            elif args.max_symbols is not None:
                 command.extend(["--max-symbols", str(args.max_symbols)])
             if args.no_discover_cn_universe:
                 command.append("--no-discover-cn-universe")
@@ -85,7 +98,8 @@ def main() -> int:
 
         rebuild_command = [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root),
                            "--minimum-equities", str(args.minimum_equities),
-                           "--minimum-history-sessions", str(args.minimum_history_sessions)]
+                           "--minimum-history-sessions", str(args.minimum_history_sessions),
+                           "--minimum-training-sessions", str(args.minimum_training_sessions)]
         if args.max_equities is not None:
             rebuild_command.extend(["--max-equities", str(args.max_equities)])
         rebuild_stdout = _run(
@@ -107,6 +121,11 @@ def main() -> int:
                 "cohort_version": cohort_payload.get("cohort_version"),
                 "content_hash": cohort_payload.get("content_hash"),
                 "member_count": len(cohort_payload.get("members", [])),
+                "minimum_required_members": cohort_payload.get("minimum_required_members"),
+                "eligible_candidate_count": cohort_payload.get("eligible_candidate_count"),
+                "selection_limit": cohort_payload.get("selection_limit"),
+                "minimum_training_sessions": args.minimum_training_sessions,
+                "observed_session_range": _session_range(cohort_payload.get("members", [])),
                 "blocking_reasons": cohort_payload.get("blocking_reasons", []),
                 "snapshot_id": context.get("snapshot_id"),
                 "snapshot_hash": context.get("snapshot_hash"),
@@ -133,6 +152,19 @@ def main() -> int:
                         "gating_reasons": [
                             f"eligible_equity_count_below_{args.minimum_cohort_symbols}"
                         ],
+                    }
+                blocked = True
+                continue
+            if cohort == "cn_etf_benchmark" and len(cohort_payload.get("members", [])) != 5:
+                cohort_report.update(
+                    status="blocked",
+                    blocking_reasons=["required_five_etfs_not_training_eligible"],
+                )
+                report["cohorts"][cohort] = cohort_report
+                for task in TASKS:
+                    report["tasks"][f"{cohort}/{task}"] = {
+                        "status": "blocked",
+                        "gating_reasons": ["required_five_etfs_not_training_eligible"],
                     }
                 blocked = True
                 continue
@@ -326,10 +358,16 @@ def _training_task_record(path: Path | None, task: str) -> dict[str, Any]:
                 record.update({key: task_manifest.get(key) for key in (
                     "model_version", "label_version", "feature_contract_version", "dataset_hash",
                     "fold_hash", "artifact_hashes", "report_hashes", "research_ready",
+                    "research_status",
                 )})
             except (OSError, ValueError):
                 record.setdefault("gating_reasons", []).append("task_manifest_invalid")
     return record
+
+
+def _session_range(members: list[dict[str, Any]]) -> dict[str, int | None]:
+    values = [int(item.get("training_eligible_sessions", item.get("observed_sessions", 0))) for item in members]
+    return {"minimum": min(values) if values else None, "maximum": max(values) if values else None}
 
 
 def _run_sequence_challengers(*, cohort: str, task: str, manifests: list[str], run_id: str, report: dict[str, Any], output_root: Path | None = None) -> dict[str, Any]:
@@ -373,7 +411,7 @@ def _attach_sequence_challengers_to_roster(task_record: dict[str, Any]) -> None:
     roster = json.loads(roster_path.read_text(encoding="utf-8"))
     roster["sequence_challengers"] = challengers
     payload = dict(roster)
-    for key in ("schema_version", "data_tier", "status", "deployment_ready", "roster_hash", "feature_contract_version"):
+    for key in ("schema_version", "data_tier", "status", "deployment_ready", "roster_hash"):
         payload.pop(key, None)
     roster["roster_hash"] = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     roster_path.write_text(json.dumps(roster, ensure_ascii=False, indent=2), encoding="utf-8")

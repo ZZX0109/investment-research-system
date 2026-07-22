@@ -5,6 +5,8 @@ from pathlib import Path
 from investment_research.training.models import InstrumentType, LabelSet, Market, TrainingSample
 from investment_research.training.research_evaluation import (
     ResearchCostPolicy,
+    classify_market_regime,
+    fit_regime_thresholds,
     research_scope_reports,
     write_research_reports,
 )
@@ -51,3 +53,24 @@ def test_cost_policy_matches_conservative_stock_and_etf_assumptions() -> None:
     policy = ResearchCostPolicy()
     assert policy.round_trip_cost_ratio(is_etf=False) == 0.0021
     assert policy.round_trip_cost_ratio(is_etf=True) == 0.0012
+
+
+def test_regime_thresholds_are_fitted_from_training_rows_not_fixed_constants() -> None:
+    when = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    samples = []
+    for index, (benchmark, volatility) in enumerate(((-0.10, 0.10), (-0.04, 0.11), (0.00, 0.11), (0.05, 0.12), (0.10, 0.11), (0.15, 0.11), (0.20, 0.13), (0.30, 0.60))):
+        samples.append(TrainingSample(
+            symbol=f"600{index:03d}", market=Market.CN, instrument_type=InstrumentType.EQUITY,
+            as_of_date=date(2026, 7, 14), as_of_time=when, feature_cutoff=when,
+            feature_version="cn-research-feature-v3", data_version="snapshot",
+            features={"benchmark_ret_20d": benchmark, "vol_20d": volatility},
+            labels=LabelSet(symbol=f"600{index:03d}", as_of_date=date(2026, 7, 14)),
+        ))
+    thresholds = fit_regime_thresholds(samples)
+    assert thresholds.benchmark_bear < thresholds.benchmark_bull
+    assert thresholds.volatility_high >= 0.12
+    assert classify_market_regime(samples[0], thresholds) == "bear"
+    assert classify_market_regime(samples[-1], thresholds) == "high_vol"
+    assert {classify_market_regime(sample, thresholds) for sample in samples} == {
+        "bull", "bear", "range", "high_vol"
+    }

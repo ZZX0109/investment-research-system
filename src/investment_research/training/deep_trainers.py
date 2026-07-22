@@ -233,7 +233,7 @@ class PatchTSTModel(_DeepTrainerBase):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step(loss)
+            scheduler.step(float(loss.detach().item()))
 
             loss_val = loss.item()
             patience = patience + 1 if loss_val >= best_loss else 0
@@ -413,7 +413,7 @@ class TCNModel(_DeepTrainerBase):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step(loss)
+            scheduler.step(float(loss.detach().item()))
 
             loss_val = loss.item()
             patience = patience + 1 if loss_val >= best_loss else 0
@@ -589,7 +589,7 @@ class iTransformerModel(_DeepTrainerBase):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step(loss)
+            scheduler.step(float(loss.detach().item()))
 
             loss_val = loss.item()
             patience = patience + 1 if loss_val >= best_loss else 0

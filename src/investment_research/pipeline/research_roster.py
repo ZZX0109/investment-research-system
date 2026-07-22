@@ -40,6 +40,7 @@ def build_research_roster(
         "task": task, "artifact_ref": artifact_ref,
         "artifact_hashes": dict(task_manifest["artifact_hashes"]),
         "report_hashes": dict(task_manifest["report_hashes"]),
+        "research_status": task_manifest.get("research_status", "exploratory"),
     }
     primary = ResearchRosterEntry(
         role="primary", candidate_name=primary_candidate, component="primary", **common,
@@ -59,6 +60,9 @@ def build_research_roster(
         "cohort": task_manifest["cohort"],
         "cohort_version": cohort_version,
         "task": task,
+        "feature_contract_version": task_manifest.get("feature_contract_version", "investment-risk-features-v2"),
+        "label_version": task_manifest.get("label_version", "four-market-tradeable-label-v1"),
+        "research_status": task_manifest.get("research_status", "exploratory"),
         "training_run_id": task_manifest["training_run_id"],
         "dataset_hash": task_manifest["dataset_hash"],
         "market_snapshot_hash": task_manifest["market_snapshot_refs"][0]["market_snapshot_hash"],
@@ -92,7 +96,10 @@ def load_verified_research_roster(
         market, decision_context, cohort_version, task,
     ):
         raise ValueError("research roster exact scope mismatch")
-    excluded = {"schema_version", "data_tier", "status", "deployment_ready", "roster_hash", "feature_contract_version"}
+    excluded = {"schema_version", "data_tier", "status", "deployment_ready", "roster_hash"}
+    if roster.schema_version in {"cn-research-model-roster-v1", "cn-research-model-roster-v2"}:
+        # Earlier payloads predate the explicit contract/status evidence.
+        excluded.update({"feature_contract_version", "label_version", "research_status"})
     if roster.schema_version == "cn-research-model-roster-v1":
         excluded.add("sequence_challengers")
     payload = roster.model_dump(mode="json", exclude=excluded)

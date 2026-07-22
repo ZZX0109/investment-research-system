@@ -59,6 +59,10 @@ class ModelTaskStatus(BaseModel):
     gating_reasons: list[str] = Field(default_factory=list)
     fallback_from: str | None = None
     artifact_hash_verified: bool | None = None
+    # ``status`` remains the transport/governance status.  This separate
+    # qualifier says whether a public-data result passed the stricter
+    # research metric gate, without ever implying formal approval.
+    research_status: Literal["research_ready", "exploratory", "unavailable", "abstain"] | None = None
 
 
 class DirectionDistribution(BaseModel):
@@ -230,11 +234,12 @@ class ResearchRosterEntry(BaseModel):
     report_hashes: dict[str, str]
     data_tier: DataTier = DataTier.RESEARCH_PIT
     status: Literal["research_only"] = "research_only"
+    research_status: Literal["research_ready", "exploratory"] = "exploratory"
     deployment_ready: Literal[False] = False
 
 
 class ResearchModelRoster(BaseModel):
-    schema_version: str = "cn-research-model-roster-v2"
+    schema_version: str = "cn-research-model-roster-v3"
     data_tier: DataTier = DataTier.RESEARCH_PIT
     status: Literal["research_only"] = "research_only"
     deployment_ready: Literal[False] = False
@@ -247,6 +252,8 @@ class ResearchModelRoster(BaseModel):
     dataset_hash: str = Field(min_length=64, max_length=64)
     market_snapshot_hash: str = Field(min_length=64, max_length=64)
     feature_contract_version: str = "investment-risk-features-v2"
+    label_version: str = "four-market-tradeable-label-v1"
+    research_status: Literal["research_ready", "exploratory"] = "exploratory"
     code_hash: str = Field(min_length=64, max_length=64)
     dependency_hash: str = Field(min_length=64, max_length=64)
     primary: ResearchRosterEntry

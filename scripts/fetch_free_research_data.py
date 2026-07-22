@@ -171,26 +171,48 @@ def _collect_cn_prices(
     )
     primary_limiter = SerialRateLimiter(primary_policy.requests_per_second)
     backup_limiter = SerialRateLimiter(backup_policy.requests_per_second)
-    primary_failed_modes: set[str] = set()
+    primary_failed_modes: set[tuple[str, str]] = set()
     output: list[dict] = []
-    try:
-        backup_context = BaostockDailyResearchProvider()
-        backup = backup_context.__enter__()
-    except Exception as exc:
-        backup_context = nullcontext()
-        backup = None
-        backup_unavailable = f"{type(exc).__name__}:{exc}"
-    else:
-        backup_unavailable = None
+    # Baostock's public socket can become unusable after a malformed response.
+    # Reconnect on every retry so one protocol error cannot poison the entire
+    # 150-symbol collection run.
+    backup_context = nullcontext()
+    backup = _PerRequestBaostock()
+    backup_unavailable = None
     try:
         for symbol in symbols:
           for adjustment_mode in ("raw", "qfq"):
+            failure_key = ("etf" if symbol in ETF_RESEARCH_SYMBOLS else "equity", adjustment_mode)
+            reusable = _reusable_full_history_batch(
+                service, symbol=symbol, adjustment_mode=adjustment_mode, end=end,
+            ) if full_history else None
+            if reusable is not None and reusable[0].coverage_end.date() >= end:
+                batch, row_count = reusable
+                output.append({
+                    "market": "cn", "dataset": f"daily_bars_{adjustment_mode}",
+                    "symbol": symbol, "adjustment_mode": adjustment_mode,
+                    "provider": batch.provider, "provider_chain": [batch.provider],
+                    "status": "backfilled", "rows_or_bytes": row_count,
+                    "payload_hash": batch.payload_hash, "attempts": 0,
+                    "cache_state": "fresh", "resume_reused": True,
+                })
+                continue
             cursor = cursor_store.get(primary.name, symbol, adjustment_mode)
-            start = configured_start if cursor is None else cursor.overlap_start
+            # A requested full-history repair must ignore an incremental
+            # cursor.  Previously the cursor silently reduced a backfill to
+            # the five-session overlap window and the newest tiny batch then
+            # appeared to be the complete history during rebuild.
+            start = (
+                _overlap_start(reusable[0].coverage_end.date())
+                if full_history and reusable is not None
+                else None if full_history
+                else configured_start if cursor is None
+                else cursor.overlap_start
+            )
             if configured_start is not None and start < configured_start:
                 start = configured_start
             try:
-                if adjustment_mode in primary_failed_modes:
+                if failure_key in primary_failed_modes:
                     raise RuntimeError(f"akshare_circuit_open:{adjustment_mode}")
                 primary_payload, primary_attempts = call_with_retry(
                     lambda: primary.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
@@ -206,7 +228,7 @@ def _collect_cn_prices(
                     payload_hash=primary_batch.payload_hash,
                 ))
             except Exception as primary_exc:
-                primary_failed_modes.add(adjustment_mode)
+                primary_failed_modes.add(failure_key)
                 if backup is None:
                     output.append({
                         "market": "cn", "dataset": f"daily_bars_{adjustment_mode}", "symbol": symbol,
@@ -298,8 +320,7 @@ def _collect_cn_prices(
                     "degraded_reason": f"baostock_cross_check_failed:{type(comparison_exc).__name__}",
                 })
     finally:
-        if backup is not None:
-            backup_context.__exit__(None, None, None)
+        backup_context.__exit__(None, None, None)
     return output
 
 
@@ -381,7 +402,9 @@ def _collect_cninfo_notices(service) -> dict:
             frame = ak.stock_notice_report(symbol="全部", date=candidate.strftime("%Y%m%d"))
             successes += 1
             if not frame.empty:
-                rows.extend(json.loads(frame.to_json(orient="records", force_ascii=False, date_format="iso")))
+                rows.extend(_classify_cninfo_notice(item, source_date=candidate) for item in json.loads(
+                    frame.to_json(orient="records", force_ascii=False, date_format="iso")
+                ))
         except Exception as exc:
             failures.append(f"{candidate.isoformat()}:{type(exc).__name__}")
     if successes == 0:
@@ -396,8 +419,42 @@ def _collect_cninfo_notices(service) -> dict:
         # The endpoint is useful evidence but cannot prove complete historical
         # exchange coverage, so it remains partial even when rows are present.
         "status": "partial", "rows_or_bytes": len(rows), "payload_hash": batch.payload_hash,
+        "event_coverage_status": "partial",
+        "event_category_counts": _event_category_counts(rows),
         "reason": "rolling_public_window_not_complete" + (":" + ",".join(failures) if failures else ""),
     }
+
+
+def _classify_cninfo_notice(row: dict, *, source_date: date) -> dict:
+    title = str(next((value for key, value in row.items() if "标题" in str(key) or str(key).lower() in {"title", "notice_title"}), ""))
+    category = "material"
+    mapping = (
+        ("年度报告", "financial_report"), ("半年度报告", "financial_report"), ("季度报告", "financial_report"),
+        ("业绩预告", "earnings_guidance"), ("业绩快报", "earnings_guidance"),
+        ("回购", "repurchase"), ("减持", "share_reduction"), ("质押", "share_pledge"),
+        ("监管", "regulatory"), ("处罚", "regulatory"), ("诉讼", "litigation"),
+        ("仲裁", "litigation"), ("重组", "mna"), ("收购", "mna"), ("合并", "mna"),
+    )
+    for needle, resolved in mapping:
+        if needle in title:
+            category = resolved
+            break
+    result = dict(row)
+    result.update({
+        "event_category": category,
+        "first_published_at": source_date.isoformat(),
+        "source_collected_at": datetime.now(timezone.utc).isoformat(),
+        "event_source": "cninfo_public_notice",
+    })
+    return result
+
+
+def _event_category_counts(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("event_category", "material"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _collect_sec_company_records(service, tickers: dict, symbols: list[str]) -> list[dict]:
@@ -505,6 +562,48 @@ def _persist(
     )
 
 
+class _PerRequestBaostock:
+    name = "baostock"
+
+    def fetch(self, *args, **kwargs):
+        with BaostockDailyResearchProvider() as provider:
+            return provider.fetch(*args, **kwargs)
+
+
+def _reusable_full_history_batch(service, *, symbol: str, adjustment_mode: str, end: date):
+    if not hasattr(service, "uow") or not hasattr(service, "object_store"):
+        return None
+    dataset = f"daily_bars_{adjustment_mode}"
+    batches = service.uow.trusted_market.raw_batches(
+        dataset=dataset, data_tier=DataTier.RESEARCH_PIT.value, symbol=symbol,
+    )
+    for batch in reversed(batches):
+        if batch.coverage_start is not None or batch.coverage_end is None:
+            continue
+        if (end - batch.coverage_end.date()).days > 10:
+            continue
+        if not batch.payload_ref.startswith("file-object://"):
+            continue
+        try:
+            payload = service.object_store.get(batch.payload_ref.removeprefix("file-object://"))
+            rows = json.loads(payload)
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(rows, list) and len(rows) >= 960:
+            return batch, len(rows)
+    return None
+
+
+def _overlap_start(latest: date) -> date:
+    current = latest
+    remaining = 5
+    while remaining:
+        current -= timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current
+
+
 def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: bool = False) -> dict[str, list[str]]:
     if limit is not None and limit <= 0:
         raise ValueError("--max-symbols-per-market must be positive")
@@ -519,18 +618,42 @@ def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: boo
                 raise ValueError(f"symbols file has invalid {market} universe")
             values[market] = list(dict.fromkeys(supplied))
     elif discover_cn:
-        try:
-            values["cn"] = AkshareDailyResearchProvider().enumerate_symbols()
-        except Exception:
+        # A capped full-research run needs a liquid candidate buffer, not the
+        # first N lexicographic codes from the entire exchange.  Baostock's
+        # public CSI 300 membership is deterministic and already contains a
+        # sufficient buffer for the fixed 100-stock cohort.
+        if limit is not None:
             try:
                 with BaostockDailyResearchProvider() as provider:
-                    values["cn"] = provider.enumerate_symbols(as_of=date.today())
+                    values["cn"] = provider.enumerate_liquid_candidates()
             except Exception:
-                # The explicit fallback list keeps a zero-budget demo runnable;
-                # the coverage ledger still reveals that discovery was partial.
-                values["cn"] = list(DEFAULT_SYMBOLS["cn"])
+                values["cn"] = []
+        if not values["cn"]:
+            try:
+                values["cn"] = AkshareDailyResearchProvider().enumerate_symbols()
+            except Exception:
+                try:
+                    with BaostockDailyResearchProvider() as provider:
+                        values["cn"] = provider.enumerate_symbols(as_of=date.today())
+                except Exception:
+                    # The explicit fallback list keeps a zero-budget demo runnable;
+                    # the coverage ledger still reveals that discovery was partial.
+                    values["cn"] = list(DEFAULT_SYMBOLS["cn"])
         values["cn"] = sorted(set(values["cn"]) | set(ETF_RESEARCH_SYMBOLS))
-    return {market: symbols[:limit] if limit else symbols for market, symbols in values.items()}
+    output: dict[str, list[str]] = {}
+    for market, symbols in values.items():
+        if limit is None:
+            output[market] = symbols
+            continue
+        if market == "cn":
+            # The cap is a liquid-candidate screening budget, not permission
+            # to drop the fixed ETF benchmark.  ETFs are always appended and
+            # deduplicated after the equity candidate slice.
+            equities = [item for item in symbols if item not in ETF_RESEARCH_SYMBOLS]
+            output[market] = list(dict.fromkeys([*ETF_RESEARCH_SYMBOLS, *equities[:limit]]))
+        else:
+            output[market] = symbols[:limit]
+    return output
 
 
 if __name__ == "__main__":

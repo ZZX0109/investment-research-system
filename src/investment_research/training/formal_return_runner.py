@@ -9,7 +9,8 @@ from investment_research.training.formal_training import (
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime
+from investment_research.training.numeric_safety import guarded_model_math, require_finite
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
 
 
 QUANTILES = (0.1, 0.5, 0.9)
@@ -86,9 +87,10 @@ class FormalReturnTrainingRunner:
     def _oof(self, name, folds, features):
         quantiles, targets, regimes = [], [], []
         for fold in folds:
+            thresholds = fit_regime_thresholds(fold.train)
             quantiles.extend(self._fit_predict(name, fold.train, fold.validation, features))
             targets.extend(_target(item) for item in fold.validation)
-            regimes.extend(classify_market_regime(item) for item in fold.validation)
+            regimes.extend(classify_market_regime(item, thresholds) for item in fold.validation)
         return quantiles, targets, regimes
 
     def _fit_predict(self, name, train, evaluate, features):
@@ -96,20 +98,30 @@ class FormalReturnTrainingRunner:
         if name == "historical-distribution":
             values = tuple(_quantile(targets, quantile) for quantile in QUANTILES)
             return [values] * len(evaluate)
-        matrix = [_vector(item, features) for item in train]
-        evaluation = [_vector(item, features) for item in evaluate]
+        matrix = _matrix(train, features)
+        evaluation = _matrix(evaluate, features)
         predictions = []
         for quantile in QUANTILES:
             estimator = _estimator(name, quantile)
-            estimator.fit(matrix, targets)
-            predictions.append([float(value) for value in estimator.predict(evaluation)])
+            with guarded_model_math():
+                estimator.fit(matrix, targets)
+                values = estimator.predict(evaluation)
+            require_finite(values, stage=f"return:{name}:q{quantile}")
+            predictions.append([float(value) for value in values])
         return [tuple(sorted(values)) for values in zip(*predictions)]
 
 
 def _estimator(name, quantile):
     if name == "linear-quantile":
         from sklearn.linear_model import QuantileRegressor
-        return QuantileRegressor(quantile=quantile, alpha=0.01, solver="highs")
+        from sklearn.preprocessing import FunctionTransformer
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import RobustScaler
+        return make_pipeline(
+            RobustScaler(),
+            FunctionTransformer(_clip_scaled_values),
+            QuantileRegressor(quantile=quantile, alpha=0.01, solver="highs"),
+        )
     if name == "lightgbm-quantile":
         import lightgbm as lgb
         return lgb.LGBMRegressor(objective="quantile", alpha=quantile, n_estimators=200, learning_rate=0.05, random_state=42, verbose=-1)
@@ -136,6 +148,21 @@ def _target(sample):
 
 def _vector(sample, features):
     return [float(sample.features.get(name, 0.0)) for name in features]
+
+
+def _matrix(samples, features):
+    import numpy as np
+    import pandas as pd
+
+    values = np.asarray([_vector(item, features) for item in samples], dtype=float)
+    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
+    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=features)
+
+
+def _clip_scaled_values(values):
+    import numpy as np
+
+    return np.clip(np.nan_to_num(values, nan=0.0, posinf=20.0, neginf=-20.0), -20.0, 20.0)
 
 
 def _quantile(values, fraction):
@@ -209,5 +236,6 @@ class _QuantileRandomForest:
 
     def predict(self, values):
         import numpy as np
-        tree_predictions = np.asarray([tree.predict(values) for tree in self.model.estimators_])
+        raw_values = values.to_numpy() if hasattr(values, "to_numpy") else values
+        tree_predictions = np.asarray([tree.predict(raw_values) for tree in self.model.estimators_])
         return np.quantile(tree_predictions, self.quantile, axis=0)

@@ -62,3 +62,25 @@ def test_calibrator_rejects_in_sample_provenance_and_compares_methods() -> None:
     )
     assert selected.method in set(CalibrationMethod)
     assert {item.method for item in reports} == set(CalibrationMethod)
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), -float("inf")])
+def test_calibrator_rejects_non_finite_scores(score: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        TimeOutOfFoldCalibrator(CalibrationMethod.PLATT).fit(
+            [0.1, score, 0.9],
+            [0, 0, 1],
+            prediction_fold_ids=["validation"] * 3,
+            training_fold_ids=["training"],
+        )
+
+
+def test_platt_calibration_handles_extreme_oof_probabilities() -> None:
+    calibrator = TimeOutOfFoldCalibrator(CalibrationMethod.PLATT).fit(
+        [0.0, 1e-300, 1e-12, 1.0 - 1e-12, 1.0],
+        [0, 0, 0, 1, 1],
+        prediction_fold_ids=["validation"] * 5,
+        training_fold_ids=["training"],
+    )
+    predictions = calibrator.predict_many([0.0, 0.5, 1.0])
+    assert all(0.0 <= value <= 1.0 for value in predictions)

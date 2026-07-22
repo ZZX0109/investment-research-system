@@ -1,4 +1,5 @@
 import type { WorkbenchMode } from "../api/types";
+import { useI18n } from "../i18n";
 
 interface ModeSwitchProps {
   mode: WorkbenchMode;
@@ -6,15 +7,16 @@ interface ModeSwitchProps {
 }
 
 export function ModeSwitch({ mode, onChange }: ModeSwitchProps) {
+  const { t } = useI18n();
   const labels: Record<WorkbenchMode, string> = {
-    demo: "Demo Mode",
-    sandbox: "Sandbox Mode",
-    research: "A股研究模式",
-    real: "正式模式（需授权）"
+    demo: t("mode.demo"),
+    sandbox: t("mode.sandbox"),
+    research: t("mode.research"),
+    real: t("mode.real")
   };
 
   return (
-    <div className="mode-switch" role="tablist" aria-label="Workbench mode">
+    <div className="mode-switch" role="tablist" aria-label={t("header.context")}>
       {(["research", "demo", "sandbox", "real"] as WorkbenchMode[]).map((entry) => (
         <button
           key={entry}

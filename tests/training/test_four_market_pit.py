@@ -12,7 +12,7 @@ from investment_research.domain.pit import (
     EventCoverageStatus,
     HistoricalUniverseMembership,
 )
-from investment_research.training.labels import generate_tradeable_labels
+from investment_research.training.labels import TradeableLabelPolicy, generate_tradeable_labels
 from investment_research.training.leakage_audit import (
     audit_point_in_time_inputs,
     require_publishable_leakage_report,
@@ -86,6 +86,19 @@ def test_tradeable_label_defers_one_price_limit_up_entry() -> None:
     assert labels.label_available is True
     assert labels.future_max_drawdown_20d is not None
     assert labels.direction_5d in {"up", "down", "flat"}
+
+
+def test_volatility_direction_label_uses_instrument_cost_floor() -> None:
+    start = date(2026, 1, 1)
+    # A low-volatility 0.45% move is above the ETF cost floor (0.24%) but
+    # below the stock floor (0.42%) once the v2 two-way cost rule applies.
+    bars = [_bar(start + timedelta(days=index), 100.0) for index in range(45)]
+    bars[1] = bars[1].model_copy(update={"close_native": 100.40, "close_normalized": 100.40})
+    policy = TradeableLabelPolicy(version="cn-direction-volatility-label-v2", minimum_cost_boundary=0.0)
+    stock = generate_tradeable_labels(symbol="TEST", as_of_date=start, price_bars=bars, policy=policy)
+    etf = generate_tradeable_labels(symbol="ETF", as_of_date=start, price_bars=bars, policy=policy, instrument_is_etf=True)
+    assert stock.direction_1d == "flat"
+    assert etf.direction_1d == "up"
 
 
 def test_leakage_report_blocks_future_and_unproven_inputs() -> None:

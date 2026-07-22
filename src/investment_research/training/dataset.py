@@ -19,6 +19,7 @@ from investment_research.feature_contract import (
     zscore,
 )
 from investment_research.training.labels import (
+    TradeableLabelPolicy,
     build_label_generation_context,
     generate_multitask_labels,
     generate_tradeable_labels,
@@ -80,11 +81,17 @@ class TrainingDatasetBuilder:
         event_cursor = 0
         recent_events: deque[PointInTimeEvent] = deque()
         trading_dates = [item.trade_date for item in ordered]
+        next_trading_dates = {
+            current: following for current, following in zip(trading_dates, trading_dates[1:])
+        }
 
         for index, bar in enumerate(ordered):
-            prior_bars = ordered[: index + 1]
-            if len(prior_bars) < 21:
+            if index + 1 < 21:
                 continue
+            # Feature V2 uses at most 20 sessions (60 retained as headroom for
+            # compatible feature contracts).  Avoid copying and rescanning the
+            # entire listing history for every decision date.
+            prior_bars = ordered[max(0, index - 59) : index + 1]
             context = build_market_decision_context(
                 bar.trade_date,
                 decision_context,
@@ -98,6 +105,7 @@ class TrainingDatasetBuilder:
                     )
                 ),
                 trading_dates=trading_dates,
+                next_trading_date=next_trading_dates.get(bar.trade_date),
             )
             feature_cutoff = context.decision_time
             while (
@@ -124,7 +132,7 @@ class TrainingDatasetBuilder:
                 int(_event_has_semantics(event)) for event in feature_events
             )
             leakage_issues = detect_future_leakage(
-                bars=prior_bars, events=feature_events, as_of=feature_cutoff
+                bars=[bar], events=feature_events, as_of=feature_cutoff
             )
             if leakage_issues:
                 continue
@@ -149,10 +157,21 @@ class TrainingDatasetBuilder:
                 events=events,
                 context=label_context,
             )
+            policy = (
+                TradeableLabelPolicy(
+                    version="cn-direction-volatility-label-v2",
+                    minimum_cost_boundary=0.0,
+                )
+                if self.feature_version.endswith("features-v3")
+                else None
+            )
             tradeable_labels = generate_tradeable_labels(
                 symbol=instrument.symbol,
                 as_of_date=bar.trade_date,
                 price_bars=ordered,
+                context=label_context,
+                policy=policy,
+                instrument_is_etf=instrument.instrument_type.value == "etf",
             )
             tradeable_owned = {
                 "future_return_1d",
@@ -281,8 +300,8 @@ class TrainingDatasetBuilder:
         }
         features.update(event_features)
         if (
-            self.feature_version == "investment-risk-features-v2"
-            or self.feature_version.endswith("features-v2")
+            self.feature_version in {"cn-research-feature-v3", "investment-risk-features-v3"}
+            or self.feature_version.endswith(("features-v2", "features-v3"))
         ):
             self._add_v2_features(
                 features,

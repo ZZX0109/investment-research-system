@@ -12,7 +12,8 @@ from investment_research.training.formal_training import (
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime
+from investment_research.training.numeric_safety import guarded_model_math, require_finite
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
 
 
 @dataclass(frozen=True)
@@ -159,13 +160,14 @@ class FormalRiskTrainingRunner:
         ids: list[str] = []
         regimes: list[str] = []
         for fold in folds:
+            thresholds = fit_regime_thresholds(fold.train)
             fold_scores = self._fit_predict(
                 name=name, train=fold.train, evaluate=fold.validation, feature_order=feature_order
             )
             scores.extend(fold_scores)
             labels.extend(_label(item, self.drawdown_threshold) for item in fold.validation)
             ids.extend([fold.fold.fold_id] * len(fold.validation))
-            regimes.extend(classify_market_regime(item) for item in fold.validation)
+            regimes.extend(classify_market_regime(item, thresholds) for item in fold.validation)
         if len(set(labels)) < 2:
             raise ValueError(f"risk candidate {name} has one-class OOF labels")
         return scores, labels, ids, regimes
@@ -179,17 +181,30 @@ class FormalRiskTrainingRunner:
             # The selected ensemble is rebuilt from OOF weights in the caller;
             # a final fitted ensemble needs frozen constituent artifacts.
             raise ValueError("ensemble cannot be final-evaluated without frozen component artifacts")
-        matrix = [_vector(item, feature_order) for item in train]
-        evaluation = [_vector(item, feature_order) for item in evaluate]
+        matrix = _matrix(train, feature_order)
+        evaluation = _matrix(evaluate, feature_order)
         estimator = _estimator(name)
-        estimator.fit(matrix, labels)
-        return _predict_proba(estimator, evaluation)
+        with guarded_model_math():
+            estimator.fit(matrix, labels)
+            predictions = _predict_proba(estimator, evaluation)
+        require_finite(predictions, stage=f"risk:{name}")
+        return predictions
 
 
 def _estimator(name: str):
     if name == "linear-baseline" or name == "logistic-regression":
         from sklearn.linear_model import LogisticRegression
-        return LogisticRegression(max_iter=1000, class_weight="balanced", random_state=42)
+        from sklearn.preprocessing import FunctionTransformer
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        return make_pipeline(
+            StandardScaler(),
+            FunctionTransformer(_clip_scaled_values),
+            LogisticRegression(
+                solver="liblinear", C=0.01, max_iter=1000,
+                class_weight="balanced", random_state=42,
+            ),
+        )
     if name == "random-forest":
         from sklearn.ensemble import RandomForestClassifier
         return RandomForestClassifier(n_estimators=200, max_depth=6, min_samples_leaf=2, class_weight="balanced_subsample", random_state=42)
@@ -204,6 +219,21 @@ def _estimator(name: str):
 
 def _vector(sample: TrainingSample, feature_order: list[str]) -> list[float]:
     return [float(sample.features.get(name, 0.0)) for name in feature_order]
+
+
+def _matrix(samples: list[TrainingSample], feature_order: list[str]):
+    import numpy as np
+    import pandas as pd
+
+    values = np.asarray([_vector(item, feature_order) for item in samples], dtype=float)
+    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
+    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=feature_order)
+
+
+def _clip_scaled_values(values):
+    import numpy as np
+
+    return np.clip(np.nan_to_num(values, nan=0.0, posinf=20.0, neginf=-20.0), -20.0, 20.0)
 
 
 def _label(sample: TrainingSample, threshold: float) -> int:

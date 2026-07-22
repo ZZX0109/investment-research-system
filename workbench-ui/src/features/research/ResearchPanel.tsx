@@ -9,11 +9,13 @@ import { ShadowProgress } from "../../components/ShadowProgress";
 import { StatusBadge } from "../../components/StatusBadge";
 import { TaskForecastCard } from "../../components/TaskForecastCard";
 import { SourceBadge } from "../../components/SourceBadge";
+import { useI18n } from "../../i18n";
 import { SelectedRunDossierCard } from "../dossier/SelectedRunDossierCard";
 import { useResearchWorkspace } from "./useResearchWorkspace";
 import { useDeploymentStatusQuery, useDirectionalForecastQuery, useMarketObservationQuery, useRefreshMarketObservationMutation, useResearchAcceptanceQuery, useResearchForecastQuery, useResearchModelRostersQuery, useResearchShadowSessionsQuery, useResearchShadowSummaryQuery } from "../../hooks/useWorkbenchQueries";
 
 export function ResearchPanel() {
+  const { t, language } = useI18n();
   const workspace = useResearchWorkspace();
   const deployment = useDeploymentStatusQuery();
   const acceptance = useResearchAcceptanceQuery();
@@ -31,7 +33,7 @@ export function ResearchPanel() {
   const taskReasons = (task: string) => forecast.data?.tasks.find((item) => item.task === task)?.gating_reasons ?? [];
 
   return (
-    <Panel eyebrow="Research" title="Evidence, Price Layers, Reports">
+    <Panel eyebrow={t("research.eyebrow")} title={t("research.title")}>
       {workspace.assetId ? (
         <>
           <ResearchHero
@@ -41,33 +43,35 @@ export function ResearchPanel() {
           />
           <article className="story-card" data-testid="cn-research-data-quality">
             <div className="story-card__header">
-              <strong>1 · 数据质量与资格</strong>
+              <strong>{t("research.dataQuality")}</strong>
               <StatusBadge status={forecast.data?.data_status.quality_status ?? "unavailable"} />
             </div>
             <p className="muted">
-              免费公开数据固定为 research_pit；历史可见时间未完全证明，永不自动提升为正式 PIT。数据覆盖 {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : "等待冻结快照"}，缓存 {forecast.data?.data_status.cache_state ?? "unavailable"}，事件 {forecast.data?.data_status.event_coverage_status ?? "unsupported"}。
+              {language === "zh-CN"
+                ? <>免费公开数据固定为 research_pit；历史可见时间未完全证明，永不自动提升为正式 PIT。数据覆盖 {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : t("hero.waiting")}，缓存 {forecast.data?.data_status.cache_state ?? "unavailable"}，事件 {forecast.data?.data_status.event_coverage_status ?? "unsupported"}。</>
+                : <>Public data remains research_pit. Historical visibility is not fully proven and is never promoted to formal PIT. Coverage: {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : t("hero.waiting")}; cache: {forecast.data?.data_status.cache_state ?? "unavailable"}; events: {forecast.data?.data_status.event_coverage_status ?? "unsupported"}.</>}
             </p>
-            {forecast.data?.data_status.reasons.length ? <InlineNotice title="数据降级原因" tone="warn" body={forecast.data.data_status.reasons.join("；")} /> : null}
+            {forecast.data?.data_status.reasons.length ? <InlineNotice title={language === "zh-CN" ? "数据降级原因" : "Data degradation reasons"} tone="warn" body={forecast.data.data_status.reasons.join("；")} /> : null}
           </article>
           <article className="story-card" data-testid="cn-research-backend-status">
             <div className="story-card__header">
-              <strong>后端验收状态</strong>
+              <strong>{t("research.backendStatus")}</strong>
               <span className="tag">{acceptance.data?.status ?? "blocked"}</span>
             </div>
             <div className="metric-strip">
-              <MetricCard label="Data" value={forecast.data?.data_status.quality_status ?? "unavailable"} tone={forecast.data?.data_status.quality_status === "passed" ? "good" : "warn"} />
-              <MetricCard label="Training" value={forecast.data?.training_status ?? "unavailable"} />
-              <MetricCard label="Prediction" value={forecast.data?.prediction_status ?? "unavailable"} tone={forecast.data?.prediction_status === "research_only" ? "good" : "warn"} />
-              <MetricCard label="Evidence" value={forecast.data?.evidence_status ?? "missing"} />
+              <MetricCard label={t("research.data")} value={forecast.data?.data_status.quality_status ?? "unavailable"} tone={forecast.data?.data_status.quality_status === "passed" ? "good" : "warn"} />
+              <MetricCard label={t("research.training")} value={forecast.data?.training_status ?? "unavailable"} />
+              <MetricCard label={t("research.prediction")} value={forecast.data?.prediction_status ?? "unavailable"} tone={forecast.data?.prediction_status === "research_only" ? "good" : "warn"} />
+              <MetricCard label={t("research.evidence")} value={forecast.data?.evidence_status ?? "missing"} />
             </div>
-            <p className="muted">模型：{forecast.data?.model_status ?? "unavailable"}；deployment_ready：false；研究级公开数据，不构成投资建议。</p>
-            <p className="muted">Provider：AKShare 成功 {acceptance.data?.data?.akshare_success_count ?? "n/a"}，Baostock 成功 {acceptance.data?.data?.baostock_success_count ?? "n/a"}，失败 {acceptance.data?.data?.failed_count ?? "n/a"}，主备切换 {acceptance.data?.data?.fallback_count ?? "n/a"}。</p>
-            {(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).length ? <InlineNotice title="阻断原因" tone="warn" body={(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).join("；")} /> : null}
-            {(forecast.data?.abstain_reasons ?? []).length ? <InlineNotice title="拒答原因" tone="warn" body={forecast.data?.abstain_reasons.join("；") ?? ""} /> : null}
+            <p className="muted">{language === "zh-CN" ? "模型" : "Model"}: {forecast.data?.model_status ?? "unavailable"}; deployment_ready: false; {language === "zh-CN" ? "研究级公开数据，不构成投资建议。" : "public research data, not investment advice."}</p>
+            <p className="muted">{t("research.provider")}: AKShare {t("research.success")} {acceptance.data?.data?.akshare_success_count ?? "n/a"}, Baostock {t("research.success")} {acceptance.data?.data?.baostock_success_count ?? "n/a"}, {t("research.failures")} {acceptance.data?.data?.failed_count ?? "n/a"}, {t("research.fallbacks")} {acceptance.data?.data?.fallback_count ?? "n/a"}.</p>
+            {(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).length ? <InlineNotice title={t("research.blockingReasons")} tone="warn" body={(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).join("；")} /> : null}
+            {(forecast.data?.abstain_reasons ?? []).length ? <InlineNotice title={t("research.abstainReasons")} tone="warn" body={forecast.data?.abstain_reasons.join("；") ?? ""} /> : null}
           </article>
           <article className="story-card" data-testid="cn-research-roster">
             <div className="story-card__header">
-              <strong>2 · Research Model Roster</strong>
+              <strong>{t("research.roster")}</strong>
               <span className="tag">{rosters.data?.length ?? 0} scopes</span>
             </div>
             {(rosters.data ?? []).length ? (
@@ -78,19 +82,19 @@ export function ResearchPanel() {
                   </p>
                 ))}
               </div>
-            ) : <EmptyState title="研究清单尚未就绪" body="任务结果保持 unavailable，不从任意训练目录加载模型。" />}
+            ) : <EmptyState title={t("research.rosterEmpty")} body={t("research.rosterEmptyBody")} />}
           </article>
           <article className="story-card" data-testid="cn-research-task-results">
-            <div className="story-card__header"><strong>3 · 方向、收益与风险</strong><span className="tag">非交易信号</span></div>
+            <div className="story-card__header"><strong>{t("research.tasks")}</strong><span className="tag">{t("research.notSignal")}</span></div>
             {forecast.data && ["research_only", "approved", "fallback"].includes(forecast.data.prediction_status) && !forecast.data.abstained ? (
               <div className="task-forecast-grid">
-                <TaskForecastCard task="01D" title="方向概率" status={taskStatus("direction_1d")} model={forecast.data.tasks.find((item) => item.task === "direction_1d")?.model_version} value={forecast.data.direction_1d ? `上行 ${Math.round(forecast.data.direction_1d.up * 100)}%` : "unavailable"} detail={forecast.data.direction_1d ? <span>下行 {Math.round(forecast.data.direction_1d.down * 100)}% · 横盘 {Math.round(forecast.data.direction_1d.flat * 100)}%</span> : null} />
-                <TaskForecastCard task="05D" title="方向概率" status={taskStatus("direction_5d")} model={forecast.data.tasks.find((item) => item.task === "direction_5d")?.model_version} value={forecast.data.direction_5d ? `上行 ${Math.round(forecast.data.direction_5d.up * 100)}%` : "unavailable"} detail={forecast.data.direction_5d ? <span>下行 {Math.round(forecast.data.direction_5d.down * 100)}% · 横盘 {Math.round(forecast.data.direction_5d.flat * 100)}%</span> : null} />
-                <TaskForecastCard task="20D" title="收益区间" status={taskStatus("return_20d")} model={forecast.data.tasks.find((item) => item.task === "return_20d")?.model_version} value={forecast.data.return_20d ? [forecast.data.return_20d.p10, forecast.data.return_20d.p50, forecast.data.return_20d.p90].map((value) => `${(value * 100).toFixed(1)}%`).join(" / ") : "unavailable"} detail={<EvidenceHash label="snapshot" value={forecast.data.market_snapshot_hash} />} />
-                <TaskForecastCard task="DD20" title="最大回撤风险" status={taskStatus("drawdown_20d")} model={forecast.data.tasks.find((item) => item.task === "drawdown_20d")?.model_version} value={forecast.data.drawdown_20d ? `${Math.round(forecast.data.drawdown_20d.threshold_probability * 100)}%` : "unavailable"} detail={<EvidenceHash label="snapshot" value={forecast.data.market_snapshot_hash} />} />
+                <TaskForecastCard task="01D" title={t("research.direction")} status={taskStatus("direction_1d")} model={forecast.data.tasks.find((item) => item.task === "direction_1d")?.model_version} value={forecast.data.direction_1d ? `${t("research.up")} ${Math.round(forecast.data.direction_1d.up * 100)}%` : "unavailable"} detail={forecast.data.direction_1d ? <span>{t("research.down")} {Math.round(forecast.data.direction_1d.down * 100)}% · {t("research.flat")} {Math.round(forecast.data.direction_1d.flat * 100)}%</span> : null} />
+                <TaskForecastCard task="05D" title={t("research.direction")} status={taskStatus("direction_5d")} model={forecast.data.tasks.find((item) => item.task === "direction_5d")?.model_version} value={forecast.data.direction_5d ? `${t("research.up")} ${Math.round(forecast.data.direction_5d.up * 100)}%` : "unavailable"} detail={forecast.data.direction_5d ? <span>{t("research.down")} {Math.round(forecast.data.direction_5d.down * 100)}% · {t("research.flat")} {Math.round(forecast.data.direction_5d.flat * 100)}%</span> : null} />
+                <TaskForecastCard task="20D" title={t("research.return")} status={taskStatus("return_20d")} model={forecast.data.tasks.find((item) => item.task === "return_20d")?.model_version} value={forecast.data.return_20d ? [forecast.data.return_20d.p10, forecast.data.return_20d.p50, forecast.data.return_20d.p90].map((value) => `${(value * 100).toFixed(1)}%`).join(" / ") : "unavailable"} detail={<EvidenceHash label="snapshot" value={forecast.data.market_snapshot_hash} />} />
+                <TaskForecastCard task="DD20" title={t("research.drawdown")} status={taskStatus("drawdown_20d")} model={forecast.data.tasks.find((item) => item.task === "drawdown_20d")?.model_version} value={forecast.data.drawdown_20d ? `${Math.round(forecast.data.drawdown_20d.threshold_probability * 100)}%` : "unavailable"} detail={<EvidenceHash label="snapshot" value={forecast.data.market_snapshot_hash} />} />
               </div>
-            ) : <InlineNotice title={forecast.data?.prediction_status === "unavailable" ? "任务不可用" : "证据不足，暂不预测"} tone="warn" body={forecast.data?.abstain_reasons.join("；") || forecast.data?.gating_reasons.join("；") || "等待冻结快照、研究清单和完整哈希证据。"} />}
-            {forecast.data?.influence_facts.length ? <p className="muted">可核验影响事实：{forecast.data.influence_facts.join("；")}。这些是模型输入依据，不代表因果关系。</p> : null}
+            ) : <InlineNotice title={forecast.data?.prediction_status === "unavailable" ? t("research.taskUnavailable") : t("research.insufficientEvidence")} tone="warn" body={forecast.data?.abstain_reasons.join("；") || forecast.data?.gating_reasons.join("；") || t("research.waitingEvidence")} />}
+            {forecast.data?.influence_facts.length ? <p className="muted">{t("research.influence")}: {forecast.data.influence_facts.join("；")}。{t("research.nonCausal")}</p> : null}
             <div className="stack-list">
               {(["direction_1d", "direction_5d", "return_20d", "drawdown_20d"] as const).map((task) => (
                 <p key={task}>{task}：{taskStatus(task)}{taskReasons(task).length ? ` · ${taskReasons(task).join("；")}` : ""}</p>
@@ -98,7 +102,7 @@ export function ResearchPanel() {
             </div>
           </article>
           <article className="story-card" data-testid="research-shadow-summary">
-            <div className="story-card__header"><strong>4 · Research Shadow 前向验证</strong><StatusBadge status={shadowSummary.data?.valid_session_count ? "partial" : "abstain"} /></div>
+            <div className="story-card__header"><strong>{t("research.shadow")}</strong><StatusBadge status={shadowSummary.data?.valid_session_count ? "partial" : "abstain"} /></div>
             {(shadow.data ?? []).length ? (
               <>
                 <ShadowProgress sessionCount={shadowSummary.data?.session_count ?? shadow.data?.length ?? 0} validCount={shadowSummary.data?.valid_session_count ?? 0} abstainCount={shadowSummary.data?.abstained_count ?? 0} completed={shadowSummary.data?.completed_outcomes ?? {}} forwardStatus={shadowSummary.data?.forward_report_20_status ?? "pending"} primaryStatus={shadowSummary.data?.primary_change_60_status ?? "blocked"} />
@@ -106,7 +110,7 @@ export function ResearchPanel() {
                   <p key={item.id}>{item.trade_date} · {item.decision_context} · {item.task} · {item.abstained ? `abstain: ${item.abstain_reasons.join(", ")}` : "frozen"}</p>
                 ))}
               </>
-            ) : <EmptyState title="尚无前向 Shadow 记录" body="完成下一次收盘研究后开始累计。" />}
+            ) : <EmptyState title={t("research.noShadow")} body={t("research.noShadowBody")} />}
           </article>
           <div className="metric-strip">
             <div className="metric-card">

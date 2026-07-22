@@ -57,10 +57,33 @@ def test_public_provider_comparison_blocks_material_price_or_volume_conflict() -
     assert result.missing_dates == 1
 
 
+def test_provider_history_coverage_difference_is_degraded_not_conflict() -> None:
+    primary = json.dumps([
+        {"日期": "2024-01-02", "收盘": 10.0, "成交量": 1000},
+        {"日期": "2024-01-03", "收盘": 10.0, "成交量": 1000},
+    ]).encode()
+    backup = json.dumps([
+        {"日期": "2024-01-03", "收盘": 10.0, "成交量": 1000},
+    ]).encode()
+    result = compare_public_daily_payloads(primary, backup)
+    assert result.status == "partial"
+    assert not result.severe
+    assert result.missing_dates == 1
+
+
 def test_cross_check_selection_is_deterministic() -> None:
     first = deterministic_cross_check("600519", date(2026, 7, 14), ratio=0.1)
     assert first == deterministic_cross_check("600519", date(2026, 7, 14), ratio=0.1)
     assert deterministic_cross_check("600519", date(2026, 7, 14), ratio=1)
+
+
+def test_cninfo_title_classification_preserves_partial_event_evidence() -> None:
+    module = _load_free_fetcher()
+    row = module._classify_cninfo_notice({"公告标题": "关于股份回购方案的公告"}, source_date=date(2026, 7, 14))
+    assert row["event_category"] == "repurchase"
+    assert row["first_published_at"] == "2026-07-14"
+
+
 
 
 def test_cn_cohorts_are_separate_and_liquidity_ranked() -> None:
@@ -162,6 +185,45 @@ def test_cn_primary_failure_uses_baostock_and_never_yfinance(monkeypatch, tmp_pa
     assert output
     assert all(item["provider"] == "baostock" for item in output)
     assert all(item["provider_chain"] == ["akshare", "baostock"] for item in output)
+
+
+def test_full_history_ignores_existing_incremental_cursor(monkeypatch, tmp_path) -> None:
+    module = _load_free_fetcher()
+    starts = []
+
+    class Primary:
+        name = "akshare"
+
+        def fetch(self, symbol, *, start, end, adjustment_mode):
+            starts.append((adjustment_mode, start))
+            return SimpleNamespace(payload=b'[{"date":"2026-07-14","close":10}]', row_count=1)
+
+    class BackupUnavailable:
+        def __enter__(self):
+            raise RuntimeError("offline")
+
+        def __exit__(self, *args):
+            return None
+
+    class Service:
+        def persist(self, **kwargs):
+            return SimpleNamespace(payload_hash="b" * 64)
+
+    cursors = module.CursorStore(tmp_path / "cursor.json")
+    for mode in ("raw", "qfq"):
+        cursors.put(CollectionCursor(
+            provider="akshare", symbol="600519", adjustment_mode=mode,
+            last_successful_trade_date=date(2026, 7, 13),
+            updated_at=datetime(2026, 7, 14, tzinfo=timezone.utc), payload_hash="a" * 64,
+        ))
+    monkeypatch.setattr(module, "AkshareDailyResearchProvider", Primary)
+    monkeypatch.setattr(module, "BaostockDailyResearchProvider", BackupUnavailable)
+    module._collect_cn_prices(
+        Service(), ["600519"], full_history=True, lookback_days=3,
+        cross_check_ratio=0, cursor_store=cursors,
+        config={"primary_requests_per_second": 100, "backup_requests_per_second": 100, "max_attempts": 1, "retry_backoff_seconds": [0]},
+    )
+    assert starts == [("raw", None), ("qfq", None)]
 
 
 def test_cn_generic_compatibility_path_is_fail_closed() -> None:

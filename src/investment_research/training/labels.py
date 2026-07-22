@@ -16,6 +16,7 @@ from investment_research.training.models import (
 class LabelGenerationContext:
     price_lookup: dict[date, PreparedPriceBar]
     ordered_dates: list[date]
+    ordered_bars: list[PreparedPriceBar]
     index_by_date: dict[date, int]
     benchmark_lookup: dict[date, PreparedPriceBar]
     industry_lookup: dict[date, PreparedPriceBar]
@@ -29,6 +30,8 @@ class TradeableLabelPolicy:
     volatility_lookback: int = 20
     volatility_multiplier: float = 0.5
     minimum_cost_boundary: float = 0.002
+    stock_round_trip_cost: float = 0.0021
+    etf_round_trip_cost: float = 0.0012
 
 
 def generate_tradeable_labels(
@@ -37,13 +40,19 @@ def generate_tradeable_labels(
     as_of_date: date,
     price_bars: list[PreparedPriceBar],
     policy: TradeableLabelPolicy | None = None,
+    context: LabelGenerationContext | None = None,
+    instrument_is_etf: bool = False,
 ) -> LabelSet:
     """Generate execution-aware labels without pretending suspended/limit bars trade."""
     policy = policy or TradeableLabelPolicy()
-    ordered = sorted(price_bars, key=lambda item: item.trade_date)
-    index = next(
-        (i for i, item in enumerate(ordered) if item.trade_date == as_of_date), None
-    )
+    if context is None:
+        ordered = sorted(price_bars, key=lambda item: item.trade_date)
+        index = next(
+            (i for i, item in enumerate(ordered) if item.trade_date == as_of_date), None
+        )
+    else:
+        ordered = context.ordered_bars
+        index = context.index_by_date.get(as_of_date)
     if index is None:
         raise ValueError("as_of_date must exist in prepared price bars")
     labels = LabelSet(symbol=symbol, as_of_date=as_of_date)
@@ -86,8 +95,15 @@ def generate_tradeable_labels(
         setattr(labels, f"future_return_{horizon}d", terminal_return)
         if horizon == 20:
             labels.future_return_20d_from_open = terminal_return
+        # v2 research labels use volatility-standardised boundaries and an
+        # execution-cost floor.  The legacy policy remains reproducible when
+        # callers retain its original version string.
+        cost_floor = policy.minimum_cost_boundary
+        if policy.version == "cn-direction-volatility-label-v2":
+            round_trip = policy.etf_round_trip_cost if instrument_is_etf else policy.stock_round_trip_cost
+            cost_floor = max(cost_floor, 2.0 * round_trip)
         threshold = max(
-            policy.minimum_cost_boundary,
+            cost_floor,
             trailing_vol * sqrt(horizon) * policy.volatility_multiplier,
         )
         direction = (
@@ -157,6 +173,7 @@ def build_label_generation_context(
     return LabelGenerationContext(
         price_lookup=price_lookup,
         ordered_dates=ordered_dates,
+        ordered_bars=[price_lookup[item] for item in ordered_dates],
         index_by_date={
             trade_date: index for index, trade_date in enumerate(ordered_dates)
         },
@@ -191,7 +208,7 @@ def generate_multitask_labels(
         raise ValueError("as_of_date must exist in prepared price bars")
 
     start_index = resolved.index_by_date[as_of_date]
-    future_dates = ordered_dates[start_index + 1 :]
+    future_dates = ordered_dates[start_index + 1 : start_index + 121]
     future_closes = [price_lookup[item].close_normalized for item in future_dates]
     base_close = price_lookup[as_of_date].close_normalized
 

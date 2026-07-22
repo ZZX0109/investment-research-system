@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -11,6 +12,58 @@ from pydantic import BaseModel
 
 
 REGIMES = ("bull", "bear", "range", "high_vol")
+MIN_REGIME_SAMPLES = 30
+
+
+FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
+    "price": ("ret_", "close", "open", "high", "low"),
+    "volume": ("volume", "amount", "turnover", "liquidity"),
+    "volatility": ("vol_", "drawdown", "range_", "atr"),
+    "market_state": ("benchmark", "market_", "regime", "breadth"),
+    "industry_proxy": ("industry", "sector", "style"),
+    "data_quality": ("quality", "missing", "provider", "revision", "delay", "cache", "event_"),
+}
+
+
+@dataclass(frozen=True)
+class RegimeThresholds:
+    """Training-window-only market-state thresholds."""
+
+    benchmark_bear: float
+    benchmark_bull: float
+    volatility_high: float
+    sample_count: int
+
+
+def fit_regime_thresholds(samples: list) -> RegimeThresholds:
+    """Fit percentile thresholds using only the caller's training rows."""
+    import math
+
+    benchmark = sorted(
+        float(item.features.get("benchmark_ret_20d", 0.0))
+        for item in samples
+        if math.isfinite(float(item.features.get("benchmark_ret_20d", 0.0)))
+    )
+    volatility = sorted(
+        float(item.features.get("vol_20d", item.features.get("realized_vol_20d", 0.0)))
+        for item in samples
+        if math.isfinite(float(item.features.get("vol_20d", item.features.get("realized_vol_20d", 0.0))))
+    )
+    if not benchmark or not volatility:
+        return RegimeThresholds(0.0, 0.0, float("inf"), 0)
+    return RegimeThresholds(
+        benchmark_bear=_percentile(benchmark, 0.30),
+        benchmark_bull=_percentile(benchmark, 0.70),
+        volatility_high=_percentile(volatility, 0.75),
+        sample_count=min(len(benchmark), len(volatility)),
+    )
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    position = (len(values) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    return values[lower] * (upper - position) + values[upper] * (position - lower)
 
 
 class ResearchCostPolicy(BaseModel):
@@ -42,14 +95,20 @@ class ResearchCostPolicy(BaseModel):
         return sum(values) / 10_000
 
 
-def classify_market_regime(sample) -> str:
+def classify_market_regime(sample, thresholds: RegimeThresholds | None = None) -> str:
+    if thresholds is None:
+        # A single online/sequence row cannot provide a valid quantile
+        # reference.  Callers doing model evaluation must pass the fold's
+        # training thresholds; the compatibility path stays neutral instead
+        # of accidentally declaring every row high-volatility.
+        return "range"
     volatility = float(sample.features.get("vol_20d", sample.features.get("realized_vol_20d", 0.0)))
     benchmark = float(sample.features.get("benchmark_ret_20d", 0.0))
-    if volatility >= 0.30:
+    if volatility >= thresholds.volatility_high:
         return "high_vol"
-    if benchmark >= 0.03:
+    if benchmark >= thresholds.benchmark_bull:
         return "bull"
-    if benchmark <= -0.03:
+    if benchmark <= thresholds.benchmark_bear:
         return "bear"
     return "range"
 
@@ -80,6 +139,42 @@ def feature_coverage_report(samples: list) -> dict[str, Any]:
             "source_delay_seconds": sum(getattr(sample, "source_delay_seconds", None) is not None for sample in samples) / len(samples) if samples else 0.0,
         },
         "features": rows,
+    }
+
+
+def feature_group_ablation_report(samples: list, result: Any) -> dict[str, Any]:
+    """Record reproducible feature-group eligibility before expensive reruns.
+
+    The public-data pipeline does not pretend that a group with no usable
+    observations had a neutral effect.  The selected candidate's OOF metric is
+    retained as a reference and the next training run can only include groups
+    that meet this coverage contract.
+    """
+    names = sorted({key for sample in samples for key in sample.features})
+    groups: list[dict[str, Any]] = []
+    for group, prefixes in FEATURE_GROUPS.items():
+        features = [name for name in names if name.startswith(prefixes)]
+        present = sum(
+            sample.features.get(name) not in (None, 0.0, 0)
+            for sample in samples for name in features
+        )
+        denominator = len(samples) * len(features)
+        coverage = present / denominator if denominator else 0.0
+        groups.append({
+            "group": group,
+            "features": features,
+            "feature_count": len(features),
+            "non_zero_coverage": coverage,
+            "eligible_for_final_contract": bool(features) and coverage >= 0.15,
+            "status": "eligible" if features and coverage >= 0.15 else "excluded_low_coverage",
+        })
+    return {
+        "status": "contract_coverage_audit",
+        "candidate_count": len(result.candidates),
+        "selected_candidate": result.selected_candidate,
+        "groups": groups,
+        "excluded_groups": [item["group"] for item in groups if not item["eligible_for_final_contract"]],
+        "note": "time-OOF candidate comparison is recorded in evaluation.json; low-coverage groups are excluded rather than treated as zero-event evidence",
     }
 
 
@@ -115,12 +210,7 @@ def research_scope_reports(
             "purge_and_embargo_sessions": 1 if task == "direction_1d" else 5 if task == "direction_5d" else 20,
         },
         "feature_coverage": feature_coverage_report(samples),
-        "ablation": {
-            "status": "recorded_candidate_comparison",
-            "candidate_count": len(result.candidates),
-            "feature_group_ablation_available": False,
-            "reason": "free_research_v1_preserves_missing_coverage_instead_of_claiming_ablation",
-        },
+        "ablation": feature_group_ablation_report(samples, result),
         "calibration": {
             "source": "time_oof_only", "selected_candidate": selected.name,
             "ece": getattr(selected, "ece", None),
@@ -128,7 +218,19 @@ def research_scope_reports(
         "market_industry_regime": {
             "market": "cn", "industry_status": "free_source_incomplete",
             "selected_regime_metrics": getattr(selected, "regime_metrics", {}),
-            "regime_counts": {name: sum(classify_market_regime(item) == name for item in samples) for name in REGIMES},
+            # Candidate OOF rows are classified with thresholds fitted in each
+            # fold's training window.  A single all-sample threshold here
+            # would leak final-holdout distribution information into the
+            # evidence report, so report the already frozen OOF counts.
+            "threshold_source": "per_walk_forward_training_window",
+            "regime_counts": {
+                name: int(values.get("sample_count", 0))
+                for name, values in getattr(selected, "regime_metrics", {}).items()
+            },
+            "insufficient_regimes": [
+                name for name, count in getattr(selected, "regime_metrics", {}).items()
+                if int(count.get("sample_count", 0)) < MIN_REGIME_SAMPLES
+            ],
         },
         "holdout_12m": {
             "evaluated_once": True,
@@ -158,7 +260,7 @@ def research_scope_reports(
     return reports
 
 
-def select_research_roster_candidates(task: str, result: Any) -> tuple[str, str, list[str]]:
+def select_research_roster_candidates(task: str, result: Any, *, cohort: str = "cn_equity_core") -> tuple[str, str, list[str], bool]:
     """Keep a simple baseline unless the task's research gate is evidenced."""
     candidates = {item.name: item for item in result.candidates}
     simple_names = {
@@ -173,12 +275,16 @@ def select_research_roster_candidates(task: str, result: Any) -> tuple[str, str,
     if task.startswith("direction_"):
         best_baseline = min(present_baselines, key=lambda item: item.log_loss)
         selected = candidates[result.selected_candidate]
-        regime_values = [item.get("macro_f1", 0.0) for item in selected.regime_metrics.values()]
+        eligible_regimes = [
+            item for item in selected.regime_metrics.values()
+            if int(item.get("sample_count", 0)) >= MIN_REGIME_SAMPLES
+        ]
+        regime_values = [item.get("macro_f1", 0.0) for item in eligible_regimes]
         passed = (
             selected.macro_f1 >= 0.45 and selected.balanced_accuracy >= 0.45
             and selected.log_loss <= 1.05 and selected.ece <= 0.15
             and selected.macro_f1 >= best_baseline.macro_f1
-            and regime_values and min(regime_values) >= 0.35
+            and len(eligible_regimes) >= 2 and min(regime_values) >= 0.35
             and _direction_macro_f1(result.holdout_probabilities, result.holdout_labels) >= 0.40
             and _direction_macro_f1(result.stress_probabilities, result.stress_labels) >= 0.40
         )
@@ -191,10 +297,12 @@ def select_research_roster_candidates(task: str, result: Any) -> tuple[str, str,
             and selected.direction_accuracy >= best_baseline.direction_accuracy
             and 0.75 <= selected.interval_coverage <= 0.85
             and selected.spearman_ic > 0
+            and len([value for value in selected.regime_metrics.values() if int(value.get("sample_count", 0)) >= MIN_REGIME_SAMPLES]) >= 2
             and all(
                 value["mean_pinball_loss"]
                 <= best_baseline.regime_metrics.get(regime, value)["mean_pinball_loss"] * 1.05
                 for regime, value in selected.regime_metrics.items()
+                if int(value.get("sample_count", 0)) >= MIN_REGIME_SAMPLES
             )
         )
     else:
@@ -203,19 +311,24 @@ def select_research_roster_candidates(task: str, result: Any) -> tuple[str, str,
         positive_regimes = sum(
             float(values.get("drawdown_lift") or 0.0) > 0
             for values in selected.regime_metrics.values()
+            if int(values.get("sample_count", 0)) >= MIN_REGIME_SAMPLES
         )
         passed = (
             (selected.auroc or 0.0) >= 0.68 and selected.alert_precision >= 0.50
             and selected.ece <= 0.15 and selected.brier <= best_baseline.brier + 0.01
             and selected.drawdown_lift > 0 and positive_regimes >= 3
         )
+    # Five ETF symbols are a monitoring/baseline cohort, not enough cross
+    # sectional evidence for a complex model to claim the research gate.
+    if cohort == "cn_etf_benchmark":
+        passed = False
     primary = selected if passed else best_baseline
     fallback = next(item for item in present_baselines if item.name != primary.name)
     challengers = [
         item.name for item in result.candidates
         if item.name not in {primary.name, fallback.name, "time-oof-weighted-ensemble"}
     ]
-    return primary.name, fallback.name, challengers
+    return primary.name, fallback.name, challengers, passed
 
 
 def _direction_macro_f1(probabilities: list[dict[str, float]], labels: list[str]) -> float:

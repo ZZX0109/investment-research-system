@@ -54,13 +54,21 @@ class AkshareDailyResearchProvider:
     def fetch(self, symbol: str, *, start: date | None, end: date, adjustment_mode: str = "raw") -> PublicDailyPayload:
         import akshare as ak
 
-        frame = ak.stock_zh_a_hist(
-            symbol=symbol,
-            period="daily",
-            start_date=(start or date(1990, 1, 1)).strftime("%Y%m%d"),
-            end_date=end.strftime("%Y%m%d"),
-            adjust="" if adjustment_mode == "raw" else adjustment_mode,
-        )
+        if symbol in ETF_RESEARCH_SYMBOLS:
+            exchange_symbol = ("sh" if symbol.startswith("5") else "sz") + symbol
+            frame = ak.fund_etf_hist_sina(symbol=exchange_symbol)
+            date_column = "date" if "date" in frame.columns else "日期"
+            dates = frame[date_column].map(lambda value: date.fromisoformat(str(value)[:10]))
+            lower = start or date(1990, 1, 1)
+            frame = frame[(dates >= lower) & (dates <= end)]
+        else:
+            frame = ak.stock_zh_a_hist(
+                symbol=symbol,
+                period="daily",
+                start_date=(start or date(1990, 1, 1)).strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust="" if adjustment_mode == "raw" else adjustment_mode,
+            )
         if frame.empty:
             raise RuntimeError("akshare returned no daily rows")
         payload = frame.to_json(orient="records", force_ascii=False, date_format="iso").encode()
@@ -104,6 +112,23 @@ class BaostockDailyResearchProvider:
             errors.append(f"{candidate}:empty")
         raise RuntimeError("baostock universe unavailable:" + ",".join(errors))
 
+    def enumerate_liquid_candidates(self) -> list[str]:
+        """Return the public CSI 300 constituent buffer for fixed-pool ranking."""
+        result = self._bs.query_hs300_stocks()
+        if result.error_code != "0":
+            raise RuntimeError(
+                f"baostock hs300 universe failed:{result.error_code}:{result.error_msg}"
+            )
+        symbols: list[str] = []
+        while result.next():
+            row = dict(zip(result.fields, result.get_row_data()))
+            code = row.get("code", "")
+            if code.startswith(("sh.6", "sz.0", "sz.3")):
+                symbols.append(code.split(".", 1)[1])
+        if not symbols:
+            raise RuntimeError("baostock hs300 universe is empty")
+        return sorted(set(symbols))
+
     def fetch(self, symbol: str, *, start: date | None, end: date, adjustment_mode: str = "raw") -> PublicDailyPayload:
         code = _baostock_code(symbol)
         result = self._bs.query_history_k_data_plus(
@@ -134,6 +159,8 @@ class BaostockDailyResearchProvider:
             raise RuntimeError("baostock returned no daily rows")
         payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()
         return PublicDailyPayload(self.name, symbol, payload, len(rows), start, end, adjustment_mode)
+
+
 
 
 def deterministic_cross_check(symbol: str, trade_date: date, *, ratio: float) -> bool:
@@ -176,8 +203,9 @@ def compare_public_daily_payloads(
         reasons.append("raw_volume_difference_exceeds_2pct")
     if missing:
         reasons.append("provider_trade_date_set_differs")
+    status = "conflict" if close_conflicts or volume_conflicts else "partial" if missing else "matched"
     return ProviderComparison(
-        status="conflict" if reasons else "matched", shared_dates=len(shared),
+        status=status, shared_dates=len(shared),
         close_conflicts=close_conflicts, volume_conflicts=volume_conflicts,
         missing_dates=missing, maximum_close_difference_ratio=maximum, reasons=reasons,
     )

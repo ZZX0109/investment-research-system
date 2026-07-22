@@ -64,7 +64,7 @@ class SklearnTrainerModel:
             self.feature_stats[feature_name] = (mean, std)
         matrix = [self._vectorize(sample) for sample in samples]
         labels = [self._target_label(sample) for sample in samples]
-        self.estimator.fit(matrix, labels)
+        self.estimator.fit(self._estimator_matrix(matrix), labels)
         raw_scores = self._predict_score_matrix(matrix)
         self.calibrator.fit(raw_scores, labels)
         return self
@@ -139,14 +139,27 @@ class SklearnTrainerModel:
     def _predict_score_matrix(self, matrix: list[list[float]]) -> list[float]:
         if not matrix:
             return []
+        values = self._estimator_matrix(matrix)
         if hasattr(self.estimator, "predict_proba"):
-            probabilities = self.estimator.predict_proba(matrix)
+            probabilities = self.estimator.predict_proba(values)
             classes = list(getattr(self.estimator, "classes_", []))
             positive_index = classes.index(1) if 1 in classes else (1 if len(probabilities[0]) > 1 else 0)
             scores = [float(row[positive_index]) for row in probabilities]
         else:
-            scores = [float(value) for value in self.estimator.predict(matrix)]
+            scores = [float(value) for value in self.estimator.predict(values)]
         return [min(1.0, max(0.0, score)) for score in scores]
+
+    def _estimator_matrix(self, matrix: list[list[float]]):
+        """Use the same named matrix contract for fit and inference.
+
+        LightGBM records feature names even when its sklearn wrapper receives
+        an unnamed array.  Supplying a DataFrame consistently prevents noisy
+        feature-name warnings and, more importantly, makes column-order drift
+        detectable at the estimator boundary.
+        """
+        import pandas as pd
+
+        return pd.DataFrame(matrix, columns=self.feature_order, dtype=float)
 
     def _target_label(self, sample: TrainingSample) -> int:
         value = getattr(sample.labels, self.target_name)
@@ -389,7 +402,7 @@ class DeepMLPTrainerSpec:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self._mlp.parameters(), 1.0)
                     optimizer.step()
-                    scheduler.step(loss)
+                    scheduler.step(float(loss.detach().item()))
 
                     loss_val = loss.item()
                     patience = patience + 1 if loss_val >= best_loss else 0
