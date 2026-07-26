@@ -39,6 +39,8 @@ coverage/
 config/.master-key
 config/local-secrets.json
 investment-research-system/
+# 本机保留的独立测试官工作区，不属于投研项目，也不上传。
+ai-test-officer/
 data/free_research_raw/
 data/free_research_standard/
 data/cn_research_raw/
