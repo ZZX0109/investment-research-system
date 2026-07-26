@@ -1,0 +1,16 @@
+.git
+.github
+node_modules
+dist
+dist-workbench
+var
+runs
+artifacts
+output
+coverage
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+ai-test-officer
+docs/images

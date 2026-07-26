@@ -5,7 +5,9 @@ import path from "node:path";
 export default defineConfig({
   plugins: [react()],
   root: path.resolve(__dirname),
-  base: "./",
+  // The public deployment is served as a same-origin SPA. Absolute asset URLs
+  // keep the Workbench usable after a browser refresh on a nested URL.
+  base: process.env.VITE_PUBLIC_DEMO === "true" ? "/" : "./",
   server: {
     proxy: {
       "/api": {

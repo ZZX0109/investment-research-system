@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: a-share-research-workbench
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: INVESTMENT_RESEARCH_ENV
+        value: demo
+      - key: INVESTMENT_RESEARCH_PUBLIC_DEMO
+        value: "true"
+      - key: INVESTMENT_RESEARCH_SCHEDULER_ENABLED
+        value: "false"
+      - key: INVESTMENT_RESEARCH_COOKIE_SECURE
+        value: "true"
+      - key: INVESTMENT_RESEARCH_SECRET_KEY
+        generateValue: true
+      - key: INVESTMENT_RESEARCH_CREDENTIAL_MASTER_KEY
+        generateValue: true
+      - key: INVESTMENT_RESEARCH_CREDENTIAL_STORE_PATH
+        value: /app/runs/secrets/credentials.json

@@ -20,6 +20,7 @@ from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.research_findings import ResearchFindingsService
 from investment_research.service.credential_vault import CredentialVault, CredentialVaultError
 from investment_research.domain.knowledge import FinancialKnowledgeDocument, KnowledgeSearchResult
+from investment_research.public_demo import require_private_research_workspace
 
 
 router = APIRouter(prefix="/api/v1", tags=["evidence-bound-agent"])
@@ -29,6 +30,7 @@ router = APIRouter(prefix="/api/v1", tags=["evidence-bound-agent"])
 def list_llm_credentials(user: User = Depends(get_authenticated_user)) -> list[CredentialSummaryResponse]:
     """List masked LLM credentials for the signed-in research workspace."""
     del user
+    require_private_research_workspace()
     try:
         return CredentialVault().list_credentials()
     except CredentialVaultError as exc:
@@ -42,6 +44,7 @@ def upsert_llm_credential(
 ) -> CredentialSummaryResponse:
     """Store an API key in the encrypted local vault; the secret is never returned."""
     del user
+    require_private_research_workspace()
     try:
         return CredentialVault().upsert_credential(payload)
     except CredentialVaultError as exc:
@@ -58,6 +61,7 @@ def create_agent_run(
     service: AgentOrchestrator = Depends(get_agent_service),
     user: User = Depends(get_authenticated_user),
 ) -> AgentRun:
+    require_private_research_workspace()
     try:
         return service.create_and_execute(
             user=user,
@@ -224,6 +228,7 @@ def create_provider_profile(
     uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
     user: User = Depends(get_authenticated_user),
 ) -> ProviderProfile:
+    require_private_research_workspace()
     profile = ProviderProfile(owner_user_id=user.id, **payload.model_dump())
     return uow.agent_runtime.add_profile(profile)
 
@@ -235,6 +240,7 @@ def patch_provider_profile(
     uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
     user: User = Depends(get_authenticated_user),
 ) -> ProviderProfile:
+    require_private_research_workspace()
     profile = uow.agent_runtime.get_profile(profile_id, user.id)
     if profile is None:
         raise HTTPException(status_code=404, detail="Provider profile not found")
@@ -251,6 +257,7 @@ def delete_provider_profile(
     uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
     user: User = Depends(get_authenticated_user),
 ) -> Response:
+    require_private_research_workspace()
     if not uow.agent_runtime.delete_profile(profile_id, user.id):
         raise HTTPException(status_code=404, detail="Provider profile not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

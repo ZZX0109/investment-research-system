@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from investment_research.api.artifact_security import validate_agent_api_settings, validate_artifact_access_settings
 from investment_research.api.auth_routes import router as auth_router
@@ -16,6 +18,7 @@ from investment_research.auth.security import validate_auth_settings
 from investment_research.bootstrap.settings import validate_runtime_storage
 from investment_research.service.credential_vault import validate_credential_vault_settings
 from investment_research.service.scheduling import LocalResearchScheduler
+from investment_research.config import env_flag
 
 
 def create_app() -> FastAPI:
@@ -30,11 +33,14 @@ def create_app() -> FastAPI:
         validate_agent_api_settings()
         validate_artifact_access_settings()
         validate_credential_vault_settings()
-        scheduler.start()
+        scheduler_enabled = env_flag("INVESTMENT_RESEARCH_SCHEDULER_ENABLED", True)
+        if scheduler_enabled:
+            scheduler.start()
         try:
             yield
         finally:
-            scheduler.shutdown()
+            if scheduler_enabled:
+                scheduler.shutdown()
 
     app = FastAPI(title="Investment Research Console", version="1.0.0", lifespan=lifespan)
     app.add_middleware(
@@ -54,4 +60,34 @@ def create_app() -> FastAPI:
     app.include_router(run_bundle_router)
     app.include_router(credential_router)
     app.include_router(agent_router)
+    _attach_static_workbench(app)
     return app
+
+
+def _attach_static_workbench(app: FastAPI) -> None:
+    """Serve a built Workbench from the API process when explicitly configured.
+
+    Vite remains the local development server. A single same-origin process is
+    safer and simpler for a public Render demo because browser API calls keep
+    their relative ``/api`` URLs and cookies do not cross origins.
+    """
+    import os
+
+    configured_path = os.getenv("INVESTMENT_RESEARCH_STATIC_DIR")
+    if not configured_path:
+        return
+    static_dir = Path(configured_path).expanduser().resolve()
+    index_file = static_dir / "index.html"
+    if not index_file.is_file():
+        raise RuntimeError(
+            f"INVESTMENT_RESEARCH_STATIC_DIR does not contain index.html: {static_dir}"
+        )
+
+    @app.get("/{workbench_path:path}", include_in_schema=False)
+    async def serve_workbench(workbench_path: str):
+        if workbench_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+        requested = (static_dir / workbench_path).resolve()
+        if workbench_path and requested.is_file() and static_dir in requested.parents:
+            return FileResponse(requested)
+        return FileResponse(index_file)

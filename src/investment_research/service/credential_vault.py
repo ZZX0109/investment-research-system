@@ -52,11 +52,18 @@ def get_credential_vault_settings() -> CredentialVaultSettings:
     app_settings = get_app_settings()
     environment = app_settings.environment.value
     dev_mode = app_settings.allow_insecure_defaults
-    raw_key = os.getenv("AI_TEST_OFFICER_CREDENTIAL_MASTER_KEY")
+    # The old variable remains as a compatibility fallback for local users who
+    # already configured it. New deployments must use the project-owned name.
+    raw_key = os.getenv("INVESTMENT_RESEARCH_CREDENTIAL_MASTER_KEY") or os.getenv(
+        "AI_TEST_OFFICER_CREDENTIAL_MASTER_KEY"
+    )
     key = _normalize_key(raw_key) if raw_key else None
     if key is None and dev_mode:
         key = sha256(b"dev-ai-test-officer-credential-master-key").digest()
-    store_path = Path(os.getenv("AI_TEST_OFFICER_CREDENTIAL_STORE_PATH", "runs/secrets/credentials.json"))
+    store_path = Path(
+        os.getenv("INVESTMENT_RESEARCH_CREDENTIAL_STORE_PATH")
+        or os.getenv("AI_TEST_OFFICER_CREDENTIAL_STORE_PATH", "runs/secrets/credentials.json")
+    )
     return CredentialVaultSettings(
         store_path=store_path,
         master_key=key,
@@ -70,7 +77,7 @@ def validate_credential_vault_settings(settings: CredentialVaultSettings | None 
     resolved = settings or get_credential_vault_settings()
     if resolved.master_key is None:
         raise RuntimeError(
-            "AI_TEST_OFFICER_CREDENTIAL_MASTER_KEY is required unless INVESTMENT_RESEARCH_ENV is development, demo, or test"
+            "INVESTMENT_RESEARCH_CREDENTIAL_MASTER_KEY is required unless INVESTMENT_RESEARCH_ENV is development, demo, or test"
         )
 
 

@@ -124,6 +124,7 @@ export function WorkbenchPage() {
 
 function LLMApiKeyButton() {
   const { l } = useI18n();
+  const isPublicDemo = import.meta.env.VITE_PUBLIC_DEMO === "true";
   const mode = useWorkbenchStore((state) => state.mode);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState({ name: "研究助手", endpoint: "https://api.openai.com/v1/chat/completions", model: "gpt-4o-mini", credentialId: "research-openai", secret: "" });
@@ -131,6 +132,10 @@ function LLMApiKeyButton() {
   const credentials = useLLMCredentialsQuery();
   const configure = useConfigureLLMProviderMutation();
   const activeProfile = profiles.data?.find((profile) => profile.enabled);
+
+  if (isPublicDemo) {
+    return <span className="system-status" title={l("公网演示版不会收集或保存访问者的 API Key", "The public demo does not collect or store visitor API keys")}><LockKeyhole size={14} aria-hidden="true" /> {l("只读演示", "Read-only demo")}</span>;
+  }
 
   return <>
     <button className="header-api-key-button" type="button" onClick={() => setOpen(true)}>

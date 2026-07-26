@@ -8,6 +8,7 @@ from investment_research.api.credential_schemas import (
     CredentialUpsertRequest,
 )
 from investment_research.service.credential_vault import CredentialVault, CredentialVaultError
+from investment_research.public_demo import require_private_research_workspace
 
 router = APIRouter(prefix="/api/v1/test-officer/credentials", tags=["test-officer-credentials"])
 
@@ -21,6 +22,7 @@ def list_credentials(
     request: Request,
     vault: CredentialVault = Depends(get_credential_vault),
 ) -> list[CredentialSummaryResponse]:
+    require_private_research_workspace()
     require_agent_api_access(request)
     try:
         return vault.list_credentials()
@@ -34,6 +36,7 @@ def upsert_credential(
     payload: CredentialUpsertRequest,
     vault: CredentialVault = Depends(get_credential_vault),
 ) -> CredentialSummaryResponse:
+    require_private_research_workspace()
     require_agent_api_access(request)
     try:
         return vault.upsert_credential(payload)
@@ -47,6 +50,7 @@ def delete_credential(
     credential_id: str,
     vault: CredentialVault = Depends(get_credential_vault),
 ) -> Response:
+    require_private_research_workspace()
     require_agent_api_access(request)
     try:
         deleted = vault.delete_credential(credential_id)

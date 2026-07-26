@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, status
 
+from investment_research.config import env_flag
+
 ProjectRole = str
 _PROJECT_ROLE_ORDER: dict[ProjectRole, int] = {
     "viewer": 1,
@@ -41,6 +43,11 @@ def get_artifact_access_settings() -> ArtifactAccessSettings:
 
 
 def validate_agent_api_settings(settings: ArtifactAccessSettings | None = None) -> None:
+    # The Render showcase intentionally exposes no agent execution or artifact
+    # mutation endpoints. It therefore needs no shared agent token merely to
+    # boot the read-only Workbench shell.
+    if env_flag("INVESTMENT_RESEARCH_PUBLIC_DEMO", False):
+        return
     resolved = settings or get_artifact_access_settings()
     if resolved.agent_api_token is None and not resolved.dev_mode:
         raise RuntimeError(
@@ -49,6 +56,8 @@ def validate_agent_api_settings(settings: ArtifactAccessSettings | None = None) 
 
 
 def validate_artifact_access_settings(settings: ArtifactAccessSettings | None = None) -> None:
+    if env_flag("INVESTMENT_RESEARCH_PUBLIC_DEMO", False):
+        return
     resolved = settings or get_artifact_access_settings()
     if resolved.token is None and not resolved.dev_mode:
         raise RuntimeError(
