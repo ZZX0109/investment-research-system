@@ -29,20 +29,29 @@
 
 ## 项目界面
 
-### 移动端研究工作台
+### 核心研究仪表盘
 
-顶部明确展示市场、决策时点、研究级数据边界、语言切换和用户自有 API Key 配置；研究对象与结果区域在窄屏下自动变为单列。
+同一页面集中展示研究对象、四任务结果、价格与回撤曲线，以及数据和模型的研究级边界。用户先看结论与图表，需要核验时再展开技术与审计详情。
 
 <p align="center">
-  <img src="docs/images/research-mobile.png" alt="A 股量化研究平台移动端研究工作台" width="360" />
+  <img src="docs/images/research-dashboard.jpg" alt="A 股量化研究平台核心研究仪表盘" width="820" />
 </p>
 
-### 研究对象与风险摘要
+### 四任务研究结果
 
-| 研究对象管理 | 今日风险与观察条件 |
-| --- | --- |
-| <img src="docs/images/research-object-selector.png" alt="搜索并选择 A 股研究对象" width="420" /> | <img src="docs/images/research-risk-summary.png" alt="回撤风险、数据状态和后续观察条件" width="420" /> |
-| 支持按证券代码或名称搜索，研究对象从固定研究池添加；移除操作只影响当前工作区。 | 同时展示参考风险、可信度、数据日期、Provider、数据质量和下一交易日观察条件。 |
+方向、收益和回撤任务分别展示，不用单一“涨跌”标签替代概率与区间。每张卡片同时标明它是正式结论、研究观察还是暂不可用。
+
+<p align="center">
+  <img src="docs/images/research-task-overview.jpg" alt="1 日方向、5 日方向、20 日收益和20 日回撤任务概览" width="760" />
+</p>
+
+### 风险情景与观察依据
+
+风险结果同时提供参考概率、可信度、较乐观/较悲观情景和主要观察因素，帮助用户理解模型为什么给出当前读数，以及下一交易日应该观察什么变化。
+
+<p align="center">
+  <img src="docs/images/research-risk-outlook.jpg" alt="回撤风险结论、情景分析和主要观察因素" width="920" />
+</p>
 
 ## 你可以用它完成什么
 
