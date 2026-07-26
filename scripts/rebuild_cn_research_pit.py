@@ -53,7 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coverage-ledger", type=Path, default=PROJECT / "artifacts/free_research_coverage.json")
     parser.add_argument("--as-of", type=date.fromisoformat, default=None)
     parser.add_argument("--contexts", nargs="+", choices=("close_confirmed", "pre_open"), default=["close_confirmed"])
-    parser.add_argument("--max-equities", type=int, default=100)
+    parser.add_argument(
+        "--max-equities",
+        type=int,
+        default=None,
+        help="Optional development cap. By default every equity passing the quality gate is retained.",
+    )
     parser.add_argument("--minimum-equities", type=int, default=80)
     parser.add_argument("--minimum-history-sessions", type=int, default=756)
     parser.add_argument(

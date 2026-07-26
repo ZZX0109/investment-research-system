@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from investment_research.agent.models import AgentBudget, AgentEvent, AgentRun, AgentRunState, ProviderProfile
+from investment_research.agent.models import AgentBudget, AgentEvent, AgentRun, AgentRunState, AgentToolCall, ProviderProfile
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -157,6 +157,30 @@ class AgentRuntimeRepository:
             (str(uuid4()), str(run_id), node_name, tool_id, stable_hash(input_value), None if output is None else stable_hash(output), "failed" if error else "completed", None if error is None else error[:500], _iso(now), _iso(now)),
         )
         self.connection.commit()
+
+    def list_tool_calls(self, run_id: str) -> list[AgentToolCall]:
+        rows = self.connection.execute(
+            """
+            SELECT id,agent_run_id,node_name,tool_id,input_hash,output_hash,state,error,started_at,completed_at
+            FROM agent_tool_calls WHERE agent_run_id=? ORDER BY started_at,id
+            """,
+            (run_id,),
+        ).fetchall()
+        return [
+            AgentToolCall(
+                id=UUID(str(row[0])),
+                agent_run_id=UUID(str(row[1])),
+                node_name=str(row[2]),
+                tool_id=str(row[3]),
+                input_hash=str(row[4]),
+                output_hash=None if row[5] is None else str(row[5]),
+                state=str(row[6]),
+                error=None if row[7] is None else str(row[7]),
+                started_at=datetime.fromisoformat(str(row[8])),
+                completed_at=None if row[9] is None else datetime.fromisoformat(str(row[9])),
+            )
+            for row in rows
+        ]
 
     def get_cache(self, cache_key: str) -> dict[str, object] | None:
         row = self.connection.execute(

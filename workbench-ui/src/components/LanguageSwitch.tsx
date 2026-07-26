@@ -10,6 +10,7 @@ export function LanguageSwitch() {
       {options.map(([value, label]) => (
         <button
           key={value}
+          data-testid={`language-switch-${value}`}
           className={`language-switch__button ${language === value ? "language-switch__button--active" : ""}`}
           type="button"
           onClick={() => setLanguage(value)}

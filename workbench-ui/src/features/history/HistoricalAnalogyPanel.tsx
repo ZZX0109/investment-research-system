@@ -1,11 +1,13 @@
 import { ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from "recharts";
 import { Panel } from "../../components/Panel";
 import { useHistoricalAnalogiesQuery } from "../../hooks/useWorkbenchQueries";
+import { useI18n } from "../../i18n";
 import { useWorkbenchStore } from "../../state/workbenchStore";
 
 const percent = (value?: number | null) => value == null ? "n/a" : `${(value * 100).toFixed(1)}%`;
 
 export function HistoricalAnalogyPanel() {
+  const { l, term } = useI18n();
   const assetId = useWorkbenchStore((state) => state.selectedAssetId);
   const query = useHistoricalAnalogiesQuery(assetId);
   const rows = query.data ?? [];
@@ -17,16 +19,22 @@ export function HistoricalAnalogyPanel() {
     regime: item.regime
   }));
 
+  // Historical analogies are supporting evidence, not a required dashboard
+  // section. Do not occupy a full panel when no leakage-safe matches exist.
+  if (!query.isLoading && !query.isError && chart.length === 0) {
+    return null;
+  }
+
   return (
-    <Panel eyebrow="Historical Context" title="Similar Risk States">
+    <Panel eyebrow={l("历史情境", "Historical Context")} title={l("相似风险状态", "Similar Risk States")}>
       {chart.length ? (
         <>
-          <div className="chart-frame" aria-label="Historical analogy return and drawdown chart">
+          <div className="chart-frame" aria-label={l("历史类比收益与回撤图", "Historical analogy return and drawdown chart")}>
             <ResponsiveContainer width="100%" height="100%">
               <ScatterChart margin={{ top: 12, right: 12, bottom: 8, left: 0 }}>
-                <XAxis dataKey="drawdown" type="number" name="3m drawdown" unit="%" />
-                <YAxis dataKey="return3m" type="number" name="3m return" unit="%" />
-                <ZAxis dataKey="similarity" range={[80, 360]} name="similarity" unit="%" />
+                <XAxis dataKey="drawdown" type="number" name={l("3个月回撤", "3m drawdown")} unit="%" />
+                <YAxis dataKey="return3m" type="number" name={l("3个月收益", "3m return")} unit="%" />
+                <ZAxis dataKey="similarity" range={[80, 360]} name={l("相似度", "similarity")} unit="%" />
                 <Tooltip cursor={{ strokeDasharray: "3 3" }} />
                 <Scatter data={chart} fill="#2c6e62" />
               </ScatterChart>
@@ -34,10 +42,10 @@ export function HistoricalAnalogyPanel() {
           </div>
           <div className="data-table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Regime</th><th>Similarity</th><th>1m</th><th>3m</th><th>Max DD</th></tr></thead>
+              <thead><tr><th>{l("日期", "Date")}</th><th>{l("市场状态", "Regime")}</th><th>{l("相似度", "Similarity")}</th><th>{l("1个月", "1m")}</th><th>{l("3个月", "3m")}</th><th>{l("最大回撤", "Max DD")}</th></tr></thead>
               <tbody>{rows.map((item) => (
                 <tr key={item.id}>
-                  <td>{item.candidate_date.slice(0, 10)}</td><td>{item.regime}</td>
+                  <td>{item.candidate_date.slice(0, 10)}</td><td>{term(item.regime)}</td>
                   <td>{percent(item.similarity)}</td><td>{percent(item.return_1m)}</td>
                   <td>{percent(item.return_3m)}</td><td>{percent(item.max_drawdown_3m)}</td>
                 </tr>
@@ -45,7 +53,11 @@ export function HistoricalAnalogyPanel() {
             </table>
           </div>
         </>
-      ) : <p className="muted">No leakage-safe historical matches are available for the selected asset.</p>}
+      ) : query.isError ? (
+        <p className="muted">{l("历史情境暂时无法读取，本次研究不依赖该项继续展示。", "Historical context is temporarily unavailable; the main research result remains visible without it.")}</p>
+      ) : (
+        <p className="muted">{l("正在查找可用的历史相似情境…", "Finding usable historical analogies...")}</p>
+      )}
     </Panel>
   );
 }

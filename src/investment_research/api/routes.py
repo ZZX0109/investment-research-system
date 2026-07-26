@@ -400,6 +400,256 @@ def research_model_rosters(
     return output
 
 
+@router.get("/api/v1/research-predictions/latest")
+def latest_research_prediction(
+    symbol: str,
+    task: Literal["direction_1d", "direction_5d", "return_20d", "drawdown_20d"] = "drawdown_20d",
+    user: User = Depends(get_authenticated_user),
+) -> dict:
+    """Expose one frozen research-only result without crossing into formal inference."""
+    del user
+    return _load_latest_research_prediction(
+        project_root=Path.cwd(),
+        symbol=symbol.strip().upper(),
+        task=task,
+    )
+
+
+@router.get("/api/v1/research-universe/latest")
+def latest_research_universe(
+    user: User = Depends(get_authenticated_user),
+) -> dict:
+    """List every symbol with traceable history in the latest CN research rebuild."""
+    del user
+    return _load_latest_research_universe(project_root=Path.cwd())
+
+
+def _load_latest_research_universe(*, project_root: Path) -> dict:
+    unavailable = {
+        "status": "unavailable",
+        "data_tier": "research_pit",
+        "research_only": True,
+        "deployment_ready": False,
+        "as_of": None,
+        "symbols": [],
+        "counts": {
+            "historical": 0,
+            "training_eligible": 0,
+            "frozen_result_available": 0,
+        },
+        "blocking_reasons": [],
+    }
+    report_path = project_root / "artifacts" / "cn_research_demo" / "latest.json"
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {**unavailable, "blocking_reasons": ["research_run_report_missing"]}
+    except (OSError, ValueError):
+        return {**unavailable, "blocking_reasons": ["research_run_report_invalid"]}
+    if report.get("data_tier") != "research_pit" or report.get("deployment_ready") is not False:
+        return {**unavailable, "blocking_reasons": ["research_data_tier_boundary_invalid"]}
+
+    rebuild_ref = report.get("rebuild_index")
+    if not isinstance(rebuild_ref, str):
+        return {**unavailable, "blocking_reasons": ["research_rebuild_index_missing"]}
+    rebuild_path = (project_root / rebuild_ref).resolve()
+    try:
+        rebuild_path.relative_to(project_root.resolve())
+        rebuild = json.loads(rebuild_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {**unavailable, "blocking_reasons": ["research_rebuild_index_invalid"]}
+    if rebuild.get("data_tier") != "research_pit" or rebuild.get("deployment_ready") is not False:
+        return {**unavailable, "blocking_reasons": ["research_rebuild_tier_invalid"]}
+
+    eligible_symbols: set[str] = set()
+    cohort_by_symbol: dict[str, str] = {}
+    for cohort, ref in rebuild.get("cohort_refs", {}).items():
+        if not isinstance(ref, str):
+            continue
+        path = (project_root / ref).resolve()
+        try:
+            path.relative_to(project_root.resolve())
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        for member in payload.get("members", []):
+            symbol = str(member.get("symbol", "")).strip()
+            if symbol:
+                eligible_symbols.add(symbol)
+                cohort_by_symbol[symbol] = str(cohort)
+
+    frozen_symbols: set[str] = set()
+    for scope in report.get("inference", {}).values():
+        ref = scope.get("prediction_ref") if isinstance(scope, dict) else None
+        if not isinstance(ref, str):
+            continue
+        path = (project_root / ref).resolve()
+        try:
+            path.relative_to(project_root.resolve())
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        if payload.get("data_tier") != "research_pit" or payload.get("deployment_ready") is not False:
+            continue
+        frozen_symbols.update(
+            str(item.get("symbol"))
+            for item in payload.get("predictions", [])
+            if isinstance(item, dict) and item.get("symbol")
+        )
+
+    etfs = {"510050", "510300", "510500", "159915", "512100"}
+    symbols: list[dict] = []
+    for ref in rebuild.get("standard_manifest_refs", []):
+        if not isinstance(ref, str):
+            continue
+        path = (project_root / ref).resolve()
+        try:
+            path.relative_to(project_root.resolve())
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        symbol = str(manifest.get("symbol", "")).strip()
+        if not symbol:
+            continue
+        quality = manifest.get("quality_report", {})
+        symbols.append(
+            {
+                "symbol": symbol,
+                "name": symbol,
+                "exchange": "XSHG" if symbol.startswith(("5", "6")) else "XSHE",
+                "asset_type": "etf" if symbol in etfs else "equity",
+                "provider": manifest.get("provider"),
+                "row_count": int(manifest.get("row_count", 0)),
+                "quality_status": quality.get("quality_status", quality.get("status", "degraded")),
+                "training_eligible": symbol in eligible_symbols,
+                "cohort": cohort_by_symbol.get(symbol),
+                "frozen_result_available": symbol in frozen_symbols,
+            }
+        )
+    symbols.sort(key=lambda item: (item["asset_type"] == "etf", item["symbol"]))
+    return {
+        **unavailable,
+        "status": "research_only",
+        "as_of": rebuild.get("as_of"),
+        "symbols": symbols,
+        "counts": {
+            "historical": len(symbols),
+            "training_eligible": sum(bool(item["training_eligible"]) for item in symbols),
+            "frozen_result_available": sum(bool(item["frozen_result_available"]) for item in symbols),
+        },
+        "blocking_reasons": list(rebuild.get("blocking_reasons", [])),
+    }
+
+
+def _load_latest_research_prediction(*, project_root: Path, symbol: str, task: str) -> dict:
+    report_path = project_root / "artifacts" / "cn_research_demo" / "latest.json"
+    unavailable = {
+        "status": "unavailable",
+        "data_tier": "research_pit",
+        "research_only": True,
+        "deployment_ready": False,
+        "symbol": symbol,
+        "task": task,
+        "input": None,
+        "output": None,
+        "model": None,
+        "influence_facts": [],
+        "blocking_reasons": [],
+        "abstain_reasons": [],
+        "supported_symbols": [],
+    }
+    if not report_path.is_file():
+        return {**unavailable, "blocking_reasons": ["research_run_report_missing"]}
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {**unavailable, "blocking_reasons": ["research_run_report_invalid"]}
+    if report.get("data_tier") != "research_pit" or report.get("deployment_ready") is not False:
+        return {**unavailable, "blocking_reasons": ["research_data_tier_boundary_invalid"]}
+
+    records: list[dict] = []
+    for scope in report.get("inference", {}).values():
+        ref = scope.get("prediction_ref") if isinstance(scope, dict) else None
+        if not isinstance(ref, str):
+            continue
+        path = (project_root / ref).resolve()
+        try:
+            path.relative_to(project_root.resolve())
+        except ValueError:
+            continue
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            payload.get("data_tier") != "research_pit"
+            or payload.get("deployment_ready") is not False
+        ):
+            continue
+        records.extend(item for item in payload.get("predictions", []) if isinstance(item, dict))
+
+    supported_symbols = sorted({str(item.get("symbol")) for item in records if item.get("symbol")})
+    match = next(
+        (
+            item for item in records
+            if str(item.get("symbol", "")).upper() == symbol and item.get("task") == task
+        ),
+        None,
+    )
+    if match is None:
+        return {
+            **unavailable,
+            "blocking_reasons": ["symbol_absent_from_frozen_research_cohort"],
+            "supported_symbols": supported_symbols,
+        }
+
+    abstained = bool(match.get("abstained"))
+    status = "abstain" if abstained else "research_only"
+    return {
+        "status": status,
+        "data_tier": "research_pit",
+        "research_only": True,
+        "deployment_ready": False,
+        "symbol": symbol,
+        "task": task,
+        "cohort": match.get("cohort"),
+        "input": {
+            "trade_date": match.get("trade_date"),
+            "decision_context": match.get("decision_context"),
+            "market_snapshot_id": match.get("market_snapshot_id"),
+            "market_snapshot_hash": match.get("market_snapshot_hash"),
+            "prediction_price": match.get("prediction_price"),
+            "coverage_ratio": match.get("coverage_ratio"),
+            "core_feature_coverage": match.get("core_feature_coverage"),
+            "optional_feature_coverage": match.get("optional_feature_coverage"),
+            "event_coverage_status": match.get("event_coverage_status"),
+            "data_status": match.get("data_status"),
+            "provider_chain": match.get("provider_chain", []),
+            "cache_state": match.get("cache_state"),
+            "data_quality_mask": match.get("data_quality_mask", {}),
+            "event_missing_mask": match.get("event_missing_mask", {}),
+            "revision_id": match.get("revision_id"),
+        },
+        "output": None if abstained else match.get("prediction"),
+        "diagnostic_output": match.get("diagnostic_prediction") if abstained else None,
+        "model": {
+            "candidate": match.get("model_candidate"),
+            "role": match.get("model_role"),
+            "research_status": match.get("research_status"),
+            "roster_hash": match.get("roster_hash"),
+            "model_disagreement": match.get("model_disagreement"),
+            "artifact_hashes": match.get("model_artifact_hashes", {}),
+            "limitations": match.get("research_limitations", []),
+        },
+        "influence_facts": match.get("influence_facts", []),
+        "blocking_reasons": match.get("gating_reasons", []),
+        "abstain_reasons": match.get("abstain_reasons", []),
+        "supported_symbols": supported_symbols,
+    }
+
+
 @router.get(
     "/api/v1/assets/{asset_id}/historical-analogies",
     response_model=list[HistoricalScenario],
@@ -767,6 +1017,20 @@ def create_asset(
 ) -> Asset:
     try:
         return portfolio.create_asset_for_user(payload, user=user)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=_http_status_for_value_error(exc), detail=str(exc)
+        ) from exc
+
+
+@router.delete("/api/v1/assets/{asset_id}", status_code=204)
+def remove_asset(
+    asset_id: str,
+    portfolio: PortfolioResearchService = Depends(get_portfolio_research_service),
+    user: User = Depends(get_authenticated_user),
+) -> None:
+    try:
+        portfolio.remove_asset_for_user(asset_id, user=user)
     except ValueError as exc:
         raise HTTPException(
             status_code=_http_status_for_value_error(exc), detail=str(exc)

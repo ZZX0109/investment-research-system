@@ -8,26 +8,17 @@ interface ModeSwitchProps {
 
 export function ModeSwitch({ mode, onChange }: ModeSwitchProps) {
   const { t } = useI18n();
-  const labels: Record<WorkbenchMode, string> = {
-    demo: t("mode.demo"),
-    sandbox: t("mode.sandbox"),
-    research: t("mode.research"),
-    real: t("mode.real")
-  };
 
   return (
-    <div className="mode-switch" role="tablist" aria-label={t("header.context")}>
-      {(["research", "demo", "sandbox", "real"] as WorkbenchMode[]).map((entry) => (
-        <button
-          key={entry}
-          data-testid={`mode-switch-${entry}`}
-          className={`mode-switch__button ${mode === entry ? "mode-switch__button--active" : ""}`}
-          type="button"
-          onClick={() => onChange(entry)}
-        >
-          {labels[entry]}
-        </button>
-      ))}
+    <div className="mode-switch" aria-label={t("header.context")}>
+      <button
+        data-testid="mode-switch-research"
+        className={`mode-switch__button mode-switch__button--primary ${mode === "research" ? "mode-switch__button--active" : ""}`}
+        type="button"
+        onClick={() => onChange("research")}
+      >
+        {t("mode.research")}
+      </button>
     </div>
   );
 }

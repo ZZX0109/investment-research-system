@@ -371,11 +371,14 @@ def _freeze_research_artifacts(
     primary_candidate: str, fallback_candidate: str,
 ) -> dict[str, str]:
     samples = _eligible_samples(task, samples)
+    from investment_research.training.formal_training import balanced_panel_fit_samples
     feature_order = sorted({name for sample in samples for name in sample.features})
     if not feature_order:
         raise ValueError("research artifact has no feature order")
     selected = primary_candidate
     matrix = _artifact_matrix(samples, feature_order)
+    fit_samples = balanced_panel_fit_samples(samples)
+    fit_matrix = _artifact_matrix(fit_samples, feature_order)
     package = {
         "schema_version": "free-research-model-artifact-v1",
         "data_tier": DataTier.RESEARCH_PIT.value,
@@ -390,7 +393,7 @@ def _freeze_research_artifacts(
     if task == "drawdown_20d":
         from investment_research.training.calibration import compare_calibrators
         from investment_research.training.formal_risk_runner import _estimator, _label
-        labels = [_label(sample, -0.08) for sample in samples]
+        labels = [_label(sample, -0.08) for sample in fit_samples]
         candidate = next(item for item in result.candidates if item.name == selected)
         calibrator, _ = compare_calibrators(
             calibration_scores=candidate.raw_oof_scores,
@@ -403,7 +406,7 @@ def _freeze_research_artifacts(
         else:
             estimator = _estimator(selected)
             with guarded_model_math():
-                estimator.fit(matrix, labels)
+                estimator.fit(fit_matrix, labels)
             package.update(kind="risk_classifier", estimator=estimator, calibrator=calibrator)
         alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
@@ -413,13 +416,13 @@ def _freeze_research_artifacts(
             else:
                 comparator = _estimator(alternative)
                 with guarded_model_math():
-                    comparator.fit(matrix, labels)
+                    comparator.fit(fit_matrix, labels)
                 package["comparator"] = {"kind": "risk_classifier", "estimator": comparator, "name": alternative}
     elif task.startswith("direction_"):
         from investment_research.training.calibration import CalibrationMethod, TimeOutOfFoldCalibrator
         from investment_research.training.formal_direction_runner import CLASSES, _class_index, _direction, _estimator
         horizon = int(task.split("_")[1][:-1])
-        labels = [_direction(sample, horizon) for sample in samples]
+        labels = [_direction(sample, horizon) for sample in fit_samples]
         frequencies = {label: (labels.count(label) + 1) / (len(labels) + len(CLASSES)) for label in CLASSES}
         candidate = next(item for item in result.candidates if item.name == selected)
         calibrators = {}
@@ -437,7 +440,7 @@ def _freeze_research_artifacts(
         else:
             estimator = _estimator(selected)
             with guarded_model_math():
-                estimator.fit(matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
+                estimator.fit(fit_matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
             package.update(kind="direction_classifier", estimator=estimator, calibrators=calibrators, horizon=horizon)
         alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
@@ -450,12 +453,20 @@ def _freeze_research_artifacts(
             if alternative not in {"constant-class", "random", "index-direction", "momentum"}:
                 comparator = _estimator(alternative)
                 with guarded_model_math():
-                    comparator.fit(matrix, [_class_index(value) for value in labels] if alternative == "xgboost" else labels)
+                    comparator.fit(fit_matrix, [_class_index(value) for value in labels] if alternative == "xgboost" else labels)
                 component = {"kind": "direction_classifier", "name": alternative, "estimator": comparator, "horizon": horizon}
             package["comparator"] = component
     else:
-        from investment_research.training.formal_return_runner import QUANTILES, _estimator, _quantile, _target
-        targets = [_target(sample) for sample in samples]
+        from investment_research.training.formal_return_runner import (
+            QUANTILES,
+            _estimator,
+            _quantile,
+            _target,
+            balanced_panel_fit_samples,
+        )
+        fit_samples = balanced_panel_fit_samples(samples)
+        fit_matrix = _artifact_matrix(fit_samples, feature_order)
+        targets = [_target(sample) for sample in fit_samples]
         if selected == "historical-distribution":
             package.update(kind="constant_quantiles", quantiles=[_quantile(targets, value) for value in QUANTILES])
         else:
@@ -463,7 +474,7 @@ def _freeze_research_artifacts(
             for quantile in QUANTILES:
                 estimator = _estimator(selected, quantile)
                 with guarded_model_math():
-                    estimator.fit(matrix, targets)
+                    estimator.fit(fit_matrix, targets)
                 estimators.append(estimator)
             package.update(kind="return_quantile", estimators=estimators, quantiles=list(QUANTILES))
         fallback_estimators = []
@@ -476,7 +487,7 @@ def _freeze_research_artifacts(
             for quantile in QUANTILES:
                 estimator = _estimator(fallback_candidate, quantile)
                 with guarded_model_math():
-                    estimator.fit(matrix, targets)
+                    estimator.fit(fit_matrix, targets)
                 fallback_estimators.append(estimator)
             package["comparator"] = {
                 "kind": "return_quantile", "name": fallback_candidate,

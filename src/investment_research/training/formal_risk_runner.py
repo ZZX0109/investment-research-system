@@ -9,6 +9,7 @@ from investment_research.training.formal_training import (
     FinalHoldoutLedger,
     FormalScopeTrainingPlan,
     RISK_CANDIDATES,
+    balanced_panel_fit_samples,
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
@@ -173,7 +174,8 @@ class FormalRiskTrainingRunner:
         return scores, labels, ids, regimes
 
     def _fit_predict(self, *, name: str, train: list[TrainingSample], evaluate: list[TrainingSample], feature_order: list[str]) -> list[float]:
-        labels = [_label(item, self.drawdown_threshold) for item in train]
+        fit_train = balanced_panel_fit_samples(train)
+        labels = [_label(item, self.drawdown_threshold) for item in fit_train]
         if name == "historical-distribution":
             probability = sum(labels) / len(labels)
             return [probability] * len(evaluate)
@@ -181,7 +183,7 @@ class FormalRiskTrainingRunner:
             # The selected ensemble is rebuilt from OOF weights in the caller;
             # a final fitted ensemble needs frozen constituent artifacts.
             raise ValueError("ensemble cannot be final-evaluated without frozen component artifacts")
-        matrix = _matrix(train, feature_order)
+        matrix = _matrix(fit_train, feature_order)
         evaluation = _matrix(evaluate, feature_order)
         estimator = _estimator(name)
         with guarded_model_math():

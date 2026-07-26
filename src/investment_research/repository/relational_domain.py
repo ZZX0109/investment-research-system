@@ -79,6 +79,30 @@ class RelationalDomainRepository:
         ).fetchall()
         return {str(row[0]) for row in [*owned, *shared]}
 
+    def remove_resource_access(
+        self,
+        *,
+        resource_type: str,
+        resource_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        """Remove only one user's workspace link without touching other users or evidence."""
+        self.assert_access(
+            resource_type=resource_type,
+            resource_id=str(resource_id),
+            user_id=user_id,
+            write=False,
+        )
+        self.connection.execute(
+            "DELETE FROM resource_shares WHERE resource_type=? AND resource_id=? AND viewer_user_id=?",
+            (resource_type, str(resource_id), str(user_id)),
+        )
+        self.connection.execute(
+            "DELETE FROM resource_owners WHERE resource_type=? AND resource_id=? AND owner_user_id=?",
+            (resource_type, str(resource_id), str(user_id)),
+        )
+        self._commit()
+
     def create_share(self, *, resource_type: str, resource_id: UUID, viewer: User, owner: User) -> ResourceShare:
         self.assert_access(resource_type=resource_type, resource_id=str(resource_id), user_id=owner.id, write=True)
         if viewer.id == owner.id:

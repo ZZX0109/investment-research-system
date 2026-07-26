@@ -6,8 +6,7 @@ import {
   type RunViewSummaryMap
 } from "../api/runViews";
 import { useWorkbenchClient } from "./useWorkbenchClient";
-import type { ReportSchedule } from "../api/types";
-import type { AgentRun } from "../api/types";
+import type { AgentRun, Asset, ReportSchedule } from "../api/types";
 
 export function useSessionQuery() {
   const client = useWorkbenchClient();
@@ -22,6 +21,48 @@ export function useAssetsQuery() {
   return useQuery({
     queryKey: ["assets", client.mode],
     queryFn: () => client.getAssets()
+  });
+}
+
+export function useLLMProviderProfilesQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["llm-provider-profiles", client.mode],
+    queryFn: () => client.getLLMProviderProfiles(),
+    enabled: ["research", "real"].includes(client.mode),
+    retry: false
+  });
+}
+
+export function useLLMCredentialsQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["llm-credentials", client.mode],
+    queryFn: () => client.getLLMCredentials(),
+    enabled: ["research", "real"].includes(client.mode),
+    retry: false
+  });
+}
+
+export function useConfigureLLMProviderMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: { profile: Parameters<typeof client.createLLMProviderProfile>[0]; profileId?: string; credential?: { id: string; label: string; secret: string } }) => {
+      let credentialRef = payload.profile.credential_ref;
+      if (payload.credential?.secret) {
+        const stored = await client.upsertLLMCredential({ id: payload.credential.id, label: payload.credential.label, kind: "api-key", secret: payload.credential.secret, metadata: { purpose: "research-agent" } });
+        credentialRef = stored.id;
+      }
+      const profile = { ...payload.profile, credential_ref: credentialRef };
+      return payload.profileId
+        ? client.updateLLMProviderProfile(payload.profileId, profile)
+        : client.createLLMProviderProfile(profile);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["llm-provider-profiles"] });
+      void queryClient.invalidateQueries({ queryKey: ["llm-credentials"] });
+    }
   });
 }
 
@@ -189,6 +230,29 @@ export function useResearchForecastQuery(runId: string | null) {
   });
 }
 
+export function useLatestResearchPredictionQuery(
+  symbol?: string | null,
+  task: import("../api/types").LatestResearchPrediction["task"] = "drawdown_20d"
+) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["latest-research-prediction", client.mode, symbol, task],
+    queryFn: () => client.getLatestResearchPrediction(symbol ?? "", task),
+    enabled: client.mode === "research" && Boolean(symbol),
+    retry: false
+  });
+}
+
+export function useLatestResearchUniverseQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["latest-research-universe", client.mode],
+    queryFn: () => client.getLatestResearchUniverse(),
+    enabled: client.mode === "research",
+    retry: false
+  });
+}
+
 export function useResearchShadowSessionsQuery(symbol?: string | null) {
   const client = useWorkbenchClient();
   return useQuery({
@@ -234,7 +298,7 @@ export function useCreateAgentRunMutation() {
   const client = useWorkbenchClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { asset_id: string; task_text: string; as_of: string; user_preference: AgentRun["user_preference"] }) =>
+    mutationFn: (payload: { asset_id: string; task_text: string; as_of: string; provider_profile_id?: string; user_preference: AgentRun["user_preference"] }) =>
       client.createAgentRun(payload),
     onSuccess: (run) => {
       queryClient.setQueryData(["agent-run", client.mode, run.id], run);
@@ -242,6 +306,26 @@ export function useCreateAgentRunMutation() {
       void queryClient.invalidateQueries({ queryKey: ["research-card"] });
       void queryClient.invalidateQueries({ queryKey: ["reports"] });
     }
+  });
+}
+
+export function useAgentToolCallsQuery(runId: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["agent-tool-calls", client.mode, runId],
+    queryFn: () => client.getAgentToolCalls(runId ?? ""),
+    enabled: Boolean(runId) && ["research", "real"].includes(client.mode),
+    retry: false,
+  });
+}
+
+export function useAgentExplanationQuery(runId: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["agent-explanation", client.mode, runId],
+    queryFn: () => client.getAgentExplanation(runId ?? ""),
+    enabled: Boolean(runId) && ["research", "real"].includes(client.mode),
+    retry: false,
   });
 }
 
@@ -355,6 +439,33 @@ export function useCreateAssetMutation() {
     mutationFn: client.createAsset,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["assets"] });
+    }
+  });
+}
+
+export function useDeleteAssetMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (assetId: string) => client.deleteAsset(assetId),
+    onMutate: async (assetId) => {
+      const queryKey = ["assets", client.mode] as const;
+      await queryClient.cancelQueries({ queryKey });
+      const previousAssets = queryClient.getQueryData<Asset[]>(queryKey);
+      queryClient.setQueryData<Asset[]>(queryKey, (assets) =>
+        assets?.filter((asset) => asset.id !== assetId) ?? []
+      );
+      return { previousAssets, queryKey };
+    },
+    onError: (_error, _assetId, context) => {
+      if (context?.previousAssets) {
+        queryClient.setQueryData(context.queryKey, context.previousAssets);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["assets"] });
+      void queryClient.invalidateQueries({ queryKey: ["positions"] });
+      void queryClient.invalidateQueries({ queryKey: ["portfolio-risk"] });
     }
   });
 }

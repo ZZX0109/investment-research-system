@@ -40,6 +40,66 @@ export interface AgentRun {
   completed_at?: string | null;
 }
 
+export interface AgentToolCall {
+  id: string;
+  agent_run_id: string;
+  node_name: string;
+  tool_id: string;
+  input_hash: string;
+  output_hash?: string | null;
+  state: "completed" | "failed";
+  error?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+}
+
+export interface AgentExplanation {
+  summary: string;
+  supporting_view: string;
+  contrary_view: string;
+  observation_conditions: string[];
+  evidence_ids: string[];
+  status?: "research_only" | "abstain";
+  tools_used?: string[];
+  sources?: Array<{
+    title: string;
+    source: string;
+    url: string;
+    published_at?: string | null;
+    type: "announcement" | "knowledge";
+    content_hash?: string | null;
+  }>;
+}
+
+export type LLMProtocol = "openai_compatible" | "anthropic_messages" | "ollama" | "mock";
+
+export interface LLMProviderProfile {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  protocol: LLMProtocol;
+  endpoint?: string | null;
+  model: string;
+  credential_ref?: string | null;
+  timeout_seconds: number;
+  context_limit: number;
+  fallback_profile_id?: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LLMCredentialSummary {
+  id: string;
+  label: string;
+  kind: "api-key" | "test-account" | "connector-token" | "custom";
+  metadata: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  secretPreview: string;
+  secretLength: number;
+}
+
 export interface Provenance {
   data_mode: DataMode;
   source_type: SourceType;
@@ -295,6 +355,93 @@ export interface ResearchForecastBundle {
   model_disagreement: Record<string, number>;
   risk_level: "low" | "medium" | "high" | "unavailable";
   abstained: boolean;
+}
+
+export interface LatestResearchPrediction {
+  status: "research_only" | "abstain" | "unavailable";
+  data_tier: "research_pit";
+  research_only: true;
+  deployment_ready: false;
+  symbol: string;
+  task: "direction_1d" | "direction_5d" | "return_20d" | "drawdown_20d";
+  cohort?: string | null;
+  input?: {
+    trade_date?: string | null;
+    decision_context?: string | null;
+    market_snapshot_id?: string | null;
+    market_snapshot_hash?: string | null;
+    prediction_price?: number | null;
+    coverage_ratio?: number | null;
+    core_feature_coverage?: number | null;
+    optional_feature_coverage?: number | null;
+    event_coverage_status?: string | null;
+    data_status?: string | null;
+    provider_chain: string[];
+    cache_state?: string | null;
+    data_quality_mask: Record<string, number>;
+    event_missing_mask: Record<string, number>;
+    revision_id?: string | null;
+  } | null;
+  output?: {
+    raw_probability?: number;
+    calibrated_probability?: number | { up?: number; down?: number; flat?: number };
+    risk_level?: string;
+    threshold_drawdown?: number;
+    direction_probability?: { up?: number; down?: number; flat?: number };
+    p10?: number;
+    p50?: number;
+    p90?: number;
+  } | null;
+  /** A withheld candidate reading used only to explain an abstain. */
+  diagnostic_output?: {
+    raw_probability?: number;
+    calibrated_probability?: number | { up?: number; down?: number; flat?: number };
+    risk_level?: string;
+    threshold_drawdown?: number;
+    direction_probability?: { up?: number; down?: number; flat?: number };
+    p10?: number;
+    p50?: number;
+    p90?: number;
+  } | null;
+  model?: {
+    candidate?: string | null;
+    role?: string | null;
+    research_status?: string | null;
+    roster_hash?: string | null;
+    model_disagreement?: number | null;
+    artifact_hashes: Record<string, string>;
+    limitations: string[];
+  } | null;
+  influence_facts: string[];
+  blocking_reasons: string[];
+  abstain_reasons: string[];
+  supported_symbols: string[];
+}
+
+export interface LatestResearchUniverse {
+  status: "research_only" | "unavailable";
+  data_tier: "research_pit";
+  research_only: true;
+  deployment_ready: false;
+  as_of?: string | null;
+  symbols: Array<{
+    symbol: string;
+    name: string;
+    exchange: "XSHG" | "XSHE";
+    asset_type: "equity" | "etf";
+    provider?: string | null;
+    row_count: number;
+    quality_status: string;
+    training_eligible: boolean;
+    cohort?: string | null;
+    frozen_result_available: boolean;
+  }>;
+  counts: {
+    historical: number;
+    training_eligible: number;
+    frozen_result_available: number;
+  };
+  blocking_reasons: string[];
 }
 
 export interface ResearchAcceptanceReport {
@@ -901,6 +1048,12 @@ export interface DomainCatalog {
 
 export interface AuthResponse {
   user: User;
+  access_expires_at: string;
+  refresh_expires_at: string;
+}
+
+export interface SessionResponse {
+  user: User | null;
   access_expires_at: string;
   refresh_expires_at: string;
 }

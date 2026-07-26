@@ -21,8 +21,9 @@ def test_upgrade_from_recent_catalog_revisions(starting_revision: str, tmp_path:
     command.upgrade(config, "head")
     connection = sqlite3.connect(database_path)
     assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-        "0016_research_data_qualification",
+        "0017_financial_knowledge",
     )
+    assert connection.execute("SELECT COUNT(*) FROM financial_knowledge_documents").fetchone()[0] >= 4
     connection.close()
 
 
@@ -50,7 +51,7 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
     version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     connection.close()
 
-    assert version == ("0016_research_data_qualification",)
+    assert version == ("0017_financial_knowledge",)
     assert {
         "pit_dataset_partitions",
         "standard_event_revisions",
@@ -61,6 +62,7 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
         "model_approval_evidence",
         "shadow_run_sessions",
         "shadow_run_outcomes",
+        "financial_knowledge_documents",
     } <= tables
     assert {"market_snapshots", "provider_coverage_runs", "model_artifact_sets"} <= tables
     assert {

@@ -1,77 +1,206 @@
-import { useState } from "react";
-import { Panel } from "../../components/Panel";
-import { useCreateAssetMutation } from "../../hooks/useWorkbenchQueries";
+import { useEffect, useMemo, useState } from "react";
+import { Plus, Search, X } from "lucide-react";
+import type { Asset } from "../../api/types";
+import { useCreateAssetMutation, useLatestResearchUniverseQuery } from "../../hooks/useWorkbenchQueries";
+import { useI18n } from "../../i18n";
 import { useWorkbenchStore } from "../../state/workbenchStore";
+import { CN_RESEARCH_UNIVERSE, type CNResearchCandidate } from "./cnResearchUniverse";
 
-export function AssetComposer() {
+interface AssetComposerProps {
+  open: boolean;
+  assets: Asset[];
+  onClose(): void;
+}
+
+export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
+  const { l, term } = useI18n();
   const mode = useWorkbenchStore((state) => state.mode);
   const setSelectedAssetId = useWorkbenchStore((state) => state.setSelectedAssetId);
   const mutation = useCreateAssetMutation();
-  const [ticker, setTicker] = useState("510300");
-  const [name, setName] = useState("沪深300ETF");
-  const modePayload = {
-    demo: {
-      data_mode: "demo",
-      source_type: "synthetic",
-      source_name: "demo-ui"
-    },
-    sandbox: {
-      data_mode: "sandbox",
-      source_type: "synthetic",
-      source_name: "sandbox-ui"
-    },
-    research: {
-      data_mode: "real",
-      source_type: "backfilled",
-      source_name: "cn-research-pit-ui"
-    },
-    real: {
-      data_mode: "real",
-      source_type: "manual_override",
-      source_name: "frontend-intake"
+  const researchUniverse = useLatestResearchUniverseQuery();
+  const [query, setQuery] = useState("");
+  const [selectedCandidate, setSelectedCandidate] = useState<CNResearchCandidate | null>(null);
+  const universe = useMemo(() => {
+    if (mode !== "research" || !researchUniverse.data?.symbols.length) {
+      return CN_RESEARCH_UNIVERSE;
     }
+    const known = new Map(CN_RESEARCH_UNIVERSE.map((item) => [item.ticker, item]));
+    return researchUniverse.data.symbols.map((item) => {
+      const named = known.get(item.symbol);
+      return {
+        ticker: item.symbol,
+        name: named?.name ?? item.name,
+        exchange: item.exchange,
+        assetType: item.asset_type,
+        frozenResultAvailable: item.frozen_result_available,
+        trainingEligible: item.training_eligible,
+        rowCount: item.row_count,
+        provider: item.provider
+      } satisfies CNResearchCandidate;
+    });
+  }, [mode, researchUniverse.data]);
+  const equityCount = universe.filter((item) => item.assetType === "equity").length;
+  const etfCount = universe.filter((item) => item.assetType === "etf").length;
+
+  const modePayload = {
+    demo: { data_mode: "demo", source_type: "synthetic", source_name: "demo-ui" },
+    sandbox: { data_mode: "sandbox", source_type: "synthetic", source_name: "sandbox-ui" },
+    research: { data_mode: "real", source_type: "backfilled", source_name: "cn-research-pit-ui" },
+    real: { data_mode: "real", source_type: "manual_override", source_name: "frontend-intake" }
   } as const;
 
+  const candidates = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return universe.filter((candidate) =>
+      needle ? `${candidate.ticker} ${candidate.name}`.toLowerCase().includes(needle) : true
+    );
+  }, [query, universe]);
+
+  const existingCandidate = selectedCandidate
+    ? assets.find((asset) => asset.ticker === selectedCandidate.ticker)
+    : undefined;
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setSelectedCandidate(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const chooseCandidate = (candidate: CNResearchCandidate) => {
+    setSelectedCandidate(candidate);
+  };
+
+  const submitCandidate = async () => {
+    if (!selectedCandidate) return;
+    if (existingCandidate) {
+      setSelectedAssetId(existingCandidate.id);
+      onClose();
+      return;
+    }
+    const asset = await mutation.mutateAsync({
+      ticker: selectedCandidate.ticker,
+      name: selectedCandidate.name,
+      asset_type: selectedCandidate.assetType,
+      currency: mode === "research" ? "CNY" : "USD",
+      exchange: selectedCandidate.exchange,
+      ...modePayload[mode],
+      observed_at: new Date().toISOString(),
+      confidence: 0.95
+    });
+    setSelectedAssetId(asset.id);
+    onClose();
+  };
+
   return (
-    <Panel eyebrow="Intake" title="Add Asset">
-      <form
-        className="form-stack"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void mutation
-            .mutateAsync({
-              ticker,
-              name,
-              asset_type: "equity",
-              currency: mode === "research" ? "CNY" : "USD",
-              exchange: mode === "research" ? "XSHG" : "NASDAQ",
-              ...modePayload[mode],
-              observed_at: new Date().toISOString(),
-              confidence: 0.95
-            })
-            .then((asset) => {
-              setSelectedAssetId(asset.id);
-            });
-        }}
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="asset-composer-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="asset-composer-title"
+        data-testid="asset-composer-modal"
+        onMouseDown={(event) => event.stopPropagation()}
       >
-        <label>
-          <span>Ticker</span>
-          <input value={ticker} onChange={(event) => setTicker(event.target.value)} />
+        <header className="asset-composer-modal__header">
+          <div>
+            <div className="eyebrow">{l("固定研究池", "Fixed research pool")}</div>
+            <h2 id="asset-composer-title">{l("添加研究对象", "Add research asset")}</h2>
+          </div>
+          <button className="modal-close-button" type="button" aria-label={l("关闭", "Close")} onClick={onClose}>
+            <X size={18} aria-hidden="true" />
+          </button>
+        </header>
+
+        <label className="asset-search asset-composer-modal__search" htmlFor="candidate-search-input">
+          <Search size={15} aria-hidden="true" />
+          <input
+            id="candidate-search-input"
+            autoFocus
+            data-testid="candidate-search-input"
+            placeholder={l("输入名称或证券代码，例如：贵州茅台、600519", "Search name or ticker, e.g. Kweichow Moutai or 600519")}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setSelectedCandidate(null);
+            }}
+          />
         </label>
-        <label>
-          <span>Name</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <button className="primary-button" type="submit">
-          {mutation.isPending ? "Saving..." : "Create Asset"}
-        </button>
-        {mode === "demo" ? <p className="muted">Demo mode reuses the seeded asset to keep the story stable.</p> : null}
-        {mode === "sandbox" ? (
-          <p className="muted">Sandbox mode keeps inputs synthetic so we can test workflows without pretending they are real-market records.</p>
+
+        <p className="asset-composer-modal__hint">
+          {l(
+            `当前可检索已有历史行情的 ${equityCount} 只股票和 ${etfCount} 只 ETF。研究任务将为所有通过质量门禁的标的生成结果，不再只限制流动性前几名。`,
+            `Search ${equityCount} equities and ${etfCount} ETFs with historical prices. Research runs cover every asset that passes the quality gate.`
+          )}
+        </p>
+
+        <div className="asset-candidate-list" role="listbox" aria-label={l("可添加的研究对象", "Available research assets")}>
+          {candidates.map((candidate) => {
+            const alreadyAdded = assets.some((asset) => asset.ticker === candidate.ticker);
+            const selected = selectedCandidate?.ticker === candidate.ticker;
+            return (
+              <button
+                key={candidate.ticker}
+                className={`asset-candidate ${selected ? "asset-candidate--selected" : ""}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => chooseCandidate(candidate)}
+              >
+                <span>
+                  <strong>{candidate.ticker}</strong>
+                  <small>{candidate.name}</small>
+                </span>
+                <span className="asset-candidate__meta">
+                  {candidate.exchange} · {term(candidate.assetType)}
+                  {candidate.frozenResultAvailable ? ` · ${l("已有冻结结果", "Frozen result available")}` : ` · ${l("暂无冻结模型结果", "No frozen model result")}`}
+                  {candidate.rowCount ? ` · ${candidate.rowCount.toLocaleString()} ${l("日线", "daily bars")}` : ""}
+                  {alreadyAdded ? ` · ${l("已添加", "Added")}` : ""}
+                </span>
+              </button>
+            );
+          })}
+          {candidates.length === 0 ? (
+            <div className="asset-candidate-empty">
+              <Search size={20} aria-hidden="true" />
+              <strong>{l("没有匹配的研究对象", "No matching research asset")}</strong>
+              <span>{l("请尝试输入六位证券代码或中文名称。", "Try a six-digit ticker or a Chinese security name.")}</span>
+            </div>
+          ) : null}
+        </div>
+
+        <footer className="asset-composer-modal__footer">
+          <span className="muted">
+            {selectedCandidate
+              ? `${selectedCandidate.ticker} · ${selectedCandidate.name}`
+              : l("请选择一个研究对象", "Select a research asset")}
+          </span>
+          <button
+            className="primary-button"
+            type="button"
+            data-testid="confirm-add-asset"
+            disabled={!selectedCandidate || mutation.isPending}
+            onClick={() => void submitCandidate()}
+          >
+            <Plus size={16} aria-hidden="true" />
+            {mutation.isPending
+              ? l("正在添加…", "Adding...")
+              : existingCandidate
+                ? l("选择已有对象", "Select existing")
+                : l("添加到研究范围", "Add to research scope")}
+          </button>
+        </footer>
+
+        {mutation.error instanceof Error ? (
+          <p className="asset-composer-modal__error">{mutation.error.message}</p>
         ) : null}
-        {mode === "research" ? <p className="muted">研究入口只创建 A 股/ETF 研究对象；公开数据仍固定为 research_only。</p> : null}
-        {mutation.error instanceof Error ? <p className="muted">{mutation.error.message}</p> : null}
-      </form>
-    </Panel>
+      </section>
+    </div>
   );
 }

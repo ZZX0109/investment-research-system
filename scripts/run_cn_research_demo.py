@@ -27,11 +27,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the reproducible CN research demo")
     parser.add_argument("--profile", choices=("full", "smoke"), default="full")
     parser.add_argument(
-        "--candidate-universe-size", type=int, default=150,
-        help="Deterministic equity screening buffer used by the full 100-stock workflow.",
+        "--candidate-universe-size", type=int, default=None,
+        help="Optional development-only collection cap. The default discovers the full free CN universe.",
     )
     parser.add_argument("--max-symbols", type=int, default=None, help="Development-only provider cap; omit for the fixed 100-stock plus 5-ETF workflow.")
-    parser.add_argument("--symbols-per-cohort", type=int, default=3)
+    parser.add_argument(
+        "--symbols-per-cohort",
+        type=int,
+        default=None,
+        help="Optional development-only inference cap. By default every cohort member is frozen.",
+    )
     parser.add_argument("--max-equities", type=int, default=None,
                         help="Research-only cap forwarded to the PIT rebuild.")
     parser.add_argument("--minimum-equities", type=int, default=80,
@@ -41,6 +46,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--minimum-cohort-symbols", type=int, default=80,
                         help="Training gate for a cohort; lower only for an explicit small fixture run.")
     parser.add_argument("--skip-collection", action="store_true")
+    parser.add_argument(
+        "--rebuild-index",
+        type=Path,
+        default=None,
+        help="Reuse an already verified research_pit rebuild index and skip rebuilding samples.",
+    )
     parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use configured fixed research symbols instead of Baostock universe discovery.")
     parser.add_argument("--skip-sequence-challengers", action="store_true", help="Skip true-window deep challenger runs; tabular research tasks remain unchanged.")
     parser.add_argument("--dry-run", action="store_true")
@@ -87,30 +98,45 @@ def main() -> int:
             if args.profile == "full":
                 if args.max_symbols is not None or args.max_equities is not None:
                     raise ValueError("full profile forbids development max-symbol overrides")
-                command.extend([
-                    "--full-history", "--max-symbols", str(args.candidate_universe_size),
-                ])
+                command.append("--full-history")
+                if args.candidate_universe_size is not None:
+                    command.extend(["--max-symbols", str(args.candidate_universe_size)])
             elif args.max_symbols is not None:
                 command.extend(["--max-symbols", str(args.max_symbols)])
             if args.no_discover_cn_universe:
                 command.append("--no-discover-cn-universe")
             _run("incremental_public_collection_and_raw_hash", command, report, allow_failure=True)
 
-        rebuild_command = [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root),
-                           "--minimum-equities", str(args.minimum_equities),
-                           "--minimum-history-sessions", str(args.minimum_history_sessions),
-                           "--minimum-training-sessions", str(args.minimum_training_sessions)]
-        if args.max_equities is not None:
-            rebuild_command.extend(["--max-equities", str(args.max_equities)])
-        rebuild_stdout = _run(
-            "quality_audit_fixed_cohort_and_snapshot",
-            rebuild_command, report,
-            allow_failure=True,
-        )
-        rebuild_path = _path_from_stdout(rebuild_stdout)
+        if args.rebuild_index is not None:
+            rebuild_path = args.rebuild_index.resolve()
+            report["stages"].append(
+                {
+                    "stage": "quality_audit_fixed_cohort_and_snapshot",
+                    "status": "completed",
+                    "return_code": 0,
+                    "stdout_tail": f"{rebuild_path}\n",
+                    "stderr_tail": "",
+                    "reused": True,
+                }
+            )
+        else:
+            rebuild_command = [sys.executable, "scripts/rebuild_cn_research_pit.py", "--output-root", str(run_rebuild_root),
+                               "--minimum-equities", str(args.minimum_equities),
+                               "--minimum-history-sessions", str(args.minimum_history_sessions),
+                               "--minimum-training-sessions", str(args.minimum_training_sessions)]
+            if args.max_equities is not None:
+                rebuild_command.extend(["--max-equities", str(args.max_equities)])
+            rebuild_stdout = _run(
+                "quality_audit_fixed_cohort_and_snapshot",
+                rebuild_command, report,
+                allow_failure=True,
+            )
+            rebuild_path = _path_from_stdout(rebuild_stdout)
         if rebuild_path is None:
             raise RuntimeError("quality audit/rebuild did not produce a rebuild index")
         rebuild = json.loads(rebuild_path.read_text(encoding="utf-8"))
+        if rebuild.get("data_tier") != "research_pit" or rebuild.get("deployment_ready") is not False:
+            raise ValueError("reused rebuild index must remain research_pit and non-deployable")
         report["rebuild_index"] = _portable_ref(rebuild_path)
         context = rebuild["contexts"]["close_confirmed"]
 
@@ -192,7 +218,13 @@ def main() -> int:
                 if task_record["status"] in {"blocked", "unavailable"}:
                     blocked = True
 
-            symbols = [item["symbol"] for item in cohort_payload["members"][: args.symbols_per_cohort]]
+            members = cohort_payload["members"]
+            selected_members = (
+                members
+                if args.symbols_per_cohort is None
+                else members[: args.symbols_per_cohort]
+            )
+            symbols = [item["symbol"] for item in selected_members]
             if not symbols:
                 cohort_report.update(status="blocked", blocking_reasons=["cohort_has_no_members"])
                 blocked = True

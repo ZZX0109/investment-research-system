@@ -24,7 +24,11 @@ class AgentRunState(str, Enum):
 
 
 class AgentBudget(BaseModel):
-    max_llm_calls: int = 6
+    # Classification, planning, function selection, counter-evidence, audit and
+    # the final explanation are separate bounded calls.  Eight leaves room for
+    # a second tool-selection turn without silently replacing the explanation
+    # with deterministic fallback text.
+    max_llm_calls: int = 8
     max_tool_calls: int = 12
     max_input_tokens: int = 32_000
     max_output_tokens: int = 4_000
@@ -68,6 +72,21 @@ class AgentEvent(BaseModel):
     node_name: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentToolCall(BaseModel):
+    """Auditable record of one server-side, read-only tool execution."""
+
+    id: UUID
+    agent_run_id: UUID
+    node_name: str
+    tool_id: str
+    input_hash: str
+    output_hash: str | None = None
+    state: Literal["completed", "failed"]
+    error: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
 
 
 class TaskClassification(BaseModel):

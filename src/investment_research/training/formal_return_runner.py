@@ -6,6 +6,7 @@ from investment_research.training.formal_training import (
     FinalHoldoutLedger,
     FormalScopeTrainingPlan,
     RETURN_CANDIDATES,
+    balanced_panel_fit_samples,
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
@@ -14,8 +15,6 @@ from investment_research.training.research_evaluation import REGIMES, classify_m
 
 
 QUANTILES = (0.1, 0.5, 0.9)
-
-
 @dataclass(frozen=True)
 class ReturnCandidateResult:
     name: str
@@ -94,11 +93,12 @@ class FormalReturnTrainingRunner:
         return quantiles, targets, regimes
 
     def _fit_predict(self, name, train, evaluate, features):
-        targets = [_target(item) for item in train]
+        fit_train = balanced_panel_fit_samples(train)
+        targets = [_target(item) for item in fit_train]
         if name == "historical-distribution":
             values = tuple(_quantile(targets, quantile) for quantile in QUANTILES)
             return [values] * len(evaluate)
-        matrix = _matrix(train, features)
+        matrix = _matrix(fit_train, features)
         evaluation = _matrix(evaluate, features)
         predictions = []
         for quantile in QUANTILES:
@@ -109,7 +109,6 @@ class FormalReturnTrainingRunner:
             require_finite(values, stage=f"return:{name}:q{quantile}")
             predictions.append([float(value) for value in values])
         return [tuple(sorted(values)) for values in zip(*predictions)]
-
 
 def _estimator(name, quantile):
     if name == "linear-quantile":

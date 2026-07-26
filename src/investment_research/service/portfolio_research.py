@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID
 
 from investment_research.api.schemas import (
@@ -11,7 +14,7 @@ from investment_research.api.schemas import (
     WatchlistCreateRequest,
 )
 from investment_research.domain.base import utc_now
-from investment_research.domain.enums import DataMode
+from investment_research.domain.enums import DataMode, DataSourceType
 from investment_research.domain.enums import EvidenceType
 from investment_research.domain.models import Asset
 from investment_research.domain.models import AuditRecord
@@ -62,6 +65,41 @@ class PortfolioResearchService:
                 data_mode=stored.provenance.data_mode,
             )
             return stored
+        finally:
+            self.uow.close()
+
+    def remove_asset_for_user(self, asset_id: str, *, user: User) -> None:
+        """Remove an asset from one user's workspace while retaining replay evidence."""
+        try:
+            asset = self.uow.assets.get(asset_id)
+            if asset is None:
+                raise ValueError("Asset not found")
+            self.uow.domain.assert_access(
+                resource_type="asset",
+                resource_id=asset_id,
+                user_id=user.id,
+                write=False,
+            )
+            self._record_audit(
+                actor=user.auth_subject,
+                action="asset.removed_from_workspace",
+                target_type="asset",
+                target_id=asset.id,
+                details={
+                    "ticker": asset.ticker,
+                    "retention": "historical_research_evidence_preserved",
+                },
+                data_mode=asset.provenance.data_mode,
+            )
+            self.uow.connection.execute(
+                "DELETE FROM positions WHERE asset_id=? AND user_id=?",
+                (asset_id, str(user.id)),
+            )
+            self.uow.domain.remove_resource_access(
+                resource_type="asset",
+                resource_id=asset.id,
+                user_id=user.id,
+            )
         finally:
             self.uow.close()
 
@@ -327,9 +365,84 @@ class PortfolioResearchService:
     def list_price_series_for_asset_for_user(self, asset_id: str, *, user: User) -> list[PriceSeries]:
         try:
             self.uow.domain.assert_access(resource_type="asset", resource_id=asset_id, user_id=user.id)
-            return self.uow.price_series.list_for_asset(asset_id)
+            stored = self.uow.price_series.list_for_asset(asset_id)
+            if stored:
+                return stored
+            asset = self.uow.assets.get(asset_id)
+            if asset is not None:
+                research_series = self._load_cn_research_price_series(asset)
+                if research_series is not None:
+                    return [research_series]
+            return []
         finally:
             self.uow.close()
+
+    def _load_cn_research_price_series(self, asset: Asset) -> PriceSeries | None:
+        """Expose the immutable free-data raw bars for research-mode charting.
+
+        The UI price-series table is intentionally not populated by the free
+        PIT rebuild. Without this read-only bridge, a valid research snapshot
+        has no chart even though its AKShare raw payload is available. This
+        fallback never feeds training or formal inference and only reads the
+        append-only research raw layer.
+        """
+        ticker = asset.ticker.replace(".", "").upper()
+        if len(ticker) != 6 or not ticker.isdigit():
+            return None
+        root = Path(__file__).resolve().parents[3] / "var" / "cn-research" / "raw" / "raw-market" / "sha256"
+        candidates: list[list[dict[str, object]]] = []
+        if not root.is_dir():
+            return None
+        for path in root.glob("*/*.json"):
+            try:
+                text = path.read_text(encoding="utf-8")
+                if ticker not in text:
+                    continue
+                payload = json.loads(text)
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+                rows = [row for row in payload if str(row.get("代码", "")).replace(".", "").endswith(ticker)]
+                if rows:
+                    candidates.append(rows)
+        if not candidates:
+            return None
+        rows = max(candidates, key=len)
+        try:
+            observed_at = datetime.fromisoformat(str(rows[-1]["日期"])).replace(tzinfo=timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            observed_at = datetime.now(timezone.utc)
+        provenance = self.mode_policy.build_provenance(
+            data_mode=DataMode.REAL,
+            source_type=DataSourceType.BACKFILLED,
+            source_name="AKShare Research PIT raw bars",
+            observed_at=observed_at,
+            confidence=0.9,
+        )
+        points: list[PricePoint] = []
+        for row in rows:
+            try:
+                date_value = str(row["日期"])
+                timestamp = datetime.fromisoformat(date_value).replace(tzinfo=timezone.utc)
+                points.append(PricePoint(
+                    asset_id=asset.id,
+                    timestamp=timestamp,
+                    open=float(row["开盘"]),
+                    high=float(row["最高"]),
+                    low=float(row["最低"]),
+                    close=float(row["收盘"]),
+                    volume=float(row.get("成交量", 0) or 0),
+                    amount=float(row.get("成交额", 0) or 0),
+                    turnover_rate=float(row.get("换手率", 0) or 0),
+                    is_suspended=str(row.get("交易状态", "1")) == "0",
+                    provenance=provenance,
+                ))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not points:
+            return None
+        points.sort(key=lambda point: point.timestamp)
+        return PriceSeries(asset_id=asset.id, interval="1d", series_role="asset", points=points, provenance=provenance)
 
     def list_reports_for_asset_for_user(self, asset_id: str, *, user: User) -> list[ResearchReport]:
         try:

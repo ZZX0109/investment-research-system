@@ -79,6 +79,34 @@ def test_claim_chain_is_deduplicated_and_viewer_is_read_only(tmp_path) -> None:
     uow.close()
 
 
+def test_removing_resource_access_only_changes_the_current_users_workspace(tmp_path) -> None:
+    uow = SQLiteUnitOfWork(tmp_path / "workspace-removal.db")
+    owner = _user("owner@example.com")
+    viewer = _user("viewer@example.com")
+    uow.users.add(owner, password_hash="x")
+    uow.users.add(viewer, password_hash="x")
+    asset = uow.assets.add(_asset())
+    uow.domain.assign_owner(resource_type="asset", resource_id=asset.id, owner_user_id=owner.id)
+    uow.domain.create_share(resource_type="asset", resource_id=asset.id, viewer=viewer, owner=owner)
+
+    uow.domain.remove_resource_access(
+        resource_type="asset",
+        resource_id=asset.id,
+        user_id=owner.id,
+    )
+
+    assert str(asset.id) not in uow.domain.accessible_resource_ids(
+        resource_type="asset",
+        user_id=owner.id,
+    )
+    assert str(asset.id) in uow.domain.accessible_resource_ids(
+        resource_type="asset",
+        user_id=viewer.id,
+    )
+    assert uow.assets.get(str(asset.id)) is not None
+    uow.close()
+
+
 def test_completed_research_run_is_immutable_and_gate_is_outboxed(tmp_path) -> None:
     uow = SQLiteUnitOfWork(tmp_path / "runs.db")
     owner = _user("owner@example.com")

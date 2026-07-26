@@ -1,9 +1,12 @@
+import json
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
 from investment_research.api.auth_routes import get_auth_service, get_auth_settings
 from investment_research.api.routes import (
+    _load_latest_research_prediction,
+    _load_latest_research_universe,
     get_analysis_provider_registry,
     get_analysis_provider_settings,
     get_unit_of_work,
@@ -94,6 +97,239 @@ def test_asset_routes_round_trip_with_sqlite(tmp_path) -> None:
     assert create_response.json()["ticker"] == "AAPL"
     assert list_response.status_code == 200
     assert list_response.json()[0]["provenance"]["source_name"] == "iex-cloud-demo"
+
+
+def test_agent_function_tool_contract_is_authenticated_and_read_only(tmp_path) -> None:
+    client = configure_authenticated_client(tmp_path, "agent-tools.db")
+
+    response = client.get("/api/v1/agent-function-tools")
+
+    app.dependency_overrides.clear()
+    assert response.status_code == 200
+    tools = response.json()
+    assert [tool["name"] for tool in tools] == [
+        "collect_pit_evidence",
+        "build_29_features",
+        "approved_model_inference",
+        "historical_analogy",
+        "quality_gate",
+        "get_price_trend",
+        "get_four_task_forecasts",
+        "get_company_announcements",
+        "get_shadow_performance",
+        "search_financial_knowledge",
+    ]
+    assert all(tool["parameters"]["additionalProperties"] is False for tool in tools)
+
+
+def test_asset_can_be_removed_from_owner_workspace_without_erasing_history(tmp_path) -> None:
+    client = configure_authenticated_client(tmp_path, "remove-asset.db")
+    create_response = client.post(
+        "/api/v1/assets",
+        json={
+            "ticker": "510300",
+            "name": "沪深300ETF",
+            "asset_type": AssetType.ETF.value,
+            "currency": "CNY",
+            "exchange": "XSHG",
+            "data_mode": DataMode.REAL.value,
+            "source_type": DataSourceType.BACKFILLED.value,
+            "source_name": "cn-research-pit-ui",
+            "observed_at": datetime(2026, 7, 23, tzinfo=timezone.utc).isoformat(),
+            "confidence": 0.95,
+        },
+    )
+    asset_id = create_response.json()["id"]
+    remove_response = client.delete(f"/api/v1/assets/{asset_id}")
+    list_response = client.get("/api/v1/assets")
+
+    uow = SQLiteUnitOfWork(tmp_path / "remove-asset.db")
+    retained_asset = uow.assets.get(asset_id)
+    audit_actions = [
+        str(row[0])
+        for row in uow.connection.execute(
+            "SELECT action FROM audit_records ORDER BY observed_at"
+        ).fetchall()
+    ]
+    uow.close()
+    app.dependency_overrides.clear()
+
+    assert remove_response.status_code == 204
+    assert list_response.json() == []
+    assert retained_asset is not None
+    assert "asset.removed_from_workspace" in audit_actions
+
+
+def test_latest_research_prediction_exposes_inputs_outputs_and_scope_miss(tmp_path) -> None:
+    prediction_path = tmp_path / "artifacts" / "predictions" / "latest.json"
+    prediction_path.parent.mkdir(parents=True)
+    prediction_path.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "deployment_ready": False,
+                "predictions": [
+                    {
+                        "symbol": "600519",
+                        "task": "drawdown_20d",
+                        "cohort": "cn_equity_core",
+                        "trade_date": "2026-07-21",
+                        "decision_context": "close_confirmed",
+                        "market_snapshot_id": "snapshot-1",
+                        "market_snapshot_hash": "a" * 64,
+                        "prediction_price": 1500.0,
+                        "coverage_ratio": 0.9,
+                        "core_feature_coverage": 1.0,
+                        "optional_feature_coverage": 0.5,
+                        "event_coverage_status": "unsupported",
+                        "data_status": "degraded",
+                        "provider_chain": ["baostock"],
+                        "cache_state": "fresh",
+                        "prediction": {
+                            "raw_probability": 0.62,
+                            "calibrated_probability": 0.58,
+                            "risk_level": "medium",
+                            "threshold_drawdown": -0.08,
+                        },
+                        "model_candidate": "linear-baseline",
+                        "model_role": "primary",
+                        "research_status": "exploratory",
+                        "roster_hash": "b" * 64,
+                        "model_disagreement": 0.03,
+                        "model_artifact_hashes": {"model": "c" * 64},
+                        "research_limitations": ["research_only"],
+                        "influence_facts": ["vol_20d=0.02"],
+                        "gating_reasons": [],
+                        "abstained": False,
+                        "abstain_reasons": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "artifacts" / "cn_research_demo" / "latest.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "deployment_ready": False,
+                "inference": {
+                    "cn_equity_core": {
+                        "prediction_ref": "artifacts/predictions/latest.json"
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    available = _load_latest_research_prediction(
+        project_root=tmp_path,
+        symbol="600519",
+        task="drawdown_20d",
+    )
+    unavailable = _load_latest_research_prediction(
+        project_root=tmp_path,
+        symbol="000001",
+        task="drawdown_20d",
+    )
+
+    assert available["status"] == "research_only"
+    assert available["input"]["provider_chain"] == ["baostock"]
+    assert available["output"]["calibrated_probability"] == 0.58
+    assert available["deployment_ready"] is False
+    assert unavailable["status"] == "unavailable"
+    assert unavailable["blocking_reasons"] == ["symbol_absent_from_frozen_research_cohort"]
+    assert unavailable["supported_symbols"] == ["600519"]
+
+
+def test_latest_research_universe_lists_history_separately_from_frozen_predictions(tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    standard = artifacts / "standard" / "600519.json"
+    cohort = artifacts / "cohorts" / "equities.json"
+    prediction = artifacts / "predictions" / "latest.json"
+    rebuild = artifacts / "rebuild.json"
+    for path in (standard, cohort, prediction):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    standard.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "symbol": "600519",
+                "provider": "baostock",
+                "row_count": 5961,
+                "quality_report": {"quality_status": "degraded"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    cohort.write_text(
+        json.dumps({"members": [{"symbol": "600519"}]}),
+        encoding="utf-8",
+    )
+    prediction.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "deployment_ready": False,
+                "predictions": [{"symbol": "600519", "task": "drawdown_20d"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rebuild.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "deployment_ready": False,
+                "as_of": "2026-07-21",
+                "standard_manifest_refs": ["artifacts/standard/600519.json"],
+                "cohort_refs": {"cn_equity_core": "artifacts/cohorts/equities.json"},
+                "blocking_reasons": ["historical_available_at_unproven_public_backfill"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = artifacts / "cn_research_demo" / "latest.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        json.dumps(
+            {
+                "data_tier": "research_pit",
+                "deployment_ready": False,
+                "rebuild_index": "artifacts/rebuild.json",
+                "inference": {
+                    "cn_equity_core": {
+                        "prediction_ref": "artifacts/predictions/latest.json"
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _load_latest_research_universe(project_root=tmp_path)
+
+    assert payload["status"] == "research_only"
+    assert payload["counts"] == {
+        "historical": 1,
+        "training_eligible": 1,
+        "frozen_result_available": 1,
+    }
+    assert payload["symbols"][0] == {
+        "symbol": "600519",
+        "name": "600519",
+        "exchange": "XSHG",
+        "asset_type": "equity",
+        "provider": "baostock",
+        "row_count": 5961,
+        "quality_status": "degraded",
+        "training_eligible": True,
+        "cohort": "cn_equity_core",
+        "frozen_result_available": True,
+    }
 
 
 def test_domain_catalog_exposes_provider_configuration(tmp_path) -> None:

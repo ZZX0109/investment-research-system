@@ -7,6 +7,7 @@ from investment_research.training.formal_training import (
     DIRECTION_CANDIDATES,
     FinalHoldoutLedger,
     FormalScopeTrainingPlan,
+    balanced_panel_fit_samples,
     require_candidate_dependencies,
 )
 from investment_research.training.models import TrainingSample
@@ -139,7 +140,8 @@ class FormalDirectionTrainingRunner:
         return probabilities, labels, fold_ids, regimes
 
     def _fit_predict(self, name, train, evaluate, features, horizon):
-        labels = [_direction(item, horizon) for item in train]
+        fit_train = balanced_panel_fit_samples(train)
+        labels = [_direction(item, horizon) for item in fit_train]
         if name == "constant-class":
             return [_frequencies(labels)] * len(evaluate)
         if name == "random":
@@ -148,7 +150,7 @@ class FormalDirectionTrainingRunner:
             source = "benchmark_ret_20d" if name == "index-direction" else "ret_5d"
             return [_heuristic(sample.features.get(source, 0.0)) for sample in evaluate]
         estimator = _estimator(name)
-        matrix = _matrix(train, features)
+        matrix = _matrix(fit_train, features)
         evaluation = _matrix(evaluate, features)
         if name == "xgboost":
             encoded = [_class_index(label) for label in labels]

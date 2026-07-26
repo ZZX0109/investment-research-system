@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
+from uuid import uuid4
 
 import pytest
 
-from investment_research.agent.models import AgentPlan, AgentRun, CitationAudit
+from investment_research.agent.llm import HTTPStructuredProvider, LLMToolDefinition, LLMToolRequest
+from investment_research.agent.models import AgentPlan, AgentRun, CitationAudit, ProviderProfile
 from investment_research.agent.service import AgentExecutionError, AgentOrchestrator
 from investment_research.domain.base import Provenance
 from investment_research.domain.enums import AssetType, DataMode, DataSourceType, EvidenceType
@@ -44,7 +47,10 @@ def test_agent_abstains_when_trusted_model_input_is_insufficient(tmp_path) -> No
     assert run.report_id is None
     assert run.budget.llm_calls_used <= run.budget.max_llm_calls
     assert run.budget.tool_calls_used <= run.budget.max_tool_calls
-    assert uow.agent_runtime.list_events(str(run.id))[-1].event_type == "run.abstained"
+    events = uow.agent_runtime.list_events(str(run.id))
+    assert events[-1].event_type == "run.abstained"
+    explanation = next(item for item in events if item.event_type == "llm.research_explanation")
+    assert explanation.payload["status"] == "abstain"
 
 
 def test_agent_abstains_until_legacy_cutoff_model_is_reapproved(tmp_path) -> None:
@@ -130,6 +136,80 @@ def test_agent_rejects_unregistered_tools(tmp_path) -> None:
     uow, _, _, _ = _context(tmp_path)
     with pytest.raises(AgentExecutionError, match="Unregistered"):
         AgentOrchestrator(uow)._validate_tools(AgentPlan(tool_ids=["execute_trade"]))
+
+
+def test_function_call_executor_rejects_unallowlisted_or_parameterized_actions(tmp_path) -> None:
+    uow, user, asset, now = _context(tmp_path)
+    run = AgentRun(owner_user_id=user.id, asset_id=asset.id, task_text="Assess", as_of=now, correlation_id="function-call-test")
+    uow.agent_runtime.add_run(run)
+    service = AgentOrchestrator(uow)
+
+    unknown = service._execute_function_call(run, user, {}, "execute_trade", {})
+    parameterized = service._execute_function_call(run, user, {}, "collect_pit_evidence", {"url": "https://example.invalid"})
+
+    assert unknown == {"ok": False, "error": "tool_not_allowlisted"}
+    assert parameterized == {"ok": False, "error": "arguments_not_permitted"}
+    calls = uow.agent_runtime.list_tool_calls(str(run.id))
+    assert [item.tool_id for item in calls] == ["execute_trade", "collect_pit_evidence"]
+
+
+def test_openai_compatible_provider_sends_native_allowlisted_tool_schema(monkeypatch) -> None:
+    """A configured provider must receive actual chat-completions tools, not prose."""
+    profile = ProviderProfile(
+        owner_user_id=uuid4(),
+        name="test-provider",
+        protocol="openai_compatible",
+        endpoint="https://example.com/v1/chat/completions",
+        model="test-model",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
+    observed: dict[str, object] = {}
+
+    class Response:
+        def read(self):
+            return json.dumps(
+                {
+                    "id": "chatcmpl-test",
+                    "model": "test-model",
+                    "choices": [{"message": {"content": None, "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "quality_gate", "arguments": "{}"}}]}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+                }
+            ).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, timeout):
+        observed["payload"] = json.loads(request.data.decode("utf-8"))
+        observed["authorization"] = request.headers.get("Authorization")
+        assert timeout == 20.0
+        return Response()
+
+    monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
+    result = provider.invoke_tools(
+        LLMToolRequest(
+            node_name="tool_selection",
+            system_prompt="read-only",
+            messages=[{"role": "user", "content": "research"}],
+            tools=[LLMToolDefinition(name="quality_gate", description="gate", parameters={"type": "object", "properties": {}, "additionalProperties": False})],
+            max_output_tokens=100,
+        )
+    )
+
+    assert observed["payload"] == {
+        "model": "test-model",
+        "messages": [{"role": "system", "content": "read-only"}, {"role": "user", "content": "research"}],
+        "tools": [{"type": "function", "function": {"name": "quality_gate", "description": "gate", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "max_tokens": 100,
+    }
+    assert result.tool_calls[0].name == "quality_gate"
+    assert result.tool_calls[0].arguments == {}
 
 
 def test_agent_repairs_only_citation_failure_once(tmp_path) -> None:

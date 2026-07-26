@@ -135,8 +135,12 @@ def main() -> int:
                     cache_state=args.cache_state,
                     provider_conflict=_has_provider_conflict(index, symbol),
                 )
+                diagnostic_prediction = dict(prediction) if reasons else None
                 record.update(
                     prediction={} if reasons else prediction,
+                    # Keep a withheld candidate value only as diagnostic
+                    # evidence. It is never treated as a final forecast.
+                    diagnostic_prediction=diagnostic_prediction,
                     status="abstain" if reasons else "research_only",
                     prediction_status="abstain" if reasons else "research_only",
                     gating_reasons=reasons,

@@ -102,6 +102,29 @@ def test_cn_cohorts_are_separate_and_liquidity_ranked() -> None:
     assert "historical_universe_incomplete" in equity.blocking_reasons
 
 
+def test_cn_equity_cohort_keeps_all_eligible_symbols_without_a_cap() -> None:
+    bars = []
+    for symbol, amount in (("600001", 1000), ("000001", 2000)):
+        bars.extend(_bar(symbol, (index % 28) + 1, amount) for index in range(260))
+
+    equity = build_cn_equity_core(
+        bars,
+        as_of=date(2024, 1, 31),
+        lookback_sessions=20,
+        minimum_history_sessions=20,
+        minimum_coverage_ratio=0.05,
+        minimum_median_amount=0,
+        minimum_required_members=1,
+    )
+
+    assert [item.symbol for item in equity.members] == ["000001", "600001"]
+    assert equity.selection_limit is None
+    assert all(
+        not reason.startswith("liquidity_rank_below_top_")
+        for reason in equity.excluded.values()
+    )
+
+
 def test_cursor_replays_five_trading_days_and_is_persistent(tmp_path) -> None:
     store = CursorStore(tmp_path / "cursors.json")
     cursor = CollectionCursor(

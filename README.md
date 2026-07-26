@@ -2,7 +2,7 @@
 
 > 零预算、研究级、可复现、证据驱动的 A 股收盘后研究平台。
 
-**只想知道怎样启动和使用？请先阅读 [用户操作手册](docs/用户操作手册.md)。** 本 README 保留完整技术、数据与训练说明。
+**只想知道怎样启动和使用？请先阅读 [用户操作手册](docs/用户操作手册.md)，或直接打开带截图的 [Word 界面与操作手册](docs/A股量化研究平台-界面与操作手册.docx)。** 本 README 保留完整技术、数据与训练说明。
 
 本项目的目标不是生成“买入”“卖出”或“明天必涨/必跌”结论，而是把公开数据下可验证的研究过程完整留存：数据从哪里来、何时抓到、质量如何、模型基于什么输入、哪些任务可用、何时应主动拒答，以及预测在后续交易日的实际表现。
 
@@ -176,7 +176,36 @@ npm run dev:research-platform
 python3 scripts/start_research_platform.py --api-port 8010 --web-port 5180
 ```
 
-## 5. 最快验证：不联网 Dry Run
+## 5. AI 研究助手与金融知识库
+
+页面顶部的 **API Key** 只配置用户自己选择的大模型服务。密钥写入本地加密凭据库，前端和查询接口都不会返回明文；没有配置密钥时，量化研究、图表和确定性门禁仍可运行，只是不生成大模型自然语言解读。
+
+配置完成后，在右侧“研究助手”中选择问题或输入自己的问题。助手不能直接访问任意网络、文件、SQL 或交易接口，只能由服务端选择并执行以下只读 Function Calling 工具：
+
+| 工具 | 读取内容 |
+| --- | --- |
+| `get_price_trend` | 冻结时点前最多 90 个日线收盘价、20 日收益与波动率 |
+| `get_four_task_forecasts` | 1/5 日方向、20 日收益区间、20 日回撤四个独立研究任务 |
+| `get_company_announcements` | 决策时点前已公开并进入证据库的公司公告 |
+| `get_shadow_performance` | 不可变 Research Shadow 的有效场次和回填数量 |
+| `search_financial_knowledge` | 带发布日期、生效时间、可见时间、来源 URL 和内容 hash 的金融知识 |
+| `collect_pit_evidence` / `build_29_features` / `approved_model_inference` / `quality_gate` | 原有 PIT 证据、特征、模型与质量门禁 |
+
+金融知识目录由迁移 `0017_financial_knowledge` 创建。每条知识记录均保存 `published_at`、`effective_from/to`、`available_at`、revision、来源链接和内容 hash；检索会按本次研究的 `as_of` 过滤，不能把后来发布或后来修订的规则用于历史解释。公开知识固定为 `research_pit`，API 不能把它直接写成 `formal_pit`。
+
+需要特别理解：**门禁拒绝模型结论，不等于助手什么都不能解释。** 当数据质量、模型分歧或证据覆盖不满足门槛时，助手仍会解释已经读取到的价格、模型候选值、数据限制和后续观察条件，并将状态标为“模型结论暂缓”。它不会把这些参考读数包装成正式预测或买卖建议。回答下方的“引用来源”可以打开公告或知识来源；没有外部引用时，页面会明确说明回答只整理了平台结构化数据。
+
+知识库查询接口（均需登录）：
+
+```text
+GET  /api/v1/financial-knowledge
+GET  /api/v1/financial-knowledge/search?q=...&as_of=...
+POST /api/v1/financial-knowledge
+```
+
+新增知识时必须使用 HTTPS 来源、正确的 SHA-256 内容 hash，并满足 `available_at >= published_at`；重复内容按 hash 幂等返回旧记录，不覆盖历史内容。
+
+## 6. 最快验证：不联网 Dry Run
 
 先确认编排顺序和 Python 依赖，而不抓取任何数据：
 
@@ -195,7 +224,7 @@ python3 scripts/run_cn_research_demo.py --dry-run
 
 Dry run 不创建可用模型、不访问 Provider、不代表真实训练完成。
 
-## 6. 一键 A 股研究链路
+## 7. 一键 A 股研究链路
 
 完整研究演示入口：
 
@@ -259,7 +288,7 @@ artifacts/cn_research_demo/latest-backend-acceptance.json
 | `shadow` | 冻结的 Shadow 目录与状态 |
 | `backend_acceptance` | Provider、任务 artifact、hash、Shadow 与正式模式阻断的复核结果 |
 
-## 7. 数据层与质量治理
+## 8. 数据层与质量治理
 
 ### 数据分层
 
@@ -333,7 +362,7 @@ artifacts/free_research_rebuild/      PIT 重建索引、样本与泄漏报告
 artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 ```
 
-## 8. 固定研究池与 PIT 样本
+## 9. 固定研究池与 PIT 样本
 
 当前股票池目标：沪深市场、非北交所、较长上市历史、近 120 日覆盖足够、流动性合格、当前非 ST/非停牌的股票；并固定 ETF：
 
@@ -352,7 +381,7 @@ artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 - cohort 版本、snapshot ID/hash、`research_pit` 数据等级与 `synthetic_count=0`。
 - `available_at <= decision_time` 证据；免费回补缺失该证据时必须保留研究级限制。
 
-## 9. 四项研究任务
+## 10. 四项研究任务
 
 | 任务 | 输出 | 标签与时间范围 | 不可替代关系 |
 | --- | --- | --- | --- |
@@ -363,7 +392,7 @@ artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 
 标签从决策后的首个可交易开盘开始。停牌或无法买入的一字涨停最多顺延 5 个交易日；无法入场或窗口不足的样本不进入训练。收益标签采用快照冻结的 qfq 口径；涨跌停、停牌与可交易状态始终使用 raw 口径。
 
-## 10. 训练与模型比较
+## 11. 训练与模型比较
 
 ### 固定验证协议
 
@@ -394,7 +423,7 @@ purge / embargo = 该任务 horizon
 
 研究评估默认采用保守、版本化成本假设：10 万元研究名义本金；股票买卖佣金各 3bp、卖出印花税 5bp、买卖滑点各 5bp；ETF 无印花税、买卖滑点各 3bp；并考虑 T+1、停牌、涨跌停与流动性约束。这只用于研究比较，绝不生成交易建议。
 
-## 11. 模型清单（Roster）与推理
+## 12. 模型清单（Roster）与推理
 
 训练结果不会被前端任意扫描。每个 scope：
 
@@ -430,7 +459,7 @@ artifacts/free_research_models/
 
 固定拒答条件包括：特征覆盖率低于 85%、缓存过期、Provider 冲突、artifact hash 不一致、超出训练分布特征比例超过 20%、方向总变差超过 0.30、回撤概率差超过 0.25 或收益 P50 分歧超过 5 个百分点。
 
-## 12. Research Shadow：真正的前向验证
+## 13. Research Shadow：真正的前向验证
 
 每个有效交易日、收盘质量 Gate 通过后，系统最多冻结一次 Shadow。原始记录不可修改，至少保存：
 
@@ -449,7 +478,7 @@ python3 scripts/backfill_research_shadow.py \
   --standard-manifest <对应标准层-manifest.json>
 ```
 
-## 13. 前端使用说明
+## 14. 前端使用说明
 
 工作台首页按以下阅读顺序设计：
 
@@ -462,7 +491,7 @@ python3 scripts/backfill_research_shadow.py \
 
 页面固定提示“研究级公开数据、非实时、非投资建议、不可直接交易”。如果你看到“证据不足，暂不预测”，这表示 Gate 正常工作，而不是前端故障。
 
-## 14. API 与验收证据
+## 15. API 与验收证据
 
 开发环境 API 文档：`http://127.0.0.1:8000/docs`。
 
@@ -488,7 +517,7 @@ python3 scripts/generate_cn_research_acceptance.py \
 
 报告会复核：四任务 artifact/manifest/report hash、覆盖率、AKShare/Baostock 成功/失败/切换、事件状态、Shadow 冻结/回填、正式模式阻断原因，以及 `deployment_ready=false`。
 
-## 15. 测试与发布前检查
+## 16. 测试与发布前检查
 
 提交前建议依次运行：
 
@@ -517,7 +546,7 @@ npm run verify
 
 测试通过不表示模型可以正式发布；它只证明代码契约、时间语义和现有 Gate 未被破坏。
 
-## 16. 常见问题与排查
+## 17. 常见问题与排查
 
 ### 1）一键演示以退出码 2 结束
 
@@ -550,7 +579,7 @@ python3 -c "import akshare, baostock, pyarrow; print('providers ready')"
 
 本地开发数据位于 `var/`。先备份需要保留的 SQLite、raw 与 artifacts，再清理本地运行状态并重新执行迁移/演示。不要删除已用于复盘的 Shadow 或报告副本。
 
-## 17. 正式授权模式（未来扩展）
+## 18. 正式授权模式（未来扩展）
 
 正式路径使用 PostgreSQL + 对象存储 Parquet，并要求商业数据主源/备用源、授权证明、SLA、历史可见时间、revision、证券状态、公司行动和完整审计证据。其入口保持 fail-closed：
 
@@ -568,7 +597,7 @@ python3 scripts/validate_postgres_minio.py
 
 这一步是存储适配验证，不等同于正式模型发布。
 
-## 18. 进一步阅读
+## 19. 进一步阅读
 
 - [技术白皮书：架构、PIT、模型门禁、安全与可复现性](docs/technical-whitepaper.md)
 - [模型研究报告](docs/model-research-report.md)
@@ -577,7 +606,7 @@ python3 scripts/validate_postgres_minio.py
 - [四市场 PIT 正式发布规划（未来能力）](docs/four-market-pit-release.md)
 - [旧后端归档政策](docs/legacy-backend-archive.md)
 
-## 19. 使用与贡献原则
+## 20. 使用与贡献原则
 
 - 任何新数据源必须显式声明数据等级、授权状态、Provider、抓取时间、质量与覆盖范围。
 - 任何新特征必须声明 PIT 可用时间、缺失语义、覆盖率与特征合同版本。

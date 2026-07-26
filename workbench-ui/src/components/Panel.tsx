@@ -2,7 +2,7 @@ import type { PropsWithChildren, ReactNode } from "react";
 
 interface PanelProps extends PropsWithChildren {
   eyebrow: string;
-  title: string;
+  title: ReactNode;
   actions?: ReactNode;
 }
 

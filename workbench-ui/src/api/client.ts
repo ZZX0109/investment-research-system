@@ -72,6 +72,7 @@ import type {
   ResearchShadowOutcome,
   ResearchShadowSession,
   ResearchShadowSummary,
+  SessionResponse,
   TestOfficerComparisonReport,
   TestOfficerAuditRunDetail,
   TestOfficerAuditRun,
@@ -90,6 +91,8 @@ import type {
   TestOfficerRegistryManifest,
   TestOfficerScenarioRegistryResource,
   TestOfficerSelectorMapResource,
+  LLMProviderProfile,
+  LLMCredentialSummary,
   TestOfficerRunRequest,
   TestOfficerRunResponse,
   User,
@@ -111,6 +114,11 @@ interface AssetCreateInput {
 }
 
 export type WorkbenchDataSource = "api" | "seeded-demo" | "seeded-sandbox";
+
+const removedSeededWorkspaceAssets: Record<"seeded-demo" | "seeded-sandbox", Set<string>> = {
+  "seeded-demo": new Set<string>(),
+  "seeded-sandbox": new Set<string>()
+};
 
 type ApiErrorPayload = {
   detail?: string;
@@ -266,16 +274,21 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
   return {
     mode,
     dataSource,
-    getSession: () =>
-      dataSource === "seeded-demo"
-        ? Promise.resolve(getDemoSession())
-        : dataSource === "seeded-sandbox"
-          ? Promise.resolve(getSandboxSession())
-        : apiFetch<User>("/api/v1/auth/me").then((user) => ({
-            user,
-            access_expires_at: "",
-            refresh_expires_at: ""
-          })),
+    getSession: async (): Promise<SessionResponse> => {
+      if (dataSource === "seeded-demo") return getDemoSession();
+      if (dataSource === "seeded-sandbox") return getSandboxSession();
+      try {
+        const user = await apiFetch<User>("/api/v1/auth/me");
+        return { user, access_expires_at: "", refresh_expires_at: "" };
+      } catch (error) {
+        // An anonymous browser has no refresh cookie. That is a valid session
+        // state, not an authentication error to surface in the workbench.
+        if (error instanceof ApiError && error.status === 401 && error.detail === "Missing refresh token") {
+          return { user: null, access_expires_at: "", refresh_expires_at: "" };
+        }
+        throw error;
+      }
+    },
     register: (payload: { email: string; display_name: string; password: string }) =>
       apiFetch<AuthResponse>("/api/v1/auth/register", {
         method: "POST",
@@ -294,9 +307,9 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
           }, false),
     getAssets: () =>
       dataSource === "seeded-demo"
-        ? Promise.resolve(getDemoAssets())
+        ? Promise.resolve(getDemoAssets().filter((asset) => !removedSeededWorkspaceAssets["seeded-demo"].has(asset.id)))
         : dataSource === "seeded-sandbox"
-          ? Promise.resolve(getSandboxAssets())
+          ? Promise.resolve(getSandboxAssets().filter((asset) => !removedSeededWorkspaceAssets["seeded-sandbox"].has(asset.id)))
         : apiFetch<Asset[]>("/api/v1/assets"),
     getDomainCatalog: () =>
       dataSource === "seeded-demo"
@@ -353,6 +366,10 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
             method: "POST",
             body: JSON.stringify(payload)
           }),
+    deleteAsset: (assetId: string) =>
+      dataSource === "seeded-demo" || dataSource === "seeded-sandbox"
+        ? Promise.resolve(removedSeededWorkspaceAssets[dataSource].add(assetId)).then(() => undefined)
+        : apiFetch<void>(`/api/v1/assets/${assetId}`, { method: "DELETE" }),
     triggerAnalysis: (assetId: string) =>
       dataSource === "seeded-demo"
         ? Promise.resolve(getDemoBundle(assetId))
@@ -435,6 +452,12 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     refreshMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation/refresh`, { method: "POST" }),
     getDirectionalForecast: (runId: string) => apiFetch<import("./types").DirectionalForecastResponse>(`/api/v1/analysis-runs/${runId}/directional-forecast`),
     getResearchForecast: (runId: string) => apiFetch<import("./types").ResearchForecastBundle>(`/api/v1/analysis-runs/${runId}/research-forecast`),
+    getLatestResearchPrediction: (symbol: string, task: import("./types").LatestResearchPrediction["task"] = "drawdown_20d") =>
+      apiFetch<import("./types").LatestResearchPrediction>(
+        `/api/v1/research-predictions/latest?symbol=${encodeURIComponent(symbol)}&task=${encodeURIComponent(task)}`
+      ),
+    getLatestResearchUniverse: () =>
+      apiFetch<import("./types").LatestResearchUniverse>("/api/v1/research-universe/latest"),
     getResearchModelRosters: () => apiFetch<ResearchModelRoster[]>("/api/v1/research-model-rosters"),
     getResearchShadowSessions: (params: { decisionContext?: string; symbol?: string; task?: string } = {}) => {
       const query = new URLSearchParams({ market: "cn" });
@@ -451,7 +474,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     },
     getIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}`),
     cancelIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}/cancel`, { method: "POST" }),
-    createAgentRun: (payload: { asset_id: string; task_text: string; as_of: string; user_preference: AgentRun["user_preference"] }) =>
+    createAgentRun: (payload: { asset_id: string; task_text: string; as_of: string; provider_profile_id?: string; user_preference: AgentRun["user_preference"] }) =>
       usesSeededData
         ? Promise.resolve<AgentRun>({
             id: `seeded-agent-${payload.asset_id}`,
@@ -471,6 +494,14 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
           })
         : apiFetch<AgentRun>("/api/v1/agent-runs", { method: "POST", body: JSON.stringify(payload) }),
     getAgentRun: (runId: string) => apiFetch<AgentRun>(`/api/v1/agent-runs/${runId}`),
+    getAgentToolCalls: (runId: string) => apiFetch<import("./types").AgentToolCall[]>(`/api/v1/agent-runs/${runId}/tool-calls`),
+    getAgentExplanation: (runId: string) => apiFetch<import("./types").AgentExplanation>(`/api/v1/agent-runs/${runId}/explanation`),
+    getLLMProviderProfiles: () => apiFetch<LLMProviderProfile[]>("/api/v1/llm-provider-profiles"),
+    createLLMProviderProfile: (payload: Omit<LLMProviderProfile, "id" | "owner_user_id" | "created_at" | "updated_at">) => apiFetch<LLMProviderProfile>("/api/v1/llm-provider-profiles", { method: "POST", body: JSON.stringify(payload) }),
+    updateLLMProviderProfile: (profileId: string, payload: Partial<Omit<LLMProviderProfile, "id" | "owner_user_id" | "created_at" | "updated_at">>) =>
+      apiFetch<LLMProviderProfile>(`/api/v1/llm-provider-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+    getLLMCredentials: () => apiFetch<LLMCredentialSummary[]>("/api/v1/llm-credentials"),
+    upsertLLMCredential: (payload: { id: string; label: string; kind: "api-key"; secret: string; metadata?: Record<string, string> }) => apiFetch<LLMCredentialSummary>("/api/v1/llm-credentials", { method: "POST", body: JSON.stringify(payload) }),
     getModelResearchFindings: () => apiFetch<Record<string, unknown>>("/api/v1/models/research-findings"),
     getPaperValidationSummary: () => apiFetch<Record<string, unknown>>("/api/v1/paper-validation/summary"),
     getAnalysisRuns: (assetId: string) =>

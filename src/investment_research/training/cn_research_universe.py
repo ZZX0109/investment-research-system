@@ -39,7 +39,7 @@ class ResearchCohortManifest(BaseModel):
 
 
 def build_cn_equity_core(
-    bars: list[PreparedPriceBar], *, as_of: date, max_symbols: int = 100,
+    bars: list[PreparedPriceBar], *, as_of: date, max_symbols: int | None = None,
     lookback_sessions: int = 120, minimum_history_sessions: int = 756,
     minimum_training_sessions: int | None = None,
     minimum_coverage_ratio: float = 0.98, minimum_median_amount: float = 100_000_000,
@@ -81,9 +81,10 @@ def build_cn_equity_core(
             median_amount_120d=median_amount,
         ))
     ranked.sort(key=lambda item: (-item.median_amount_120d, item.symbol))
-    selected = ranked[:max_symbols]
-    for item in ranked[max_symbols:]:
-        excluded[item.symbol] = f"liquidity_rank_below_top_{max_symbols}"
+    selected = ranked if max_symbols is None else ranked[:max_symbols]
+    if max_symbols is not None:
+        for item in ranked[max_symbols:]:
+            excluded[item.symbol] = f"liquidity_rank_below_top_{max_symbols}"
     import hashlib, json
     payload = {
         "as_of": as_of.isoformat(), "members": [item.symbol for item in selected],

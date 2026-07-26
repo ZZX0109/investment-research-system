@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import type { WorkbenchMode } from "../api/types";
 
+function initialMode(): WorkbenchMode {
+  if (typeof window === "undefined") return "research";
+  const requested = new URLSearchParams(window.location.search).get("mode");
+  return requested === "demo" || requested === "sandbox" || requested === "real" ? requested : "research";
+}
+
 interface WorkbenchState {
   mode: WorkbenchMode;
   selectedAssetId: string | null;
@@ -19,7 +25,7 @@ interface WorkbenchState {
 }
 
 export const useWorkbenchStore = create<WorkbenchState>((set) => ({
-  mode: "research",
+  mode: initialMode(),
   selectedAssetId: null,
   selectedRunId: null,
   selectedEvidenceId: null,

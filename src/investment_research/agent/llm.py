@@ -5,7 +5,7 @@ import ipaddress
 import socket
 import time
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
@@ -43,8 +43,46 @@ class LLMResponse(BaseModel, Generic[T]):
     raw_response: dict[str, object] = Field(default_factory=dict)
 
 
+class LLMToolDefinition(BaseModel):
+    """A provider-neutral, allow-listed function exposed to the research agent."""
+
+    name: str
+    description: str
+    parameters: dict[str, object]
+
+
+class LLMToolInvocation(BaseModel):
+    """One function request returned by a compatible chat-completions provider."""
+
+    id: str
+    name: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+
+
+class LLMToolRequest(BaseModel):
+    node_name: str
+    system_prompt: str
+    messages: list[dict[str, object]]
+    tools: list[LLMToolDefinition]
+    max_output_tokens: int
+    prompt_version: str = "research-function-call-v1"
+
+
+class LLMToolResponse(BaseModel):
+    tool_calls: list[LLMToolInvocation] = Field(default_factory=list)
+    content: str | None = None
+    provider_protocol: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    raw_response: dict[str, object] = Field(default_factory=dict)
+
+
 class LLMProvider(Protocol):
     def generate_structured(self, request: LLMRequest[T], response_model: type[T]) -> LLMResponse[T]: ...
+
+    def invoke_tools(self, request: LLMToolRequest) -> LLMToolResponse: ...
 
 
 def _token_estimate(value: object) -> int:
@@ -84,6 +122,72 @@ class HTTPStructuredProvider:
             output_tokens=int(body.get("usage", {}).get("completion_tokens", _token_estimate(parsed))),
             latency_ms=int((time.perf_counter() - started) * 1000),
             raw_response={"id": body.get("id"), "model": body.get("model")},
+        )
+
+    def invoke_tools(self, request: LLMToolRequest) -> LLMToolResponse:
+        """Run one native tool-calling turn.
+
+        Function calling is intentionally only available through the OpenAI
+        chat-completions compatible protocol.  Other protocols keep using the
+        deterministic research orchestrator instead of silently emulating
+        calls with free-form text.
+        """
+        if self.profile.protocol != "openai_compatible":
+            raise LLMProviderError("Native function calling requires an OpenAI-compatible provider profile")
+        if not self.profile.endpoint:
+            raise LLMProviderError("Provider endpoint is required")
+        self._validate_runtime_endpoint()
+        started = time.perf_counter()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        payload: dict[str, object] = {
+            "model": self.profile.model,
+            "messages": [{"role": "system", "content": request.system_prompt}, *request.messages],
+            "tools": [
+                {"type": "function", "function": tool.model_dump(mode="json")}
+                for tool in request.tools
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "max_tokens": request.max_output_tokens,
+        }
+        http_request = Request(
+            self.profile.endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with urlopen(http_request, timeout=self.profile.timeout_seconds) as response:  # noqa: S310 - operator-configured endpoint
+                body = json.loads(response.read().decode("utf-8"))
+            message = body.get("choices", [])[0].get("message", {})
+            raw_calls = message.get("tool_calls") or []
+            calls: list[LLMToolInvocation] = []
+            for item in raw_calls:
+                function = item.get("function") or {}
+                raw_arguments: Any = function.get("arguments", "{}")
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                if not isinstance(arguments, dict):
+                    raise ValueError("Function arguments must be an object")
+                calls.append(
+                    LLMToolInvocation(
+                        id=str(item.get("id") or ""),
+                        name=str(function.get("name") or ""),
+                        arguments=arguments,
+                    )
+                )
+        except Exception as exc:
+            raise LLMProviderError(f"Function-call LLM request failed: {type(exc).__name__}") from exc
+        return LLMToolResponse(
+            tool_calls=calls,
+            content=message.get("content") if isinstance(message.get("content"), str) else None,
+            provider_protocol=self.profile.protocol,
+            model=self.profile.model,
+            input_tokens=int(body.get("usage", {}).get("prompt_tokens", _token_estimate(payload))),
+            output_tokens=int(body.get("usage", {}).get("completion_tokens", _token_estimate(message))),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            raw_response={"id": body.get("id"), "model": body.get("model"), "tool_call_count": len(calls)},
         )
 
     def _payload(self, request: LLMRequest[T]) -> tuple[dict[str, object], dict[str, str]]:
@@ -192,6 +296,18 @@ class MockProvider:
             input_tokens=_token_estimate(request.user_payload),
             output_tokens=_token_estimate(output.model_dump(mode="json")),
             latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    def invoke_tools(self, request: LLMToolRequest) -> LLMToolResponse:
+        # Mock mode must never present fabricated model reasoning as a real
+        # function-call decision.  The orchestrator will take its documented
+        # deterministic path when no user-configured provider is available.
+        return LLMToolResponse(
+            provider_protocol="mock",
+            model=self.profile.model,
+            input_tokens=_token_estimate(request.messages),
+            output_tokens=0,
+            latency_ms=0,
         )
 
 

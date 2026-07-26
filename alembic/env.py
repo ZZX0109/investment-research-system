@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import os
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+# Alembic is also a public project entry point.  Make `python -m alembic
+# upgrade head` behave the same in a clean checkout as the installed package
+# and pytest entry points, without requiring callers to export PYTHONPATH.
+project_src = Path(__file__).resolve().parents[1] / "src"
+if str(project_src) not in sys.path:
+    sys.path.insert(0, str(project_src))
 
 config = context.config
 

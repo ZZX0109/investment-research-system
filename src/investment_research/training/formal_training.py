@@ -67,6 +67,41 @@ RETURN_CANDIDATES = (
     "time-oof-weighted-ensemble",
 )
 
+MAX_LOCAL_FIT_ROWS = 25_000
+
+
+def balanced_panel_fit_samples(
+    samples: list[TrainingSample], *, max_rows: int = MAX_LOCAL_FIT_ROWS
+) -> list[TrainingSample]:
+    """Bound one local fit while retaining deterministic coverage of every symbol."""
+    if len(samples) <= max_rows:
+        return list(samples)
+    by_symbol: dict[str, list[TrainingSample]] = {}
+    for sample in samples:
+        by_symbol.setdefault(sample.symbol, []).append(sample)
+    quota = max(1, max_rows // max(1, len(by_symbol)))
+    selected: list[TrainingSample] = []
+    for symbol in sorted(by_symbol):
+        rows = sorted(
+            by_symbol[symbol],
+            key=lambda item: (
+                item.as_of_time,
+                str(getattr(item, "label_end", None) or ""),
+            ),
+        )
+        take = min(quota, len(rows))
+        if take == len(rows):
+            selected.extend(rows)
+        elif take == 1:
+            selected.append(rows[-1])
+        else:
+            indexes = {
+                round(index * (len(rows) - 1) / (take - 1))
+                for index in range(take)
+            }
+            selected.extend(rows[index] for index in sorted(indexes))
+    return sorted(selected, key=lambda item: (item.as_of_time, item.symbol))
+
 
 @dataclass(frozen=True)
 class FormalFoldData:
