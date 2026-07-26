@@ -1,10 +1,88 @@
+<div align="center">
+
 # A 股量化研究平台
 
-> 零预算、研究级、可复现、证据驱动的 A 股收盘后研究平台。
+### 零预算 · 研究级 · 可复现 · 证据驱动
 
-**只想知道怎样启动和使用？请先阅读 [用户操作手册](docs/用户操作手册.md)，或直接打开带截图的 [Word 界面与操作手册](docs/A股量化研究平台-界面与操作手册.docx)。** 本 README 保留完整技术、数据与训练说明。
+面向 A 股日线研究的完整工作台：从免费数据、Research PIT、模型训练、风险解释到 Shadow 前向验证。
 
-本项目的目标不是生成“买入”“卖出”或“明天必涨/必跌”结论，而是把公开数据下可验证的研究过程完整留存：数据从哪里来、何时抓到、质量如何、模型基于什么输入、哪些任务可用、何时应主动拒答，以及预测在后续交易日的实际表现。
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-TypeScript-149ECA?logo=react&logoColor=white)
+![Tests](https://img.shields.io/badge/Python_tests-397_passed-16A34A)
+![Research Only](https://img.shields.io/badge/status-research__only-7C3AED)
+![Deployment](https://img.shields.io/badge/deployment__ready-false-B45309)
+
+</div>
+
+> [!IMPORTANT]
+> 本平台使用免费公开数据，所有数据和模型固定为 `research_pit / research_only / deployment_ready=false`。结果仅用于量化研究、教学、比赛展示和模型实验，不构成投资建议，也不能直接用于实盘交易。
+
+**第一次使用？**
+
+- 网页操作：[用户操作手册](docs/用户操作手册.md)
+- 带截图的 Word 版本：[A 股量化研究平台－界面与操作手册](docs/A股量化研究平台-界面与操作手册.docx)
+- 技术原理：[技术白皮书](docs/technical-whitepaper.md)
+- 最快启动：`npm run dev:research-platform`
+
+本项目不追求给出“买入”“卖出”或“明天必涨/必跌”的口号，而是把公开数据下可验证的研究过程完整留存：数据从哪里来、何时抓到、质量如何、模型使用了什么输入、哪些任务可用、何时应主动暂缓判断，以及预测在后续交易日的实际表现。
+
+## 项目界面
+
+### 移动端研究工作台
+
+顶部明确展示市场、决策时点、研究级数据边界、语言切换和用户自有 API Key 配置；研究对象与结果区域在窄屏下自动变为单列。
+
+<p align="center">
+  <img src="docs/images/research-mobile.png" alt="A 股量化研究平台移动端研究工作台" width="360" />
+</p>
+
+### 研究对象与风险摘要
+
+| 研究对象管理 | 今日风险与观察条件 |
+| --- | --- |
+| <img src="docs/images/research-object-selector.png" alt="搜索并选择 A 股研究对象" width="420" /> | <img src="docs/images/research-risk-summary.png" alt="回撤风险、数据状态和后续观察条件" width="420" /> |
+| 支持按证券代码或名称搜索，研究对象从固定研究池添加；移除操作只影响当前工作区。 | 同时展示参考风险、可信度、数据日期、Provider、数据质量和下一交易日观察条件。 |
+
+## 你可以用它完成什么
+
+| 能力 | 用户获得的结果 | 系统留下的证据 |
+| --- | --- | --- |
+| 免费 A 股数据更新 | 股票和 ETF 收盘后研究数据 | Provider、请求窗口、原始/标准化 hash、revision、失败原因 |
+| 四任务独立研究 | 1 日方向、5 日方向、20 日收益区间、20 日回撤风险 | 独立 dataset、fold、模型、评估报告与 roster |
+| 价格与风险可视化 | 收益走势、回撤轨迹、风险情景 | 冻结数据日期、snapshot ID/hash |
+| AI 研究助手 | 用通俗语言解释当前结果与限制 | Function Calling 记录、知识来源、引用链接、工具 hash |
+| 数据质量与拒答 | 明确展示 `degraded`、`unavailable` 或 `abstain` 原因 | 覆盖率、缓存状态、Provider 冲突、模型分歧 |
+| Research Shadow | 真实记录当时预测，并在未来回填结果 | 1/5/20/60 日 append-only 前向验证 |
+| 技术与审计 | 查看模型版本、运行血缘和正式模式阻断原因 | Manifest、artifact hash、审计 Gate、固定报告 |
+
+## 一分钟理解系统
+
+```mermaid
+flowchart LR
+    A["AKShare / Baostock<br/>免费公开数据"] --> B["Raw 原始层<br/>内容寻址与 Hash"]
+    B --> C["Standard 标准层<br/>日历、复权、状态与 Revision"]
+    C --> D["Research PIT 快照<br/>CN + close_confirmed"]
+    D --> E["统一 Feature / Sample"]
+    E --> F1["1/5 日方向概率"]
+    E --> F2["20 日收益 P10/P50/P90"]
+    E --> F3["20 日最大回撤风险"]
+    F1 --> G["Research Model Roster"]
+    F2 --> G
+    F3 --> G
+    G --> H["研究仪表盘 / AI 解读"]
+    H --> I["1/5/20/60 日 Shadow 回填"]
+```
+
+一次用户研究的核心流程是：
+
+1. 选择固定研究池中的股票或 ETF。
+2. 系统读取已经冻结的收盘数据和数据质量状态。
+3. 四个任务分别加载精确匹配的研究模型与校准器。
+4. 页面展示概率、区间、风险、模型分歧和数据限制。
+5. 如果证据不足，模型候选读数仍可作为研究观察展示，但必须明确标记限制。
+6. AI 助手只能调用服务端允许的只读工具，不自行计算价格或风险概率。
+7. 当日结果进入不可变 Shadow，未来只追加真实结果回填。
 
 当前主线是 **CN + close_confirmed**：A 股日线与少量宽基 ETF，在每个交易日收盘确认后运行。系统输出四类相互独立的研究结果：`direction_1d`、`direction_5d`、`return_20d` 和 `drawdown_20d`。所有公开数据及其模型产物永久标记为：
 
