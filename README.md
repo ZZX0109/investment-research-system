@@ -6,6 +6,8 @@
 
 面向 A 股日线研究的完整工作台：从免费数据、Research PIT、模型训练、风险解释到 Shadow 前向验证。
 
+<img src="docs/images/a-share-research-cover-3x4.png" alt="A 股量化研究平台封面：数据曲线与风险研究图形" width="320" />
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-149ECA?logo=react&logoColor=white)
