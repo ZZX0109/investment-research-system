@@ -12,7 +12,8 @@ import { SourceBadge } from "../../components/SourceBadge";
 import { useI18n } from "../../i18n";
 import { SelectedRunDossierCard } from "../dossier/SelectedRunDossierCard";
 import { useResearchWorkspace } from "./useResearchWorkspace";
-import { useDeploymentStatusQuery, useDirectionalForecastQuery, useMarketObservationQuery, useRefreshMarketObservationMutation, useResearchAcceptanceQuery, useResearchForecastQuery, useResearchModelRostersQuery, useResearchShadowSessionsQuery, useResearchShadowSummaryQuery } from "../../hooks/useWorkbenchQueries";
+import { LongTermInvestorSummary } from "./LongTermInvestorSummary";
+import { useDeploymentStatusQuery, useDirectionalForecastQuery, useLatestLongTermScorecardQuery, useMarketObservationQuery, useRefreshMarketObservationMutation, useResearchAcceptanceQuery, useResearchForecastQuery, useResearchLifecycleStatusQuery, useResearchModelRostersQuery, useResearchShadowSessionsQuery, useResearchShadowSummaryQuery } from "../../hooks/useWorkbenchQueries";
 
 export function ResearchPanel() {
   const { formatDateTime, l, t, term, language } = useI18n();
@@ -25,11 +26,22 @@ export function ResearchPanel() {
   const outcome = marketObservation.data?.outcomes.find((item) => item.run_id === workspace.selectedRunId) ?? marketObservation.data?.outcomes[0];
   const direction = useDirectionalForecastQuery(workspace.selectedRunId);
   const forecast = useResearchForecastQuery(workspace.selectedRunId);
+  const scorecard = useLatestLongTermScorecardQuery(workspace.assetTicker);
   const refreshObservation = useRefreshMarketObservationMutation(workspace.assetId);
   const shadow = useResearchShadowSessionsQuery(workspace.assetTicker);
   const shadowSummary = useResearchShadowSummaryQuery(workspace.assetTicker);
   const rosters = useResearchModelRostersQuery();
-  const taskStatus = (task: string) => forecast.data?.tasks.find((item) => item.task === task)?.status ?? acceptance.data?.tasks?.[task]?.status ?? "unavailable";
+  const lifecycle = useResearchLifecycleStatusQuery();
+  const acceptanceCoverage = acceptance.data?.data?.market_coverage?.[0];
+  const acceptanceTasks = acceptance.data?.tasks ?? {};
+  const taskStatus = (task: string) => {
+    const forecastTask = forecast.data?.tasks.find((item) => item.task === task);
+    const acceptanceTask = acceptance.data?.tasks?.[task];
+    return forecastTask?.status
+      ?? (acceptanceTask?.artifact_available ? acceptanceTask.research_status : acceptanceTask?.prediction_status)
+      ?? acceptanceTask?.status
+      ?? "unavailable";
+  };
   const taskReasons = (task: string) => forecast.data?.tasks.find((item) => item.task === task)?.gating_reasons ?? [];
 
   return (
@@ -44,30 +56,75 @@ export function ResearchPanel() {
           <article className="story-card" data-testid="cn-research-data-quality">
             <div className="story-card__header">
               <strong>{t("research.dataQuality")}</strong>
-              <StatusBadge status={forecast.data?.data_status.quality_status ?? "unavailable"} />
+              <StatusBadge status={forecast.data?.data_status.quality_status ?? (acceptance.data?.evidence_status === "partial" ? "degraded" : "unavailable")} />
             </div>
             <p className="muted">
               {language === "zh-CN"
-                ? <>免费公开数据固定为 research_pit；历史可见时间未完全证明，永不自动提升为正式 PIT。数据覆盖 {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : t("hero.waiting")}，缓存 {term(forecast.data?.data_status.cache_state ?? "unavailable")}，事件 {term(forecast.data?.data_status.event_coverage_status ?? "unsupported")}。</>
-                : <>Public data remains research_pit. Historical visibility is not fully proven and is never promoted to formal PIT. Coverage: {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : t("hero.waiting")}; cache: {forecast.data?.data_status.cache_state ?? "unavailable"}; events: {forecast.data?.data_status.event_coverage_status ?? "unsupported"}.</>}
+                ? <>免费公开数据固定为 research_pit；历史可见时间未完全证明，永不自动提升为正式 PIT。数据覆盖 {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : acceptanceCoverage?.coverage_ratio != null ? `${Math.round(acceptanceCoverage.coverage_ratio * 100)}%` : t("hero.waiting")}，缓存 {term(forecast.data?.data_status.cache_state ?? "unavailable")}，事件 {term(forecast.data?.data_status.event_coverage_status ?? acceptanceCoverage?.event_coverage_status ?? "unsupported")}。</>
+                : <>Public data remains research_pit. Historical visibility is not fully proven and is never promoted to formal PIT. Coverage: {forecast.data ? `${Math.round(forecast.data.data_status.coverage_ratio * 100)}%` : acceptanceCoverage?.coverage_ratio != null ? `${Math.round(acceptanceCoverage.coverage_ratio * 100)}%` : t("hero.waiting")}; cache: {forecast.data?.data_status.cache_state ?? "unavailable"}; events: {forecast.data?.data_status.event_coverage_status ?? acceptanceCoverage?.event_coverage_status ?? "unsupported"}.</>}
             </p>
             {forecast.data?.data_status.reasons.length ? <InlineNotice title={language === "zh-CN" ? "数据降级原因" : "Data degradation reasons"} tone="warn" body={forecast.data.data_status.reasons.map(term).join("；")} /> : null}
           </article>
+          <LongTermInvestorSummary forecast={forecast.data} acceptance={acceptance.data} scorecard={scorecard.data} language={language} />
+          <details className="research-supporting-details" data-testid="research-supporting-details">
+            <summary>
+              <span>{l("更多研究证据与运行详情", "More evidence and research details")}</span>
+              <small>{l("包含短周期诊断、价格回放、模型状态和审计证据", "Includes short-horizon diagnostics, price replay, model status and audit evidence")}</small>
+            </summary>
           <article className="story-card" data-testid="cn-research-backend-status">
             <div className="story-card__header">
               <strong>{t("research.backendStatus")}</strong>
               <span className="tag">{term(acceptance.data?.status ?? "blocked")}</span>
             </div>
             <div className="metric-strip">
-              <MetricCard label={t("research.data")} value={term(forecast.data?.data_status.quality_status ?? "unavailable")} tone={forecast.data?.data_status.quality_status === "passed" ? "good" : "warn"} />
+              <MetricCard label={t("research.data")} value={term(forecast.data?.data_status.quality_status ?? acceptance.data?.evidence_status ?? "unavailable")} tone={forecast.data?.data_status.quality_status === "passed" ? "good" : "warn"} />
               <MetricCard label={t("research.training")} value={term(forecast.data?.training_status ?? "unavailable")} />
               <MetricCard label={t("research.prediction")} value={term(forecast.data?.prediction_status ?? "unavailable")} tone={forecast.data?.prediction_status === "research_only" ? "good" : "warn"} />
               <MetricCard label={t("research.evidence")} value={term(forecast.data?.evidence_status ?? "missing")} />
             </div>
             <p className="muted">{language === "zh-CN" ? "模型" : "Model"}: {term(forecast.data?.model_status ?? "unavailable")}; {l("部署就绪：否", "deployment_ready: false")}; {language === "zh-CN" ? "研究级公开数据，不构成投资建议。" : "public research data, not investment advice."}</p>
-            <p className="muted">{t("research.provider")}: AKShare {t("research.success")} {acceptance.data?.data?.akshare_success_count ?? "n/a"}, Baostock {t("research.success")} {acceptance.data?.data?.baostock_success_count ?? "n/a"}, {t("research.failures")} {acceptance.data?.data?.failed_count ?? "n/a"}, {t("research.fallbacks")} {acceptance.data?.data?.fallback_count ?? "n/a"}.</p>
+            <p className="muted">{t("research.provider")}: AKShare {t("research.success")} {acceptance.data?.data?.akshare_success_count ?? "n/a"}, Baostock {t("research.success")} {acceptance.data?.data?.baostock_success_count ?? "n/a"}, {t("research.failures")} {acceptance.data?.data?.failed_count ?? "n/a"}, {t("research.fallbacks")} {acceptance.data?.data?.fallback_count ?? "n/a"}，{l("冲突", "conflicts")} {acceptance.data?.data?.conflict_count ?? "n/a"}。</p>
             {(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).length ? <InlineNotice title={t("research.blockingReasons")} tone="warn" body={(forecast.data?.blocking_reasons ?? acceptance.data?.blocking_reasons ?? []).map(term).join("；")} /> : null}
             {(forecast.data?.abstain_reasons ?? []).length ? <InlineNotice title={t("research.abstainReasons")} tone="warn" body={forecast.data?.abstain_reasons.map(term).join("；") ?? ""} /> : null}
+          </article>
+          <article className="story-card" data-testid="cn-research-acceptance-summary">
+            <div className="story-card__header">
+              <strong>{l("研究链路验收摘要", "Research acceptance summary")}</strong>
+              <StatusBadge status={acceptance.data?.research_status ?? "unavailable"} />
+            </div>
+            <div className="metric-strip">
+              <MetricCard label={l("模型产物", "Artifacts")} value={acceptance.data?.artifact_available ? l("已校验", "verified") : l("不可用", "unavailable")} />
+              <MetricCard label={l("股票 / ETF", "Equity / ETF")} value={`${acceptance.data?.cohorts?.cn_equity_core?.member_count ?? "—"} / ${acceptance.data?.cohorts?.cn_etf_benchmark?.member_count ?? "—"}`} />
+              <MetricCard label={l("降级记录", "Degraded records")} value={String(acceptance.data?.data?.quality_status_counts?.degraded ?? "—")} />
+              <MetricCard label={l("Shadow 已冻结", "Shadow frozen")} value={String(acceptance.data?.shadow?.frozen_count ?? "—")} />
+            </div>
+            <p className="muted">
+              {l("四项任务均为研究级 exploratory；有模型产物不代表已通过研究 Gate。正式模式仍然阻断，deployment_ready=false。", "All four tasks are research-only exploratory models; artifacts do not mean the research Gate passed. Formal mode remains blocked and deployment_ready=false.")}
+            </p>
+            <div className="stack-list">
+              {(["direction_1d", "direction_5d", "return_20d", "drawdown_20d"] as const).map((task) => {
+                const item = acceptanceTasks[task];
+                return <p key={task}>{task}：{term(item?.research_status ?? item?.prediction_status ?? item?.status ?? "unavailable")} · {item?.artifact_available ? l("产物可用", "artifact available") : l("缺少产物", "artifact unavailable")}</p>;
+              })}
+            </div>
+          </article>
+          <article className="story-card" data-testid="cn-research-lifecycle-status">
+            <div className="story-card__header">
+              <strong>{language === "zh-CN" ? "研究自动更新" : "Research lifecycle"}</strong>
+              <span className="tag">{lifecycle.data?.status ?? "research_only"}</span>
+            </div>
+            <div className="metric-strip">
+              <MetricCard label={language === "zh-CN" ? "最近数据" : "Latest data"} value={lifecycle.data?.latest_trade_date ?? "—"} />
+              <MetricCard label={language === "zh-CN" ? "下次训练" : "Next training"} value={lifecycle.data?.next_training ? formatDateTime(lifecycle.data.next_training) : "—"} />
+              <MetricCard label={language === "zh-CN" ? "候选模型" : "Candidate"} value={lifecycle.data?.candidate ?? "—"} />
+              <MetricCard label={language === "zh-CN" ? "自动替换" : "Promotion"} value={lifecycle.data?.promotion ?? "pending"} />
+            </div>
+            <p className="muted">
+              {language === "zh-CN"
+                ? "每日更新数据和 Shadow，每周监控漂移，每月训练候选模型；只有通过研究 Gate 和 Shadow 后才自动替换主模型。"
+                : "Daily data and Shadow, weekly drift monitoring, monthly candidate training; the primary changes only after research gates and Shadow evidence pass."}
+            </p>
+            {lifecycle.data?.blocking_reasons.length ? <InlineNotice title={language === "zh-CN" ? "自动化阻断原因" : "Automation blockers"} tone="warn" body={lifecycle.data.blocking_reasons.map(term).join("；")} /> : null}
           </article>
           <article className="story-card" data-testid="cn-research-roster">
             <div className="story-card__header">
@@ -85,7 +142,8 @@ export function ResearchPanel() {
             ) : <EmptyState title={t("research.rosterEmpty")} body={t("research.rosterEmptyBody")} />}
           </article>
           <article className="story-card" data-testid="cn-research-task-results">
-            <div className="story-card__header"><strong>{t("research.tasks")}</strong><span className="tag">{t("research.notSignal")}</span></div>
+            <div className="story-card__header"><strong>{language === "zh-CN" ? "短周期诊断（次要信息）" : "Short-horizon diagnostics (secondary)"}</strong><span className="tag">{t("research.notSignal")}</span></div>
+            <p className="muted">{language === "zh-CN" ? "以下 1 日、5 日和 20 日读数只用于说明近期波动，不代表长期上涨胜率，也不构成买卖指令。长期结论须等待季度级 120/240 日标签和完整 PIT 数据；5/20 日超额收益只作为辅助横截面研究。" : "The 1-day, 5-day and 20-day readings below describe near-term volatility only. They are not long-term winning probabilities or trading instructions; durable views require mature quarterly 120/240-day labels and complete PIT data, while 5/20-day excess returns remain auxiliary cross-sectional research."}</p>
             {forecast.data && ["research_only", "approved", "fallback"].includes(forecast.data.prediction_status) && !forecast.data.abstained ? (
               <div className="task-forecast-grid">
                 <TaskForecastCard task="01D" title={t("research.direction")} status={taskStatus("direction_1d")} model={forecast.data.tasks.find((item) => item.task === "direction_1d")?.model_version} value={forecast.data.direction_1d ? `${t("research.up")} ${Math.round(forecast.data.direction_1d.up * 100)}%` : term("unavailable")} detail={forecast.data.direction_1d ? <span>{t("research.down")} {Math.round(forecast.data.direction_1d.down * 100)}% · {t("research.flat")} {Math.round(forecast.data.direction_1d.flat * 100)}%</span> : null} />
@@ -186,7 +244,7 @@ export function ResearchPanel() {
                 <p className="muted">{l("数据等级", "Data tier")}：{forecast.data.data_tier}；{l("模型状态", "model status")}：{term("research_only")}；{forecast.data.decision_context === "pre_open" ? l("下一交易日盘前", "next-session pre-open") : l("收盘确认", "close-confirmed")}{l("研究，不是盘中交易信号。决策时间", " research, not an intraday signal. Decision time")}：{forecast.data.decision_time ? formatDateTime(forecast.data.decision_time) : term("unavailable")}；{l("缓存", "cache")}：{term(forecast.data.data_status.cache_state)}；{l("事件", "events")}：{term(forecast.data.data_status.event_coverage_status)}；{l("来源", "providers")}：{forecast.data.data_status.provider_chain.join(" → ") || term("unavailable")}。</p>
                 {forecast.data.direction_5d ? <p>{l("5日方向", "5-day direction")}：{t("research.up")} {Math.round(forecast.data.direction_5d.up * 100)}%，{t("research.down")} {Math.round(forecast.data.direction_5d.down * 100)}%，{t("research.flat")} {Math.round(forecast.data.direction_5d.flat * 100)}%。</p> : <p className="muted">{l("1日、5日方向和20日收益只有在对应研究清单与全部哈希通过校验后才展示。", "1/5-day direction and 20-day return appear only after roster and hash validation.")}</p>}
                 {forecast.data.gating_reasons.length ? <InlineNotice title={l("研究门禁", "Research Gates")} tone="warn" body={forecast.data.gating_reasons.map(term).join("; ")} /> : null}
-              </> : <p className="muted">{l("该历史运行暂无冻结的收盘确认预测。", "No frozen trusted-close forecast is available for this historical run.")}</p>}
+              </> : <p className="muted">{l("该历史运行暂无冻结的收盘确认预测。", "No frozen close-confirmed forecast is available for this historical run.")}</p>}
             </article>
           ) : null}
           {workspace.selectedRunId ? (
@@ -312,6 +370,7 @@ export function ResearchPanel() {
               <p className="muted">{l("所选运行尚无生成报告。", "The selected run has no generated reports yet.")}</p>
             ) : null}
           </div>
+          </details>
         </>
       ) : (
         <p className="muted">{l("请选择研究对象，以查看证据、价格分层和生成报告。", "Select an asset to inspect evidence, price layering, and generated reports.")}</p>

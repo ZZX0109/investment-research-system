@@ -10,10 +10,9 @@ from pydantic import BaseModel, Field
 from investment_research.domain.forecasts import TaskApprovalManifest
 from investment_research.domain.data_tier import DataTier
 from investment_research.training.approval_reports import REQUIRED_SCOPE_REPORTS
-from investment_research.training.formal_preflight import FormalPreflightReport
+from investment_research.training.formal_preflight import FORMAL_MARKETS, FormalPreflightReport
 
 
-FORMAL_MARKETS = ("cn", "us", "hk", "jp")
 FORMAL_CONTEXTS = ("close_confirmed", "pre_open")
 FORMAL_TASKS = ("drawdown_20d", "direction_1d", "direction_5d", "return_20d")
 
@@ -26,6 +25,7 @@ class ReleaseIndexEntry(BaseModel):
     manifest_hash: str
     status: str
     deployment_ready: bool
+    gating_reasons: list[str] = Field(default_factory=list)
 
 
 class FormalReleaseIndex(BaseModel):
@@ -158,8 +158,14 @@ def materialize_blocked_release_matrix(
                         task=task,
                         manifest_path=relative.as_posix(),
                         manifest_hash=sha256(content.encode()).hexdigest(),
-                        status=manifest.status,
+                        # ``TaskApprovalManifest`` deliberately accepts only
+                        # approved/research_only/rejected model states.  The
+                        # release index is the operational view and must make
+                        # an unavailable formal scope unambiguous instead of
+                        # presenting it as a usable research model.
+                        status="blocked",
                         deployment_ready=False,
+                        gating_reasons=list(manifest.gating_reasons),
                     )
                 )
     index = FormalReleaseIndex(

@@ -2,6 +2,10 @@
 
 ## 研究边界
 
+# 历史模型研究报告（非当前长期训练结论）
+
+> 本文记录旧的短周期回撤实验。报告中的 20 日标签、样本规模和 `approved` 语义不代表当前 A 股长期投资主线；当前训练合同请以 [`current-system.md`](current-system.md) 和 `config/long_term_training.yaml` 为准。
+
 本报告只研究未来 20 个交易日显著回撤风险门禁。训练路径为 `real + full + walk-forward`，覆盖 128 个标的和 149,876 个样本。收益、风险调整收益、波动率突增和事件后回撤属于辅助任务，不参与 approved 判定。
 
 ## RF 与线性 Champion

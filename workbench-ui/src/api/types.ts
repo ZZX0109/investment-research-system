@@ -60,7 +60,11 @@ export interface AgentExplanation {
   observation_conditions: string[];
   evidence_ids: string[];
   status?: "research_only" | "abstain";
+  generated_by?: "llm" | "deterministic_fallback";
+  llm_status?: "completed" | "unavailable";
+  llm_error?: string | null;
   tools_used?: string[];
+  plain_answer?: PlainAnswer;
   sources?: Array<{
     title: string;
     source: string;
@@ -68,10 +72,158 @@ export interface AgentExplanation {
     published_at?: string | null;
     type: "announcement" | "knowledge";
     content_hash?: string | null;
+    citation_id?: string | null;
+    page_or_section?: string | null;
   }>;
 }
 
-export type LLMProtocol = "openai_compatible" | "anthropic_messages" | "ollama" | "mock";
+export interface PlainSource {
+  title: string;
+  source: string;
+  url: string;
+  published_at?: string | null;
+  kind: "announcement" | "knowledge" | "news" | "calculation" | "model";
+  citation_id?: string | null;
+  note?: string | null;
+}
+
+export interface PlainEvidenceItem {
+  classification: "confirmed_fact" | "explanation" | "conflict" | "missing";
+  text: string;
+  sources?: PlainSource[];
+}
+
+export interface PlainReadingObservation {
+  label: string;
+  horizon: string;
+  tendency: string;
+  interpretation: string;
+  available: boolean;
+  data_as_of?: string | null;
+}
+
+export interface PlainPortfolioNote {
+  concentration: string;
+  possible_impact: string;
+  missing_info: string;
+  is_example_scenario: boolean;
+}
+
+export interface PlainAnswer {
+  schema_version: string;
+  business_condition: string;
+  long_term_changes: string;
+  possible_risks: string;
+  missing_evidence: string;
+  sources_summary: string;
+  result_status: "research_observation" | "insufficient_evidence" | "conflict_present";
+  data_as_of?: string | null;
+  next_observation_conditions?: string[];
+  invalidation_conditions?: string[];
+  long_term_observations?: PlainReadingObservation[];
+  fundamental_dimensions?: Record<string, string>;
+  evidence?: PlainEvidenceItem[];
+  sources?: PlainSource[];
+  portfolio_note?: PlainPortfolioNote | null;
+  tools_used?: string[];
+  compliance_allowed?: boolean;
+  generated_by?: "llm" | "deterministic_fallback";
+  arbitrations?: CausalArbitration[];
+  causal_observations?: CausalObservation[];
+}
+
+export interface CausalArbitration {
+  topic?: string;
+  resolved_stance?: "knowledge" | "web" | "unresolved";
+  reasoning?: string;
+  authority_basis?: string;
+  recency_basis?: string;
+  corroboration_basis?: string;
+  unresolved?: boolean;
+  sources?: string[];
+}
+
+export interface CausalObservation {
+  observation: string;
+  evidence_refs?: string[];
+  invalidation_refs?: string[];
+  confidence_note?: string;
+}
+
+export type KnowledgeCoverageState = "complete" | "partial" | "fetch_failed" | "unsupported" | "unknown";
+
+export interface FinancialKnowledgeDocument {
+  id: string;
+  title: string;
+  content: string;
+  source_name: string;
+  source_url?: string | null;
+  market: string;
+  symbol?: string | null;
+  document_type: string;
+  published_at: string;
+  available_at: string;
+  revision: number;
+  status: "active" | "superseded" | "withdrawn";
+  source_kind: "official_public" | "user_upload" | "news_report";
+  content_scope: "full_text" | "metadata_excerpt";
+  access_scope: "public" | "private";
+  announcement_category?: string | null;
+  report_period?: string | null;
+  authority_level: number;
+  data_tier: "research_pit" | "formal_pit";
+  visibility_assumption?: string | null;
+}
+
+export interface FinancialKnowledgeSearchResult {
+  document: FinancialKnowledgeDocument;
+  score: number;
+  matched_terms: string[];
+  chunk_id?: string | null;
+  citation_id?: string | null;
+  snippet?: string | null;
+  page_or_section?: string | null;
+  lexical_score: number;
+  semantic_score?: number | null;
+  authority_score: number;
+  final_score: number;
+  coverage_status: KnowledgeCoverageState;
+  pit_status: "proven" | "assumed" | "unavailable";
+}
+
+export interface FinancialKnowledgeCoverageRecord {
+  id: string;
+  provider: string;
+  market: string;
+  symbol?: string | null;
+  dataset: string;
+  metadata_status: Exclude<KnowledgeCoverageState, "unknown">;
+  full_text_status: Exclude<KnowledgeCoverageState, "unknown">;
+  event_coverage_status?: "events_present" | "confirmed_none" | "unsupported" | "fetch_failed" | "pending_update" | "partial";
+  target_count: number;
+  metadata_count: number;
+  full_text_count: number;
+  checked_at: string;
+  reasons: string[];
+}
+
+export interface FinancialKnowledgeCoverage {
+  market: string;
+  symbol?: string | null;
+  metadata_target: number;
+  metadata_count: number;
+  metadata_coverage_ratio: number;
+  full_text_count: number;
+  semantic_search_available: boolean;
+  semantic_search_installed: boolean;
+  semantic_search_model: string;
+  semantic_search_reason?: string | null;
+  records: FinancialKnowledgeCoverageRecord[];
+  data_tier: "research_pit";
+  deployment_ready: false;
+}
+
+export type LLMProtocol = "openai_compatible" | "anthropic_messages" | "gemini_generate_content" | "ollama" | "mock";
 
 export interface LLMProviderProfile {
   id: string;
@@ -98,6 +250,25 @@ export interface LLMCredentialSummary {
   updatedAt: string;
   secretPreview: string;
   secretLength: number;
+}
+
+export type WorkBuddyScope = "research.read" | "knowledge.read" | "shadow.read" | "lifecycle.read";
+
+export interface WorkBuddyConnection {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  token_prefix: string;
+  scopes: WorkBuddyScope[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_used_at?: string | null;
+}
+
+export interface WorkBuddyConnectionIssued extends WorkBuddyConnection {
+  /** Returned once only; it is never returned by list APIs. */
+  token: string;
 }
 
 export interface Provenance {
@@ -299,6 +470,30 @@ export interface IngestionJob {
   quality_issues: string[];
   latest_source_time?: string | null;
   error_message?: string | null;
+  market?: string | null;
+  decision_context?: string | null;
+  trade_date?: string | null;
+  cutoff_time?: string | null;
+  candidate_version?: string | null;
+  data_tier?: "formal_pit" | "research_pit" | "test_fixture" | null;
+}
+
+export interface ResearchLifecycleStatus {
+  data_tier: "research_pit";
+  status: "research_only";
+  deployment_ready: false;
+  latest_data_update?: string | null;
+  latest_trade_date?: string | null;
+  next_training?: string | null;
+  last_training?: string | null;
+  last_monitor?: string | null;
+  current_primary?: string | null;
+  current_fallback?: string | null;
+  candidate?: string | null;
+  promotion?: string | null;
+  rollback?: string | null;
+  jobs: IngestionJob[];
+  blocking_reasons: string[];
 }
 
 export interface DataStatus {
@@ -357,6 +552,129 @@ export interface ResearchForecastBundle {
   abstained: boolean;
 }
 
+export interface LongTermScorecardResponse {
+  schema_version: string;
+  data_tier: "research_pit";
+  deployment_ready: false;
+  symbol: string;
+  status: "available" | "unavailable" | "blocked";
+  scorecard?: {
+    as_of_date?: string;
+    long_term_quality?: number | null;
+    growth_stability?: number | null;
+    valuation_position?: number | null;
+    shareholder_return?: number | null;
+    long_term_risk?: number | null;
+    evidence_completeness?: number | null;
+    composite_score?: number | null;
+    status?: string;
+    evidence?: string[];
+    score_type?: string;
+    long_term_model_readings?: Record<string, LongTermModelReading> | null;
+  } | null;
+  long_term_model_readings?: Record<string, LongTermModelReading> | null;
+  model_readings_source_ref?: string | null;
+  model_readings_source_hash?: string | null;
+  long_term_model_registry?: LongTermModelRegistrySummary | null;
+  blocking_reasons: string[];
+  source_ref?: string;
+}
+
+export interface LongTermModelRegistrySummary {
+  schema_version?: string;
+  status?: "available" | "partial" | "unavailable" | string;
+  deployment_ready?: false;
+  source_ref?: string | null;
+  source_hash?: string | null;
+  blocking_reasons?: string[];
+  models?: LongTermModelRegistryEntry[];
+  candidate_models?: LongTermModelCandidate[];
+  candidate_count?: number;
+  candidate_architectures?: string[];
+  artifact_registration_ref?: string | null;
+  artifact_registration_hash?: string | null;
+  artifact_registration_status?: string | null;
+}
+
+export interface LongTermModelRegistryEntry {
+  task: string;
+  architecture?: string | null;
+  variant?: string | null;
+  model_version?: string | null;
+  training_symbol_count?: number | null;
+  training_date_count?: number | null;
+  training_date_range?: Record<string, unknown> | null;
+  input_shape?: number[] | null;
+  feature_count?: number | null;
+  window_sessions?: number | null;
+  feature_contract_version?: string | null;
+  data_tier?: string | null;
+  historical_visibility_assumption?: string | null;
+  snapshot_id?: string | null;
+  snapshot_hash?: string | null;
+  dataset_hash?: string | null;
+  model_hash?: string | null;
+  report_hash?: string | null;
+  fold_hash?: string | null;
+  provider?: string | null;
+  shadow_status?: string | null;
+  holdout_metrics?: Record<string, number | Record<string, number>>;
+  stress_metrics?: Record<string, number | Record<string, number>>;
+  evaluation_metric_status?: {
+    required_count?: number;
+    recorded_count?: number;
+    missing_count?: number;
+    fields?: Record<string, { status?: string; missing_reason?: string | null }>;
+  };
+  turnover?: number | null;
+  capacity_estimate?: number | null;
+  capacity_status?: string | null;
+  status?: string | null;
+  deployment_ready?: false;
+}
+
+export interface LongTermModelCandidate {
+  task: string;
+  architecture?: string | null;
+  variant?: string | null;
+  evaluation_ref?: string | null;
+  model_hash?: string | null;
+  fold_hash?: string | null;
+  training_symbol_count?: number | null;
+  training_date_count?: number | null;
+  training_date_range?: Record<string, unknown> | null;
+  holdout_metrics?: Record<string, number | Record<string, number>>;
+  evaluation_metric_status?: {
+    required_count?: number;
+    recorded_count?: number;
+    missing_count?: number;
+    fields?: Record<string, { status?: string; missing_reason?: string | null }>;
+  };
+  status?: string | null;
+  deployment_ready?: false;
+  is_primary?: boolean;
+}
+
+export interface LongTermModelReading {
+  task?: "excess_return_120d" | "excess_return_240d" | "future_max_drawdown_120d" | "future_max_drawdown_240d" | string;
+  symbol?: string;
+  horizon?: string | null;
+  horizon_days?: number;
+  q10?: number | null;
+  q50?: number | null;
+  q90?: number | null;
+  prediction_interval_width?: number | null;
+  quantile_projection?: string | null;
+  model?: string | null;
+  model_version?: string | null;
+  data_as_of?: string | null;
+  snapshot_id?: string | null;
+  dataset_hash?: string | null;
+  artifact_hash?: string | null;
+  status?: string | null;
+  deployment_ready?: false;
+}
+
 export interface LatestResearchPrediction {
   status: "research_only" | "abstain" | "unavailable";
   data_tier: "research_pit";
@@ -365,6 +683,8 @@ export interface LatestResearchPrediction {
   symbol: string;
   task: "direction_1d" | "direction_5d" | "return_20d" | "drawdown_20d";
   cohort?: string | null;
+  confidence_tier?: "high" | "medium" | "low" | "unavailable";
+  confidence_policy?: Record<string, unknown>;
   input?: {
     trade_date?: string | null;
     decision_context?: string | null;
@@ -448,18 +768,39 @@ export interface ResearchAcceptanceReport {
   status: "complete" | "partial" | "blocked";
   data_tier: "research_pit";
   research_only: true;
+  research_status?: "research_only";
+  artifact_available?: boolean;
+  prediction_status?: "available" | "abstain" | "unavailable";
+  model_status?: "research_only" | "unavailable";
+  evidence_status?: "valid" | "partial" | "missing" | "blocked";
   deployment_ready: false;
   blocking_reasons: string[];
   data?: {
-    market_coverage?: Array<Record<string, unknown>>;
+    market_coverage?: Array<{ market?: string; target_count?: number; successful_target_count?: number; coverage_ratio?: number; event_coverage_status?: string; security_state_status?: string; reasons?: string[] }>;
     provider_counts?: Record<string, number>;
     akshare_success_count?: number;
     baostock_success_count?: number;
     failed_count?: number;
     fallback_count?: number;
+    conflict_count?: number;
+    quality_status_counts?: Record<string, number>;
+    synthetic_count?: number;
+    event_coverage_states?: Record<string, number>;
   };
-  tasks?: Record<string, { status: string; gating_reasons?: string[]; scopes?: Record<string, unknown> }>;
+  cohorts?: Record<string, { status?: string; member_count?: number; eligible_candidate_count?: number }>;
+  tasks?: Record<string, {
+    /** Compatibility alias; use artifact_available and prediction_status. */
+    status: string;
+    artifact_available?: boolean;
+    research_status?: string;
+    prediction_status?: "available" | "abstain" | "unavailable";
+    model_status?: "research_only" | "unavailable";
+    evidence_status?: "valid" | "partial" | "missing" | "blocked";
+    gating_reasons?: string[];
+    scopes?: Record<string, unknown>;
+  }>;
   shadow?: {
+    frozen_count?: number;
     session_count?: number;
     valid_session_count?: number;
     abstain_count?: number;
@@ -493,7 +834,11 @@ export interface PortfolioRiskSnapshot {
   industry_exposure: Record<string, number>;
   position_risk_contributions: Record<string, number>;
   correlation_matrix: Record<string, Record<string, number>>;
+  covariance_matrix?: Record<string, Record<string, number>>;
+  marginal_risk_contributions?: Record<string, number>;
+  liquidity_exposure?: Record<string, number>;
   stress_scenarios: Record<string, number>;
+  stress_scenario_source?: string;
   warnings: string[];
 }
 
@@ -2076,4 +2421,115 @@ export interface TestOfficerAuditRunDetail {
     status: string;
     summary?: string | null;
   }>;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — single-source dashboard snapshot + multi-turn conversation memory
+// + tool-progress events.  Mirror the backend models in
+// service/asset_snapshot.py, domain/conversation.py and agent/models.py so the
+// dashboard tiles, the AI panel and the SSE stream share one typed contract.
+// ---------------------------------------------------------------------------
+
+export interface AssetSnapshotRef {
+  asset_id: string;
+  symbol: string;
+  name: string | null;
+}
+
+export interface MarketObservationFacts {
+  latest_close: number | null;
+  trade_date: string | null;
+  return_20d: number | null;
+  volatility_20d: number | null;
+  sessions: number;
+  source: string;
+}
+
+export interface DirectionalForecastObservation {
+  available: boolean;
+  research_run_id: string | null;
+  tile_text: string;
+  framing_status: string;
+  direction_1d: Record<string, unknown> | null;
+  direction_5d: Record<string, unknown> | null;
+  return_20d: Record<string, unknown> | null;
+  drawdown_20d: Record<string, unknown> | null;
+  gating_reasons: string[];
+}
+
+export interface EvidenceMergeResultView {
+  evidence: Record<string, unknown>[];
+  sources: Record<string, unknown>[];
+  arbitrations: Record<string, unknown>[];
+}
+
+export interface AssetSnapshot {
+  schema_version: string;
+  asset: AssetSnapshotRef;
+  as_of: string;
+  data_as_of: string | null;
+  market_observation: MarketObservationFacts;
+  long_term_status: string;
+  long_term_blocking_reasons: string[];
+  scorecard: Record<string, unknown> | null;
+  model_readings: Record<string, Record<string, unknown>> | null;
+  directional_forecast: DirectionalForecastObservation | null;
+  fact_cards: Record<string, unknown>[];
+  fact_card_coverage_status: string;
+  fact_card_absence_is_evidence: boolean;
+  fact_card_coverage_reasons: string[];
+  line_items: Record<string, unknown>[];
+  line_item_coverage_status: string;
+  line_item_coverage_reasons: string[];
+  evidence_merge_result: EvidenceMergeResultView | null;
+  causal_observations: Record<string, unknown>[];
+}
+
+export type ConversationMessageRole = "user" | "assistant" | "system";
+
+export interface ConversationMessage {
+  id: string;
+  session_id: string;
+  sequence: number;
+  role: ConversationMessageRole;
+  content: string;
+  agent_run_id: string | null;
+  snapshot_as_of: string | null;
+  created_at: string;
+}
+
+export interface ConversationSession {
+  id: string;
+  user_id: string;
+  asset_id: string;
+  as_of: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  messages: ConversationMessage[];
+}
+
+export interface ConversationMessageResponse {
+  run_id: string;
+  run_state: string;
+  conversation: ConversationSession;
+}
+
+export interface ConversationCreateInput {
+  asset_id: string;
+  as_of: string;
+  title?: string;
+}
+
+export interface ConversationMessageInput {
+  content: string;
+  provider_profile_id?: string;
+  user_preference?: "conservative" | "growth" | "short_term" | "fund";
+}
+
+export interface AgentEvent {
+  sequence: number;
+  event_type: string;
+  node_name: string | null;
+  payload: Record<string, unknown>;
 }

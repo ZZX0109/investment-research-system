@@ -11,7 +11,8 @@ from investment_research.training.formal_training import (
 )
 from investment_research.training.models import TrainingSample
 from investment_research.training.numeric_safety import guarded_model_math, require_finite
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime_groups, fit_regime_thresholds, regime_matches
+from investment_research.training.tabular_preprocessing import estimator_pipeline, sample_matrix
 
 
 QUANTILES = (0.1, 0.5, 0.9)
@@ -89,7 +90,7 @@ class FormalReturnTrainingRunner:
             thresholds = fit_regime_thresholds(fold.train)
             quantiles.extend(self._fit_predict(name, fold.train, fold.validation, features))
             targets.extend(_target(item) for item in fold.validation)
-            regimes.extend(classify_market_regime(item, thresholds) for item in fold.validation)
+            regimes.extend(classify_market_regime_groups(item, thresholds) for item in fold.validation)
         return quantiles, targets, regimes
 
     def _fit_predict(self, name, train, evaluate, features):
@@ -113,49 +114,48 @@ class FormalReturnTrainingRunner:
 def _estimator(name, quantile):
     if name == "linear-quantile":
         from sklearn.linear_model import QuantileRegressor
-        from sklearn.preprocessing import FunctionTransformer
-        from sklearn.pipeline import make_pipeline
-        from sklearn.preprocessing import RobustScaler
-        return make_pipeline(
-            RobustScaler(),
-            FunctionTransformer(_clip_scaled_values),
+        return estimator_pipeline(
             QuantileRegressor(quantile=quantile, alpha=0.01, solver="highs"),
+            scale=True,
         )
-    if name == "lightgbm-quantile":
+    if name.startswith("lightgbm-quantile"):
         import lightgbm as lgb
-        return lgb.LGBMRegressor(objective="quantile", alpha=quantile, n_estimators=200, learning_rate=0.05, random_state=42, verbose=-1)
-    if name == "quantile-random-forest":
-        return _QuantileRandomForest(quantile=quantile)
-    if name == "xgboost-quantile":
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(lgb.LGBMRegressor(objective="quantile", alpha=quantile, n_estimators=350 if regularized else 200, learning_rate=0.025 if regularized else 0.05, num_leaves=15 if regularized else 31, min_child_samples=80 if regularized else 20, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1 if regularized else 0.0, reg_lambda=1.0 if regularized else 0.0, random_state=42, verbose=-1, n_jobs=4))
+    if name.startswith("quantile-random-forest"):
+        return estimator_pipeline(_QuantileRandomForest(quantile=quantile, regularized=name.endswith("regularized")))
+    if name.startswith("xgboost-quantile"):
         import xgboost as xgb
-        return xgb.XGBRegressor(
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(xgb.XGBRegressor(
             objective="reg:quantileerror", quantile_alpha=quantile,
-            n_estimators=200, max_depth=5, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8, random_state=42, verbosity=0, n_jobs=1,
-        )
+            n_estimators=350 if regularized else 200, max_depth=3 if regularized else 5,
+            learning_rate=0.03 if regularized else 0.05,
+            min_child_weight=5 if regularized else 1, reg_lambda=2.0 if regularized else 1.0,
+            subsample=0.8, colsample_bytree=0.8, tree_method="hist", max_bin=255,
+            random_state=42, verbosity=0, n_jobs=4,
+        ))
     raise ValueError(f"unsupported return candidate: {name}")
 
 
 def _target(sample):
-    value = sample.labels.future_return_20d
+    # The tradeable label is the primary research target: it begins at the
+    # first eligible post-decision open.  The close-to-close field is retained
+    # only for legacy samples that predate the tradeability-aware label.
+    value = sample.labels.future_return_20d_from_open
     if value is None:
-        value = sample.labels.future_return_20d_from_open
+        value = sample.labels.future_return_20d
     if value is None:
         raise ValueError("return task sample lacks future_return_20d")
     return float(value)
 
 
 def _vector(sample, features):
-    return [float(sample.features.get(name, 0.0)) for name in features]
+    return [sample.features.get(name) for name in features]
 
 
 def _matrix(samples, features):
-    import numpy as np
-    import pandas as pd
-
-    values = np.asarray([_vector(item, features) for item in samples], dtype=float)
-    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
-    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=features)
+    return sample_matrix(samples, features)
 
 
 def _clip_scaled_values(values):
@@ -186,7 +186,7 @@ def _metrics(name, quantiles, targets, fold_hash, *, regimes=None):
     regime_metrics = {}
     if regimes:
         for regime in REGIMES:
-            indexes = [index for index, value in enumerate(regimes) if value == regime]
+            indexes = [index for index, value in enumerate(regimes) if regime_matches(value, regime)]
             if not indexes:
                 continue
             group_quantiles = [quantiles[index] for index in indexes]
@@ -221,12 +221,13 @@ def _ensemble(values):
 
 
 class _QuantileRandomForest:
-    def __init__(self, *, quantile: float) -> None:
+    def __init__(self, *, quantile: float, regularized: bool = False) -> None:
         from sklearn.ensemble import RandomForestRegressor
         self.quantile = quantile
         self.model = RandomForestRegressor(
-            n_estimators=200, max_depth=8, min_samples_leaf=3,
-            random_state=42, n_jobs=1,
+            n_estimators=350 if regularized else 200,
+            max_depth=8, min_samples_leaf=10 if regularized else 3,
+            random_state=42, n_jobs=4,
         )
 
     def fit(self, values, targets):

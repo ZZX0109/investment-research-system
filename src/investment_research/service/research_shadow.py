@@ -39,6 +39,8 @@ class ResearchShadowSession(BaseModel):
     model_artifact_hashes: dict[str, str] = Field(default_factory=dict)
     roster_hash: str | None = Field(default=None, min_length=64, max_length=64)
     model_candidate: str | None = None
+    confidence_tier: Literal["high", "medium", "low", "unavailable"] = "unavailable"
+    confidence_policy: dict[str, Any] = Field(default_factory=dict)
     frozen_prediction: dict[str, Any] = Field(default_factory=dict)
     candidate_predictions: dict[str, Any] = Field(default_factory=dict)
     ensemble_weights: dict[str, float] = Field(default_factory=dict)
@@ -285,6 +287,7 @@ class ResearchShadowController:
         influence_facts: list[str] | None = None, cache_state: str = "fresh",
         provider_conflict: bool = False, out_of_distribution_ratio: float = 0.0,
         roster_hash: str | None = None, model_candidate: str | None = None,
+        confidence_tier: str = "unavailable", confidence_policy: dict[str, Any] | None = None,
         market_regime: str = "unknown", candidate_predictions: dict[str, Any] | None = None,
         ensemble_weights: dict[str, float] | None = None, data_quality_mask: dict[str, float] | None = None,
         event_missing_mask: dict[str, float] | None = None, provider_id: str | None = None,
@@ -318,6 +321,7 @@ class ResearchShadowController:
             influence_facts=influence_facts or [], abstained=bool(reasons),
             abstain_reasons=reasons, cache_state=cache_state,
             roster_hash=roster_hash, model_candidate=model_candidate,
+            confidence_tier=confidence_tier, confidence_policy=confidence_policy or {},
             market_regime=market_regime,
             evidence_valid=(
                 coverage_ratio >= 0.85 and cache_state not in {"expired", "unavailable"}

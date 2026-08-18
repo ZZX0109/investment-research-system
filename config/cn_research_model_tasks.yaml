@@ -4,6 +4,9 @@ market: cn
 active_decision_context: close_confirmed
 decision_time: "15:10 Asia/Shanghai"
 disabled_contexts: [pre_open]
+active_task_profile: long_term_investment_quality
+primary_targets: [future_quality_persistence_4q, future_quality_persistence_8q, excess_return_120d, excess_return_240d, future_max_drawdown_120d, future_max_drawdown_240d]
+short_horizon_tasks_role: auxiliary_observation_only
 tasks:
   direction_1d:
     horizon_sessions: 1

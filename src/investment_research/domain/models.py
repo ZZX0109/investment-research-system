@@ -78,6 +78,15 @@ class Evidence(DomainEntity):
     source_url: str | None = None
     collected_at: datetime
     published_at: datetime | None = None
+    # Explicit public-availability time for PIT Agent evidence.  Legacy
+    # records may omit it; in that case ``published_at`` is the only allowed
+    # visibility fallback, never ``collected_at``.
+    available_at: datetime | None = None
+    # Legacy in-process fixtures historically treated ``collected_at`` as a
+    # verified public time. API ingestion explicitly sets this false when no
+    # publication/availability timestamp is supplied, so formal PIT paths can
+    # reject the ambiguity without breaking old replay records.
+    publication_time_verified: bool = True
     payload_ref: str | None = None
     event_type: str | None = None
     direction: str | None = None
@@ -257,7 +266,11 @@ class PortfolioRiskSnapshot(DomainEntity):
     industry_exposure: dict[str, float] = Field(default_factory=dict)
     position_risk_contributions: dict[str, float] = Field(default_factory=dict)
     correlation_matrix: dict[str, dict[str, float]] = Field(default_factory=dict)
+    covariance_matrix: dict[str, dict[str, float]] = Field(default_factory=dict)
+    marginal_risk_contributions: dict[str, float] = Field(default_factory=dict)
+    liquidity_exposure: dict[str, float] = Field(default_factory=dict)
     stress_scenarios: dict[str, float] = Field(default_factory=dict)
+    stress_scenario_source: str = "illustrative_not_historical"
     warnings: list[str] = Field(default_factory=list)
 
 

@@ -24,6 +24,12 @@ DEFAULT_SOURCE_ALLOWLIST = (
     "sse.com.cn",
     "szse.cn",
 )
+ALLOWED_DOCUMENT_TYPES = {
+    "application/pdf": {".pdf"},
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+    "text/plain": {".txt"},
+    "text/markdown": {".md", ".markdown"},
+}
 
 
 class DocumentService:
@@ -51,11 +57,14 @@ class DocumentService:
         asset_id: str | None = None,
         source_url: str | None = None,
     ) -> DocumentArtifact:
-        if content_type != "application/pdf" or not filename.lower().endswith(".pdf"):
-            raise ValueError("Only PDF documents are accepted")
+        suffix = Path(filename).suffix.lower()
+        allowed_suffixes = ALLOWED_DOCUMENT_TYPES.get(content_type)
+        if allowed_suffixes is None or suffix not in allowed_suffixes:
+            raise ValueError("Only PDF, DOCX, TXT and Markdown documents are accepted")
         if not data or len(data) > MAX_DOCUMENT_BYTES:
-            raise ValueError("PDF is empty or exceeds 20 MB")
-        self._validate_page_count(data)
+            raise ValueError("Document is empty or exceeds 20 MB")
+        if content_type == "application/pdf":
+            self._validate_page_count(data)
         self._validate_source_url(source_url)
         sha = hashlib.sha256(data).hexdigest()
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(filename).name)
@@ -83,7 +92,19 @@ class DocumentService:
     def list_for_user(self, *, user: User) -> list[DocumentArtifact]:
         return self.uow.document_artifacts.list_for_user(str(user.id))
 
+    def delete_for_user(self, document_id: str, *, user: User) -> bool:
+        item = self.get_for_user(document_id, user=user)
+        if item is None:
+            return False
+        key = self._object_key(item.storage_path)
+        self.object_store.delete(key)
+        return self.uow.document_artifacts.delete_for_user(document_id, str(user.id))
+
     def _parse(self, artifact: DocumentArtifact, data: bytes, *, work_path: Path) -> DocumentArtifact:
+        if artifact.content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            return self._parse_docx(artifact, data)
+        if artifact.content_type in {"text/plain", "text/markdown"}:
+            return self._parse_text(artifact, data)
         text = []
         tables = []
         figures = []
@@ -181,12 +202,52 @@ class DocumentService:
             update={
                 "page_count": page_count,
                 "parse_status": status,
-                "text_summary": "\n".join(text)[:6000] or None,
+                "text_summary": "\n".join(text)[:2_000_000] or None,
                 "tables": tables,
                 "figures": figures,
                 "failure_reasons": failures,
             }
         )
+
+    @staticmethod
+    def _parse_text(artifact: DocumentArtifact, data: bytes) -> DocumentArtifact:
+        try:
+            value = data.decode("utf-8-sig").strip()
+        except UnicodeDecodeError as exc:
+            return artifact.model_copy(update={"parse_status": "failed", "failure_reasons": [f"utf8:{exc}"]})
+        return artifact.model_copy(update={
+            "parse_status": "parsed" if value else "failed",
+            "text_summary": value[:2_000_000] or None,
+            "failure_reasons": [] if value else ["empty_text"],
+        })
+
+    @staticmethod
+    def _parse_docx(artifact: DocumentArtifact, data: bytes) -> DocumentArtifact:
+        try:
+            from docx import Document
+
+            document = Document(io.BytesIO(data))
+            values: list[str] = []
+            for paragraph in document.paragraphs:
+                text = paragraph.text.strip()
+                if text:
+                    style = str(getattr(paragraph.style, "name", "") or "")
+                    values.append(f"[{style}] {text}" if style else text)
+            tables: list[dict] = []
+            for table_index, table in enumerate(document.tables):
+                rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                tables.append({"index": table_index, "rows": rows[:200], "row_count": len(rows)})
+                if rows:
+                    values.append("\n".join(" | ".join(row) for row in rows))
+            content = "\n".join(values).strip()
+            return artifact.model_copy(update={
+                "parse_status": "parsed" if content or tables else "failed",
+                "text_summary": content[:2_000_000] or None,
+                "tables": tables,
+                "failure_reasons": [] if content or tables else ["empty_docx"],
+            })
+        except Exception as exc:
+            return artifact.model_copy(update={"parse_status": "failed", "failure_reasons": [f"docx:{exc}"]})
 
     def _validate_page_count(self, data: bytes) -> None:
         try:
@@ -221,3 +282,12 @@ class DocumentService:
             )
         ):
             raise ValueError("Document source URL is not allowlisted")
+
+    @staticmethod
+    def _object_key(storage_path: str) -> str:
+        if storage_path.startswith("file-object://"):
+            return storage_path.removeprefix("file-object://")
+        if storage_path.startswith("s3://"):
+            parts = storage_path.split("/", 3)
+            return parts[3] if len(parts) == 4 else storage_path
+        return storage_path

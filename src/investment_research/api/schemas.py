@@ -61,6 +61,7 @@ class EvidenceCreateRequest(BaseModel):
     source_url: str | None = None
     collected_at: datetime
     published_at: datetime | None = None
+    available_at: datetime | None = None
     payload_ref: str | None = None
     event_type: str | None = None
     direction: str | None = None

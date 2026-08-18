@@ -12,7 +12,11 @@ from investment_research.domain.pit import (
     EventCoverageStatus,
     HistoricalUniverseMembership,
 )
-from investment_research.training.labels import TradeableLabelPolicy, generate_tradeable_labels
+from investment_research.training.labels import (
+    TradeableLabelPolicy,
+    build_label_generation_context,
+    generate_tradeable_labels,
+)
 from investment_research.training.leakage_audit import (
     audit_point_in_time_inputs,
     require_publishable_leakage_report,
@@ -99,6 +103,32 @@ def test_volatility_direction_label_uses_instrument_cost_floor() -> None:
     etf = generate_tradeable_labels(symbol="ETF", as_of_date=start, price_bars=bars, policy=policy, instrument_is_etf=True)
     assert stock.direction_1d == "flat"
     assert etf.direction_1d == "up"
+
+
+def test_execution_5d_excess_label_does_not_require_20d_horizon() -> None:
+    start = date(2026, 1, 1)
+    bars = [_bar(start + timedelta(days=index), 100 + index) for index in range(10)]
+    benchmark = [_bar(start + timedelta(days=index), 100.0) for index in range(10)]
+    context = build_label_generation_context(price_bars=bars, benchmark_bars=benchmark)
+    labels = generate_tradeable_labels(
+        symbol="TEST", as_of_date=start, price_bars=bars, context=context,
+    )
+    assert labels.excess_return_5d is not None
+    assert labels.label_available is False
+    assert labels.label_unavailable_reason == "insufficient_20_session_horizon"
+
+
+def test_long_term_labels_require_mature_240_session_benchmark() -> None:
+    start = date(2026, 1, 1)
+    bars = [_bar(start + timedelta(days=index), 100 + index * 0.2) for index in range(250)]
+    benchmark = [_bar(start + timedelta(days=index), 100 + index * 0.1) for index in range(250)]
+    context = build_label_generation_context(price_bars=bars, benchmark_bars=benchmark)
+    labels = generate_tradeable_labels(symbol="TEST", as_of_date=start, price_bars=bars, context=context)
+    assert labels.long_term_label_available is True
+    assert labels.excess_return_60d is not None
+    assert labels.excess_return_120d is not None
+    assert labels.excess_return_240d is not None
+    assert labels.future_max_drawdown_240d is not None
 
 
 def test_leakage_report_blocks_future_and_unproven_inputs() -> None:

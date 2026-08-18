@@ -57,6 +57,16 @@ class ResearchCard(BaseModel):
     contrary_view: str
 
 
+def _evidence_available_at(evidence: object) -> datetime | None:
+    if getattr(evidence, "publication_time_verified", True) is False:
+        return None
+    return (
+        getattr(evidence, "available_at", None)
+        or getattr(evidence, "published_at", None)
+        or getattr(evidence, "collected_at", None)
+    )
+
+
 def _real_provenance(
     source_name: str, observed_at: datetime | None = None, confidence: float = 0.9
 ) -> Provenance:
@@ -376,51 +386,126 @@ class PortfolioRiskService:
 
     def calculate(self, *, user: User) -> PortfolioRiskSnapshot:
         positions = self.uow.positions.list_for_user(str(user.id))
-        rows = []
-        returns_by_asset = {}
+        rows_by_asset = {}
+        returns_by_asset: dict[str, dict[str, float]] = {}
+        duplicate_trade_dates: set[str] = set()
+        skipped_positions = 0
         for position in positions:
             asset = self.uow.assets.get(str(position.asset_id))
             series = self.uow.price_series.list_for_asset(str(position.asset_id))
             asset_series = next((s for s in series if s.series_role == "asset"), None)
             if asset is None or asset_series is None or not asset_series.points:
+                skipped_positions += 1
                 continue
             pts = sorted(asset_series.points, key=lambda p: p.timestamp)
             value = position.quantity * pts[-1].close
-            closes = [p.close for p in pts[-61:]]
-            rets = [b / a - 1 for a, b in zip(closes, closes[1:]) if a]
-            returns_by_asset[str(asset.id)] = rets
+            asset_id = str(asset.id)
+            daily_closes: dict[str, float] = {}
+            for point in pts[-61:]:
+                trade_date = point.timestamp.date().isoformat()
+                if trade_date in daily_closes:
+                    duplicate_trade_dates.add(asset_id)
+                if point.close > 0:
+                    # A daily risk snapshot is keyed by the actual trading
+                    # date, never by array position or an intraday timestamp.
+                    daily_closes[trade_date] = point.close
+            ordered_dates = sorted(daily_closes)
+            returns_by_asset[asset_id] = {
+                current: daily_closes[current] / daily_closes[previous] - 1
+                for previous, current in zip(ordered_dates, ordered_dates[1:])
+                if daily_closes[previous] > 0
+            }
             preset = UNIVERSE_PRESETS.get(asset.ticker.upper())
-            rows.append((position, asset, value, rets, preset))
+            previous = rows_by_asset.get(asset_id)
+            if previous is None:
+                rows_by_asset[asset_id] = (position, asset, value, preset, asset_series)
+            else:
+                # Multiple lots of one asset form one risk bucket; otherwise
+                # concentration and marginal contribution are overstated.
+                rows_by_asset[asset_id] = (previous[0], asset, previous[2] + value, preset, asset_series)
+        rows = list(rows_by_asset.values())
         total = sum(r[2] for r in rows)
         weights = {str(r[1].id): (r[2] / total if total else 0) for r in rows}
         market = {}
         industry = {}
         contributions = {}
-        for _, asset, _, rets, preset in rows:
+        liquidity_exposure = {}
+        warnings: list[str] = []
+        if skipped_positions:
+            warnings.append(f"positions_without_priced_data:{skipped_positions}")
+        if duplicate_trade_dates:
+            warnings.append("multiple_price_points_collapsed_to_trade_date")
+        for _, asset, value, preset, asset_series in rows:
             w = weights[str(asset.id)]
             m = "unknown" if preset is None else preset.market.value
             i = "unknown" if preset is None else preset.industry_key
             market[m] = market.get(m, 0) + w
             industry[i] = industry.get(i, 0) + w
-            contributions[str(asset.id)] = w * (pstdev(rets) if len(rets) > 1 else 0)
+            asset_returns = returns_by_asset.get(str(asset.id), {})
+            if len(asset_returns) > 1:
+                contributions[str(asset.id)] = w * pstdev(list(asset_returns.values()))
+            else:
+                warnings.append(f"risk_returns_insufficient:{asset.id}:<2")
+            dollar_volume = [p.close * p.volume for p in asset_series.points[-20:] if p.close > 0 and p.volume > 0]
+            if dollar_volume and value >= 0:
+                liquidity_exposure[str(asset.id)] = value / (sum(dollar_volume) / len(dollar_volume))
+            else:
+                warnings.append(f"liquidity_data_missing:{asset.id}")
         matrix = {
             a: {
                 b: self._corr(returns_by_asset[a], returns_by_asset[b])
                 for b in returns_by_asset
+                if len(set(returns_by_asset[a]).intersection(returns_by_asset[b])) >= 2
             }
             for a in returns_by_asset
         }
-        portfolio_returns = []
-        if rows:
-            n = min((len(r[3]) for r in rows), default=0)
-            portfolio_returns = (
-                [
-                    sum(weights[str(r[1].id)] * r[3][-n + j] for r in rows)
-                    for j in range(n)
-                ]
-                if n
-                else []
+        for asset_id, asset_returns in returns_by_asset.items():
+            for other_id, other_returns in returns_by_asset.items():
+                if len(set(asset_returns).intersection(other_returns)) < 2:
+                    warnings.append(f"correlation_data_insufficient:{asset_id}:{other_id}")
+        portfolio_returns: list[float] = []
+        covariance: dict[str, dict[str, float]] = {asset_id: {} for asset_id in returns_by_asset}
+        marginal_contributions: dict[str, float] = {}
+        if returns_by_asset:
+            common_dates = set.intersection(*(set(series) for series in returns_by_asset.values()))
+            if common_dates:
+                for timestamp in sorted(common_dates):
+                    portfolio_returns.append(
+                        sum(weights[asset_id] * series[timestamp] for asset_id, series in returns_by_asset.items())
+                    )
+            else:
+                warnings.append("portfolio_has_no_shared_trade_dates")
+            if len(common_dates) < min((len(series) for series in returns_by_asset.values()), default=0):
+                warnings.append("returns_aligned_on_common_dates_only")
+            if len(common_dates) < 20:
+                warnings.append(f"portfolio_common_trade_dates_insufficient:{len(common_dates)}<20")
+            # Covariance is aligned pair by pair on actual trade dates.  This
+            # remains useful when the whole portfolio has no single shared
+            # date set, while the portfolio return series stays unavailable.
+            for asset_id, asset_returns in returns_by_asset.items():
+                for other_id, other_returns in returns_by_asset.items():
+                    dates = sorted(set(asset_returns).intersection(other_returns))
+                    if len(dates) < 2:
+                        warnings.append(f"covariance_data_insufficient:{asset_id}:{other_id}")
+                        continue
+                    covariance[asset_id][other_id] = self._covariance(
+                        [asset_returns[item] for item in dates],
+                        [other_returns[item] for item in dates],
+                    )
+            portfolio_variance = sum(
+                weights[a] * weights[b] * covariance[a].get(b, 0.0)
+                for a in covariance for b in covariance
             )
+            portfolio_std = math.sqrt(max(portfolio_variance, 0.0))
+            if portfolio_std > 0:
+                for asset_id in covariance:
+                    marginal_contributions[asset_id] = weights[asset_id] * sum(
+                        covariance[asset_id].get(other_id, 0.0) * weights[other_id]
+                        for other_id in covariance
+                    ) / portfolio_std
+        if rows:
+            warnings.append("stress_scenarios_are_illustrative_not_historical_shocks")
+        warnings = list(dict.fromkeys(warnings))
         snapshot = PortfolioRiskSnapshot(
             user_id=user.id,
             as_of=utc_now(),
@@ -434,12 +519,16 @@ class PortfolioRiskService:
             industry_exposure=industry,
             position_risk_contributions=contributions,
             correlation_matrix=matrix,
+            covariance_matrix=covariance,
+            marginal_risk_contributions=marginal_contributions,
+            liquidity_exposure=liquidity_exposure,
             stress_scenarios={
                 "market_minus_10pct": -0.10 * total,
                 "high_volatility": -0.15 * total,
                 "event_shock": -0.08 * total,
             },
-            warnings=[] if rows else ["No priced positions available"],
+            stress_scenario_source="illustrative_not_historical",
+            warnings=(warnings if rows else ["No priced positions available"]),
             provenance=_real_provenance("portfolio-risk"),
         )
         stored = self.uow.portfolio_risks.add(snapshot)
@@ -452,6 +541,10 @@ class PortfolioRiskService:
         return stored
 
     def _corr(self, a, b):
+        if isinstance(a, dict) and isinstance(b, dict):
+            dates = sorted(set(a).intersection(b))
+            a = [a[date] for date in dates]
+            b = [b[date] for date in dates]
         n = min(len(a), len(b))
         if n < 2:
             return 0.0
@@ -466,6 +559,16 @@ class PortfolioRiskService:
             if da * db == 0
             else sum((x - ma) * (y - mb) for x, y in zip(a, b)) / math.sqrt(da * db)
         )
+
+    def _covariance(self, a, b):
+        n = min(len(a), len(b))
+        if n < 2:
+            return 0.0
+        a = a[-n:]
+        b = b[-n:]
+        ma = sum(a) / n
+        mb = sum(b) / n
+        return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (n - 1)
 
     def _drawdown(self, returns):
         value = peak = 1.0
@@ -532,7 +635,8 @@ class ResearchAuditService:
         check(
             "pit_timestamps",
             all(
-                (e.published_at or e.collected_at)
+                _evidence_available_at(e) is not None
+                and _evidence_available_at(e)
                 <= (bundle.snapshot.as_of or bundle.snapshot.captured_at)
                 for e in bundle.evidence
             ),

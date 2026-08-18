@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from uuid import uuid4
 
+import pytest
+
 from investment_research.domain.pit import PITDataQualityStatus, PITDatasetManifest
 from investment_research.training.approval_reports import (
     REQUIRED_SCOPE_REPORTS,
@@ -53,3 +55,14 @@ def test_scope_approval_writer_requires_all_reports_and_drafts_not_ready_manifes
     assert not manifest.deployment_ready
     assert manifest.approval_evidence_hashes == hashes
     uow.close()
+
+
+def test_scope_approval_writer_rejects_pending_report_placeholders(tmp_path) -> None:
+    reports = {name: {"status": "evaluated"} for name in REQUIRED_SCOPE_REPORTS}
+    reports["ablation"] = {"status": "pending_formal_feature_group_execution"}
+
+    with pytest.raises(ValueError, match="pending placeholders"):
+        FormalApprovalReportWriter(tmp_path).write(
+            training_run_id="run-1", market="cn", decision_context="close_confirmed",
+            task="drawdown_20d", reports=reports,
+        )

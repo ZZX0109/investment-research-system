@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from investment_research.domain.trusted_market import IngestionJob, JobType
@@ -26,6 +26,18 @@ class IngestionJobService:
         idempotency_key: str | None = None,
         priority: int = 100,
         scheduled_for: datetime | None = None,
+        market: str | None = None,
+        decision_context: str | None = None,
+        trade_date: date | None = None,
+        cutoff_time: datetime | None = None,
+        market_snapshot_id: str | None = None,
+        market_snapshot_hash: str | None = None,
+        dataset_hash: str | None = None,
+        training_run_id: str | None = None,
+        candidate_version: str | None = None,
+        report_hash: str | None = None,
+        rollback_version: str | None = None,
+        data_tier: str | None = None,
     ) -> IngestionJob:
         if job_type == "minute_collection" and not get_app_settings().minute_collection_enabled:
             raise ValueError("minute collection is disabled until licensed source, latency, completeness, and failover gates pass")
@@ -43,6 +55,18 @@ class IngestionJobService:
                 priority=priority,
                 created_at=now,
                 scheduled_for=scheduled_for or now,
+                market=market,
+                decision_context=decision_context,
+                trade_date=trade_date,
+                cutoff_time=cutoff_time,
+                market_snapshot_id=market_snapshot_id,
+                market_snapshot_hash=market_snapshot_hash,
+                dataset_hash=dataset_hash,
+                training_run_id=training_run_id,
+                candidate_version=candidate_version,
+                report_hash=report_hash,
+                rollback_version=rollback_version,
+                data_tier=data_tier,
             )
         )
 
@@ -111,9 +135,28 @@ class IngestionJobService:
             )
         )
 
-    def drain(self, handlers: dict[str, JobHandler], *, limit: int = 20) -> dict[str, int]:
+    def drain(
+        self,
+        handlers: dict[str, JobHandler],
+        *,
+        limit: int = 20,
+        allowed_job_types: set[str] | None = None,
+    ) -> dict[str, int]:
+        """Run a bounded set of durable jobs owned by one worker role.
+
+        ``allowed_job_types`` is important when the same durable queue is
+        shared by the scheduler, collection worker and long-running training
+        worker: a worker must leave jobs owned by another role queued instead
+        of marking them as unsupported.
+        """
         result = {"succeeded": 0, "degraded": 0, "failed": 0, "skipped": 0}
-        for queued in self.uow.ingestion_jobs.runnable(self.clock(), limit=limit):
+        runnable = self.uow.ingestion_jobs.runnable(
+            self.clock(),
+            limit=max(limit, 100) if allowed_job_types else limit,
+        )
+        if allowed_job_types is not None:
+            runnable = [item for item in runnable if item.job_type in allowed_job_types][:limit]
+        for queued in runnable:
             item = self.mark_running(queued)
             if item.state == "cancelled":
                 result["skipped"] += 1

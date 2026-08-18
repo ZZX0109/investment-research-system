@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, X } from "lucide-react";
+import { Check, Plus, Search, X } from "lucide-react";
 import type { Asset } from "../../api/types";
 import { useCreateAssetMutation, useLatestResearchUniverseQuery } from "../../hooks/useWorkbenchQueries";
 import { useI18n } from "../../i18n";
@@ -29,7 +29,7 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
       const named = known.get(item.symbol);
       return {
         ticker: item.symbol,
-        name: named?.name ?? item.name,
+        name: named?.name ?? (item.name && item.name !== item.symbol ? item.name : l("名称待补充", "Name pending")),
         exchange: item.exchange,
         assetType: item.asset_type,
         frozenResultAvailable: item.frozen_result_available,
@@ -37,8 +37,14 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
         rowCount: item.row_count,
         provider: item.provider
       } satisfies CNResearchCandidate;
+    }).sort((left, right) => {
+      if (left.frozenResultAvailable !== right.frozenResultAvailable) return left.frozenResultAvailable ? -1 : 1;
+      const leftNamed = !left.name.includes("待补充") && left.name !== "Name pending";
+      const rightNamed = !right.name.includes("待补充") && right.name !== "Name pending";
+      if (leftNamed !== rightNamed) return leftNamed ? -1 : 1;
+      return left.ticker.localeCompare(right.ticker);
     });
-  }, [mode, researchUniverse.data]);
+  }, [l, mode, researchUniverse.data]);
   const equityCount = universe.filter((item) => item.assetType === "equity").length;
   const etfCount = universe.filter((item) => item.assetType === "etf").length;
 
@@ -127,8 +133,12 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
             placeholder={l("输入名称或证券代码，例如：贵州茅台、600519", "Search name or ticker, e.g. Kweichow Moutai or 600519")}
             value={query}
             onChange={(event) => {
-              setQuery(event.target.value);
-              setSelectedCandidate(null);
+              const value = event.target.value;
+              setQuery(value);
+              const normalized = value.trim().toLowerCase();
+              setSelectedCandidate(
+                universe.find((candidate) => candidate.ticker.toLowerCase() === normalized || candidate.name.toLowerCase() === normalized) ?? null
+              );
             }}
           />
         </label>
@@ -140,6 +150,10 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
           )}
         </p>
 
+        <div className="asset-candidate-list__summary">
+          <span>{query.trim() ? l(`找到 ${candidates.length} 个结果`, `${candidates.length} results`) : l("优先显示已有研究结果和名称完整的标的", "Showing assets with results and complete names first")}</span>
+          <small>{l("点击一行即可选中", "Click a row to select")}</small>
+        </div>
         <div className="asset-candidate-list" role="listbox" aria-label={l("可添加的研究对象", "Available research assets")}>
           {candidates.map((candidate) => {
             const alreadyAdded = assets.some((asset) => asset.ticker === candidate.ticker);
@@ -158,10 +172,10 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
                   <small>{candidate.name}</small>
                 </span>
                 <span className="asset-candidate__meta">
-                  {candidate.exchange} · {term(candidate.assetType)}
-                  {candidate.frozenResultAvailable ? ` · ${l("已有冻结结果", "Frozen result available")}` : ` · ${l("暂无冻结模型结果", "No frozen model result")}`}
-                  {candidate.rowCount ? ` · ${candidate.rowCount.toLocaleString()} ${l("日线", "daily bars")}` : ""}
-                  {alreadyAdded ? ` · ${l("已添加", "Added")}` : ""}
+                  <span>{candidate.exchange} · {term(candidate.assetType)}</span>
+                  <span>{candidate.frozenResultAvailable ? l("已有研究结果", "Research result available") : l("历史行情可用", "Price history available")}{candidate.rowCount ? ` · ${candidate.rowCount.toLocaleString()} ${l("日线", "daily bars")}` : ""}</span>
+                  {alreadyAdded ? <span>{l("已添加", "Added")}</span> : null}
+                  <i className="asset-candidate__check" aria-hidden="true"><Check size={14} /></i>
                 </span>
               </button>
             );

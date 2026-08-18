@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 
 from investment_research.training.models import PreparedPriceBar
-from investment_research.training.validation import build_walk_forward_folds, infer_market_regime
+from investment_research.training.validation import build_period_walk_forward_folds, build_walk_forward_folds, infer_market_regime
 
 
 def _reference_bar(trade_date: date, close_value: float, *, symbol: str = "SPY") -> PreparedPriceBar:
@@ -35,6 +35,23 @@ def test_walk_forward_folds_are_time_ordered_and_non_overlapping() -> None:
     assert folds[0].train_end < folds[0].validation_start
     assert folds[1].train_start > folds[0].train_start
     assert folds[0].regime in {"bull", "bear", "high_vol", "range", "unknown"}
+
+
+def test_period_walk_forward_folds_keep_period_windows_and_real_horizon_metadata() -> None:
+    dates = [date(2020 + index // 4, (index % 4) * 3 + 3, 28) for index in range(40)]
+    folds = build_period_walk_forward_folds(
+        dates,
+        train_periods=8,
+        validation_periods=2,
+        purge_periods=1,
+        embargo_periods=1,
+        label_horizon_days=960,
+    )
+    assert folds
+    assert folds[0].label_horizon_days == 960
+    assert folds[0].purge_days == 1
+    assert folds[0].embargo_days == 1
+    assert folds[0].train_end < folds[0].validation_start
 
 
 def test_high_vol_regime_is_detected_before_bear_drawdown() -> None:

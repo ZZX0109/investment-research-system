@@ -43,6 +43,10 @@ class ProviderConfig(BaseModel):
     supports_historical_pit: bool = False
     supports_revisions: bool = False
     historical_time_fields: list[str] = Field(default_factory=list)
+    # Formal scheduling must use an exchange calendar reference rather than a
+    # weekday approximation.  The reference is deployment configuration, not
+    # a free-data fallback.
+    exchange_calendar_ref: str | None = None
 
 
 class CacheTtlConfig(BaseModel):

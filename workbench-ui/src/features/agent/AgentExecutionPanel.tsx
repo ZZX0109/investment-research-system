@@ -1,4 +1,4 @@
-import { Ban, BrainCircuit, CheckCircle2, FileCheck2, Play, ScanSearch, ShieldAlert } from "lucide-react";
+import { Ban, BrainCircuit, CheckCircle2, FileCheck2, Play, ScanSearch, ShieldAlert, Sparkles } from "lucide-react";
 import { useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -34,79 +34,53 @@ export function AgentExecutionPanel() {
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const isAnyResearchFetching = latestResearch.isFetching || Object.values(taskResults).some((query) => query.isFetching);
   const activeIndex = agentResult?.current_node ? nodes.indexOf(agentResult.current_node) : -1;
-  const isResearchMode = mode === "research";
 
   return (
     <Panel
       eyebrow={l("研究结果", "Research result")}
-      title={l("20 日最大回撤风险研究", "20-day maximum drawdown research")}
-      actions={!isResearchMode ? (
+      title={l("今日研究概览", "Today's research overview")}
+      actions={(
         <div className="panel-actions">
         <button
           className="icon-button icon-button--primary"
           type="button"
           disabled={!assetId || run.isPending || isAnyResearchFetching}
           onClick={() => {
-            if (isResearchMode) {
-              setRefreshMessage(l("正在刷新四项研究结果…", "Refreshing all four research tasks..."));
-              void Promise.all([
-                latestResearch.refetch(),
-                ...Object.values(taskResults).map((query) => query.refetch()),
-              ]).then(() => setRefreshMessage(l("研究结果已更新（仍按安全门禁显示）", "Research results updated; safety gates still apply."))).catch(() => setRefreshMessage(l("刷新失败，请稍后重试", "Refresh failed; try again later.")));
-            } else if (assetId) {
-              run.mutate({
-                asset_id: assetId,
-                task_text: "Evaluate 20-trading-day drawdown risk using point-in-time evidence and abstain when trust gates fail.",
-                as_of: new Date().toISOString(),
-                provider_profile_id: llmProfiles.data?.find((profile) => profile.enabled)?.id,
-                user_preference: "conservative"
-              });
-            }
+            setRefreshMessage(l("正在读取四项最新研究结果…", "Refreshing the four research tasks..."));
+            void Promise.all([
+              latestResearch.refetch(),
+              ...Object.values(taskResults).map((query) => query.refetch()),
+            ]).then(() => setRefreshMessage(l("研究结果已更新。参考读数会同时显示数据质量和模型分歧。", "Research results updated. Reference readings include data quality and model disagreement."))).catch(() => setRefreshMessage(l("刷新失败，请稍后重试", "Refresh failed; try again later.")));
           }}
         >
           <Play size={16} aria-hidden="true" />
           <span>
-            {isResearchMode
-                ? isAnyResearchFetching
-                ? l("正在读取…", "Loading...")
-                : l("刷新四项研究结果", "Refresh four research tasks")
-              : run.isPending
-                ? l("正在生成风险研究…", "Generating research...")
-                : l("生成风险研究", "Generate risk research")}
+            {isAnyResearchFetching ? l("正在读取…", "Loading...") : l("刷新今日研究", "Refresh today's research")}
           </span>
         </button>
-        {isResearchMode && llmProfiles.data?.some((profile) => profile.enabled) ? <button
+        <button
           className="ghost-button"
           type="button"
-          disabled={!assetId || run.isPending}
-          onClick={() => assetId && run.mutate({
-            asset_id: assetId,
-            task_text: "Organize a read-only research explanation from the frozen point-in-time evidence and model output. Use only approved research functions. Do not provide trading instructions.",
-            as_of: new Date().toISOString(),
-            provider_profile_id: llmProfiles.data?.find((profile) => profile.enabled)?.id,
-            user_preference: "conservative",
-          })}
-        >{run.isPending ? l("调用中…", "Calling...") : l("AI 研究解读", "AI explanation")}</button> : null}
+          disabled={!assetId}
+          onClick={() => document.getElementById("research-assistant")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        ><Sparkles size={15} aria-hidden="true" /> {llmProfiles.data?.some((profile) => profile.enabled) ? l("AI 解读当前结果", "Explain with AI") : l("了解 AI 解读", "About AI explanation")}</button>
         </div>
-      ) : null}
+      )}
     >
       <div className="research-dashboard-intro">
         <div className="research-dashboard-intro__status">
           <span className="eyebrow">{l("当前研究结论", "Current research conclusion")}</span>
-          <strong>{!selectedAsset ? l("请选择一个研究对象", "Select a research asset") : latestResearch.data?.status === "abstain" && latestResearch.data.diagnostic_output ? l("研究观察（非正式）", "Research observation (non-formal)") : latestResearch.data?.status === "abstain" ? l("暂不判断", "No conclusion for now") : latestResearch.data?.status === "research_only" ? l("可查看研究结果", "Research result available") : l("尚无可用结果", "No usable result")}</strong>
+          <strong>{!selectedAsset ? l("请选择一个研究对象", "Select a research asset") : latestResearch.data?.status === "abstain" && latestResearch.data.diagnostic_output ? l("谨慎观察", "Observe cautiously") : latestResearch.data?.status === "abstain" ? l("等待足够研究数据", "Awaiting enough research data") : latestResearch.data?.status === "research_only" ? l("研究参考已就绪", "Research reference available") : l("尚无可用结果", "No usable result")}</strong>
         </div>
-        <p>{!selectedAsset ? l("在左侧选择股票或 ETF，仪表盘会显示该标的的收盘后研究结果。", "Select a stock or ETF on the left to view its post-close research result.") : latestResearch.data?.status === "abstain" ? l(`当前模型分歧为 ${Math.round((latestResearch.data.model?.model_disagreement ?? 0) * 100)}%，超过 25% 安全阈值，因此只展示候选读数，不输出最终结论。`, `Model disagreement is ${Math.round((latestResearch.data.model?.model_disagreement ?? 0) * 100)}%, above the 25% safety threshold. Candidate readings are shown, but no final conclusion is issued.`) : l("这里展示研究概率、收益区间和风险状态。它只研究未来 20 个交易日发生超过 8% 回撤的概率；它不是买卖信号，证据不足时会明确告诉你暂不判断。", "This dashboard shows research probabilities, return ranges, and risk status. It studies the probability of a drawdown greater than 8% over 20 trading days; it is not a trade signal, and it will say so clearly when evidence is insufficient.")}</p>
-        <p className="research-purpose-legacy">它只研究未来 20 个交易日发生超过 8% 回撤的概率</p>
+        <p>{!selectedAsset ? l("在左侧选择股票或 ETF，仪表盘会显示该标的的收盘后研究结果。", "Select a stock or ETF on the left to view its post-close research result.") : latestResearch.data?.status === "abstain" ? l(`参考读数仍会完整展示；当前模型意见存在分歧，请把它作为观察线索，而不是单一结论。`, `Reference readings remain visible; model views differ, so use them as observation cues rather than one definitive conclusion.`) : l("这里先用通俗语言说明近期风险和需要观察的证据；专业数值可在卡片内展开。", "This view first explains near-term risk and evidence to watch in plain language; expand each card for technical values.")}</p>
       </div>
-      {isResearchMode && refreshMessage ? <p className="research-refresh-feedback" role="status">{refreshMessage}</p> : null}
-      {isResearchMode ? (
-        <ResearchTaskGrid results={{ ...taskResults, drawdown_20d: latestResearch }} />
-      ) : null}
-      {isResearchMode ? <ResearchPriceChart series={priceSeries.data} /> : null}
+      {refreshMessage ? <p className="research-refresh-feedback" role="status">{refreshMessage}</p> : null}
+      <ResearchTaskGrid results={{ ...taskResults, drawdown_20d: latestResearch }} />
+      <ResearchPriceChart series={priceSeries.data} />
       <details className="research-technical-details">
         <summary>{l("查看研究流程和技术说明", "View research workflow and technical details")}</summary>
         <div className="agent-purpose">
-          <p>{l("系统读取每日收盘后冻结的 Research PIT 快照，分别运行四个独立任务，并在门禁不满足时拒答。", "The system reads a frozen post-close Research PIT snapshot, runs four independent tasks, and abstains when gates are not met.")}</p>
+          <p>{l("系统读取每日收盘后冻结的数据，分别计算方向、收益与回撤，并保留每个读数的来源和质量说明。", "The system reads data frozen after each close, calculates direction, return and drawdown separately, and retains source and quality context for every reading.")}</p>
           <div className="agent-purpose__steps">
           <div>
             <ScanSearch size={17} aria-hidden="true" />
@@ -118,18 +92,18 @@ export function AgentExecutionPanel() {
           </div>
           <div>
             <FileCheck2 size={17} aria-hidden="true" />
-            <span><strong>{l("给出结果", "Return a result")}</strong>{l("输出风险概率和固定报告；证据不足时明确拒答。", "Return a risk probability and fixed report, or abstain when evidence is insufficient.")}</span>
+            <span><strong>{l("呈现参考", "Present references")}</strong>{l("展示读数和区间，同时说明数据日期与仍需观察的条件。", "Show readings and ranges, alongside data dates and conditions that still need monitoring.")}</span>
           </div>
           </div>
         </div>
       </details>
-      {isResearchMode ? (
-        <ResearchRiskInputOutput
-          result={latestResearch.data}
-          isLoading={latestResearch.isFetching}
-          ticker={selectedAsset?.ticker}
-        />
-      ) : (
+      <ResearchRiskInputOutput
+        result={latestResearch.data}
+        isLoading={latestResearch.isFetching}
+        ticker={selectedAsset?.ticker}
+      />
+      {/* Legacy non-research run rendering is retained below for backwards-compatible routes. */}
+      {false && (
         <>
       {!["research", "real"].includes(mode) ? <InlineNotice tone="warn" title={l("非权威模式", "Non-authoritative mode")} body={l("本次固定数据运行与正式研究证据隔离。", "This seeded run remains isolated from research evidence.")} /> : null}
       {run.error ? <InlineNotice tone="error" title={l("智能研究失败", "Agent failed")} body={run.error.message} /> : null}
@@ -188,14 +162,30 @@ function ResearchTaskGrid({ results }: { results: Record<ResearchTaskKey, Return
       const isDiagnostic = result?.status === "abstain";
       const direction = output?.calibrated_probability && typeof output.calibrated_probability === "object" ? output.calibrated_probability : undefined;
       const probability = typeof output?.calibrated_probability === "number" ? output.calibrated_probability : output?.raw_probability;
-      const statusLabel = result?.status === "research_only" ? l("研究结果", "Research") : result?.status === "abstain" && result.diagnostic_output ? l("研究观察", "Observation") : result?.status === "abstain" ? l("暂不判断", "Abstain") : l("不可用", "Unavailable");
+      const statusLabel = result?.status === "research_only" ? l("研究参考", "Research reference") : result?.status === "abstain" && result.diagnostic_output ? l("谨慎参考", "Cautious reference") : result?.status === "abstain" ? l("数据待补充", "Data pending") : l("暂不可用", "Unavailable");
       return <article className={`research-task-card research-task-card--${result?.status ?? "unavailable"}`} key={task}>
         <div className="research-task-card__head"><strong>{labels[task]}</strong><span className="tag">{statusLabel}</span></div>
-        {task.startsWith("direction") && direction ? <div className="research-task-card__value"><b>{l("上涨", "Up")} {Math.round((direction.up ?? 0) * 100)}%</b><span>{l("下跌", "Down")} {Math.round((direction.down ?? 0) * 100)}% · {l("横盘", "Flat")} {Math.round((direction.flat ?? 0) * 100)}%</span></div> : null}
-        {task === "return_20d" && output?.p10 != null ? <div className="research-task-card__value"><b>P50 {formatPercent(output.p50)}</b><span>P10 {formatPercent(output.p10)} · P90 {formatPercent(output.p90)}</span></div> : null}
-        {task === "drawdown_20d" && probability != null ? <div className="research-task-card__value"><b>{Math.round(probability * 100)}%</b><span>{term(output?.risk_level ?? "unavailable")} {isDiagnostic ? l("候选值", "candidate") : ""}</span></div> : null}
+        {task.startsWith("direction") && direction ? (
+          <>
+            <div className="research-task-card__plain"><b>{direction.up != null && direction.up > (direction.down ?? 0) ? l("近期走势偏强", "Near-term trend is firmer") : direction.down != null && direction.down > (direction.up ?? 0) ? l("近期走势偏弱", "Near-term trend is softer") : l("近期走势分歧较大", "Near-term views are mixed")}</b><span>{l("仅作短期观察，不代表长期上涨判断。", "For short-term observation only; not a long-term return view.")}</span></div>
+            <details className="research-task-card__technical"><summary>{l("查看专业数值", "View technical values")}</summary><div className="research-task-card__value"><b>{l("上涨", "Up")} {Math.round((direction.up ?? 0) * 100)}%</b><span>{l("下跌", "Down")} {Math.round((direction.down ?? 0) * 100)}% · {l("横盘", "Flat")} {Math.round((direction.flat ?? 0) * 100)}%</span></div></details>
+          </>
+        ) : null}
+        {task === "return_20d" && output?.p10 != null ? (
+          <>
+            <div className="research-task-card__plain"><b>{output.p50 != null && output.p50 >= 0 ? l("近期收益倾向偏正", "Near-term return tendency is positive") : l("近期收益倾向偏弱", "Near-term return tendency is softer")}</b><span>{l("这是超短期研究参考，不等于长期回报承诺。", "A short-horizon research reference, not a long-term return promise.")}</span></div>
+            <details className="research-task-card__technical"><summary>{l("查看专业区间", "View technical range")}</summary><div className="research-task-card__value"><b>P50 {formatPercent(output.p50)}</b><span>P10 {formatPercent(output.p10)} · P90 {formatPercent(output.p90)}</span></div></details>
+          </>
+        ) : null}
+        {task === "drawdown_20d" && probability != null ? (
+          <>
+            <div className="research-task-card__plain"><b>{probability >= 0.65 ? l("近期波动风险偏高", "Near-term volatility risk is elevated") : probability >= 0.4 ? l("近期波动风险需要观察", "Near-term volatility risk needs watching") : l("近期波动风险暂未偏高", "Near-term volatility risk is not elevated")}</b><span>{l("请结合数据日期、模型分歧和后续公告理解。", "Consider the data date, model disagreement and later announcements.")}</span></div>
+            <details className="research-task-card__technical"><summary>{l("查看专业概率", "View technical probability")}</summary><div className="research-task-card__value"><b>{Math.round(probability * 100)}%</b><span>{term(output?.risk_level ?? "unavailable")} {isDiagnostic ? l("候选值", "candidate") : ""}</span></div></details>
+          </>
+        ) : null}
         {!output || (isDiagnostic && !direction && probability == null && task !== "return_20d") ? <p className="research-task-card__reason">{result?.abstain_reasons?.[0] ? explainReason(result.abstain_reasons[0], l) : l("当前没有可展示的研究产物。", "No research artifact is available.")}</p> : null}
-        {isDiagnostic ? <small>{l("正式门禁未通过；以上是带来源标注的研究观察值，不是交易结论", "Formal gate not passed; this is a sourced research observation, not a trading conclusion")}</small> : null}
+        {isDiagnostic ? <small>{l("数据质量或模型意见仍有差异；以上保留为可追溯的参考读数。", "Data quality or model views still differ; this remains a traceable reference reading.")}</small> : null}
+        {result?.confidence_tier ? <small>{l("模型读数差异", "Model reading spread")}: {readingSpreadLabel(result.confidence_tier, l)}</small> : null}
       </article>;
     })}
   </div>;
@@ -354,13 +344,13 @@ function ResearchRiskInputOutput({
       : displayProbability >= 0.4
         ? l("风险中等", "Moderate risk")
         : l("风险相对较低", "Relatively lower risk");
-  const confidence = disagreement == null
+  const readingSpread = disagreement == null
     ? l("待确认", "Pending")
     : disagreement >= 0.35
-      ? l("较低", "Low")
+      ? l("差异较大", "Wide spread")
       : disagreement >= 0.2
-        ? l("中等", "Moderate")
-        : l("较高", "Higher");
+        ? l("差异中等", "Moderate spread")
+        : l("差异较小", "Narrow spread");
   const abstainExplanation = explainResearchAbstention(
     [...result.abstain_reasons, ...result.blocking_reasons],
     result.model?.model_disagreement,
@@ -390,8 +380,8 @@ function ResearchRiskInputOutput({
       </details>
       <section>
         <div className="story-card__header">
-          <strong>{l("研究结论（仅供参考）", "Research conclusion (for reference only)")}</strong>
-          <span className="tag">{result.status === "research_only" ? l("研究结果", "Research result") : l("谨慎参考", "Caution")}</span>
+          <strong>{l("研究参考与观察建议", "Research reference and what to watch")}</strong>
+          <span className="tag">{result.status === "research_only" ? l("研究参考", "Research reference") : l("谨慎参考", "Cautious reference")}</span>
         </div>
         {displayProbability != null ? (
           <>
@@ -400,24 +390,27 @@ function ResearchRiskInputOutput({
               <strong>{riskTendency}</strong>
               <p>
                 {l(
-                  `模型估计发生超过 8% 回撤的参考概率为 ${Math.round(displayProbability * 100)}%。${
+                  `${riskTendency}。${
                     disagreement != null && disagreement >= 0.25
-                      ? "不同模型看法差异较大，因此可信度偏低，建议结合下一次收盘数据继续观察。"
-                      : "当前模型意见相对一致，但仍应结合价格走势和后续信息观察。"
-                  }`,
-                  `The model estimates a ${Math.round(displayProbability * 100)}% reference probability of a drawdown greater than 8%. ${
+                      ? "不同模型读数差异较大，建议结合下一次收盘数据继续观察。"
+                      : "当前模型读数相对接近，但仍应结合价格走势、数据日期和后续信息观察。"
+                  }这只是未来 20 个交易日的风险参考，不代表长期经营或收益结论。`,
+                  `${riskTendency}. ${
                     disagreement != null && disagreement >= 0.25
-                      ? "Models disagree materially, so confidence is limited; review again after the next close."
-                      : "Models are relatively aligned, but the result should still be monitored with subsequent prices and evidence."
-                  }`,
+                      ? "Models differ materially; review again after the next close."
+                      : "Models are relatively aligned, but monitor subsequent prices, data dates and evidence."
+                  } This is a next-20-session risk reference, not a long-term business or return conclusion.`,
                 )}
               </p>
             </div>
-            <div className="research-result-metrics">
-              <Metric label={l("参考概率", "Reference probability")} value={`${Math.round(displayProbability * 100)}%`} />
-              <Metric label={l("风险倾向", "Risk tendency")} value={riskTendency} />
-              <Metric label={l("结果可信度", "Confidence")} value={confidence} />
-            </div>
+            <details className="research-technical-details">
+              <summary>{l("查看专业数值与模型分歧", "View technical value and model disagreement")}</summary>
+              <div className="research-result-metrics">
+                <Metric label={l("参考概率", "Reference probability")} value={`${Math.round(displayProbability * 100)}%`} />
+                <Metric label={l("风险倾向", "Risk tendency")} value={riskTendency} />
+                <Metric label={l("模型读数差异", "Model reading spread")} value={readingSpread} />
+              </div>
+            </details>
             <div className="research-scenario-grid">
               <div className="research-scenario research-scenario--optimistic">
                 <span>{l("较乐观情景", "More optimistic scenario")}</span>
@@ -439,9 +432,15 @@ function ResearchRiskInputOutput({
             <p className="research-reference-disclaimer">
               {l("基于免费公开数据生成，仅供研究参考，不构成投资建议或交易指令。", "Generated from free public data for research reference only; not investment advice or a trading instruction.")}
             </p>
+            <div className="research-next-actions" aria-label={l("下一步建议", "Suggested next actions")}>
+              <strong>{l("接下来可以怎么做", "What you can do next")}</strong>
+              <span>{l("下一个交易日收盘后刷新结果", "Refresh after the next trading-day close")}</span>
+              <span>{l("在右侧查看前向验证与同池标的", "Review forward validation and comparable research assets on the right")}</span>
+              <span>{l("若仍有疑问，可让 AI 助手解释数据与模型差异", "Ask the AI assistant to explain the data and model differences")}</span>
+            </div>
             {result.status !== "research_only" ? (
               <details className="research-gate-details">
-                <summary>{l("为什么这次结果只能谨慎参考？", "Why is this result cautionary?")}</summary>
+                <summary>{l("为什么本次需要继续观察？", "Why does this reading need more observation?")}</summary>
                 <p><strong>{abstainExplanation.title}</strong></p>
                 <p>{abstainExplanation.body}</p>
                 <p>{l(
@@ -459,6 +458,16 @@ function ResearchRiskInputOutput({
   );
 }
 
+function readingSpreadLabel(
+  tier: string,
+  l: (zh: string, en: string) => string,
+) {
+  if (tier === "high") return l("差异较小", "Narrow spread");
+  if (tier === "medium") return l("差异中等", "Moderate spread");
+  if (tier === "low") return l("差异较大", "Wide spread");
+  return l("待确认", "Pending");
+}
+
 function explainResearchAbstention(
   reasons: string[],
   disagreement: number | undefined,
@@ -468,24 +477,24 @@ function explainResearchAbstention(
   if (uniqueReasons.includes("risk_probability_disagreement_above_0.25")) {
     const difference = disagreement == null ? "" : l(`当前模型分歧为 ${(disagreement * 100).toFixed(1)}%，`, ` Current model disagreement is ${(disagreement * 100).toFixed(1)}%,`);
     return {
-      title: l("模型分歧过大，暂不输出风险概率", "Model disagreement is too high; risk probability withheld"),
+      title: l("模型读数差异较大，请继续观察", "Model readings differ; continue observing"),
       body: l(
-        `${difference}超过研究模式 25% 的安全阈值。系统保留输入和候选模型记录，但不会把不一致的结果伪装成可靠结论。`,
-        `${difference}This exceeds the 25% research safety threshold. The system preserves the inputs and candidate records, but will not present an inconsistent result as reliable.`,
+        `${difference}超过研究模式 25% 的参考阈值。页面仍展示风险读数，但建议结合下一次收盘数据和价格走势观察。`,
+        `${difference}This exceeds the 25% research reference threshold. The page still shows the risk reading, but it should be reviewed with the next close and price trend.`,
       ),
     };
   }
   if (uniqueReasons.includes("research_roster_missing")) {
     return {
-      title: l("该标的尚未生成可验证的模型结果", "No verified model result exists for this asset"),
+      title: l("该标的尚未生成完整模型结果", "No complete model result exists for this asset"),
       body: l(
-        "当前运行缺少对应任务的研究模型清单，因此系统不会使用旧模型或其他标的的结果代替。请在完成新的研究运行后再查看。",
-        "This run has no research model roster for the task, so the system will not substitute an old model or another asset's result. Run research again and then check the result.",
+        "当前运行缺少对应任务的研究模型清单。系统将保留数据状态和风险提示，待下一次研究更新后补充完整读数。",
+        "This run lacks the task's research model roster. The system keeps its data status and risk note, then supplements the reading after the next research update.",
       ),
     };
   }
   return {
-    title: l("证据不足，暂不生成结论", "Insufficient evidence; no conclusion generated"),
-    body: uniqueReasons.map((reason) => reason.replaceAll("_", " ")).join("；") || l("模型门禁未通过。", "The model gate did not pass."),
+    title: l("数据完整度有限，结果仅作风险提示", "Data completeness is limited; use this as a risk note only"),
+    body: uniqueReasons.map((reason) => reason.replaceAll("_", " ")).join("；") || l("当前读数需要结合后续数据观察。", "The current reading should be reviewed with subsequent data."),
   };
 }

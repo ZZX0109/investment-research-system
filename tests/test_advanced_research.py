@@ -117,6 +117,160 @@ def test_portfolio_risk_uses_user_positions_and_real_prices(tmp_path) -> None:
     assert snapshot.stress_scenarios["market_minus_10pct"] < 0
 
 
+def test_portfolio_risk_does_not_turn_missing_history_or_volume_into_zero_risk(tmp_path) -> None:
+    uow, user, asset, series = build_context(tmp_path, point_count=1)
+    series = series.model_copy(update={
+        "points": [series.points[0].model_copy(update={"volume": 0.0})],
+    })
+    uow.price_series.add(series)
+    uow.positions.add(
+        Position(
+            user_id=user.id,
+            asset_id=asset.id,
+            quantity=1,
+            cost_basis=series.points[0].close,
+            opened_at=series.points[0].timestamp,
+            provenance=provenance(),
+        )
+    )
+
+    snapshot = PortfolioRiskService(uow).calculate(user=user)
+
+    asset_id = str(asset.id)
+    assert asset_id not in snapshot.position_risk_contributions
+    assert asset_id not in snapshot.liquidity_exposure
+    assert any("risk_returns_insufficient" in warning for warning in snapshot.warnings)
+    assert any("liquidity_data_missing" in warning for warning in snapshot.warnings)
+
+
+def test_portfolio_liquidity_exposure_uses_each_position_value(tmp_path) -> None:
+    uow, user, first_asset, first_series = build_context(tmp_path)
+    uow.price_series.add(first_series)
+    second_asset = Asset(
+        ticker="MSFT",
+        name="Microsoft",
+        asset_type=AssetType.EQUITY,
+        provenance=provenance(),
+    )
+    uow.assets.add(second_asset)
+    start = first_series.points[0].timestamp
+    second_points = [
+        PricePoint(
+            asset_id=second_asset.id,
+            timestamp=start + timedelta(days=index),
+            open=50.0,
+            high=51.0,
+            low=49.0,
+            close=50.0,
+            volume=1_000.0,
+            provenance=provenance(start + timedelta(days=index)),
+        )
+        for index in range(len(first_series.points))
+    ]
+    second_series = PriceSeries(
+        asset_id=second_asset.id,
+        interval="1d",
+        points=second_points,
+        provenance=provenance(second_points[-1].timestamp),
+    )
+    uow.price_series.add(second_series)
+    uow.positions.add(
+        Position(
+            user_id=user.id,
+            asset_id=first_asset.id,
+            quantity=1,
+            cost_basis=90,
+            opened_at=first_series.points[0].timestamp,
+            provenance=provenance(),
+        )
+    )
+    uow.positions.add(
+        Position(
+            user_id=user.id,
+            asset_id=second_asset.id,
+            quantity=100,
+            cost_basis=45,
+            opened_at=second_series.points[0].timestamp,
+            provenance=provenance(),
+        )
+    )
+
+    snapshot = PortfolioRiskService(uow).calculate(user=user)
+
+    first_value = first_series.points[-1].close
+    second_value = 100 * second_series.points[-1].close
+    first_avg_dollar_volume = sum(
+        point.close * point.volume for point in first_series.points[-20:]
+    ) / 20
+    second_avg_dollar_volume = sum(
+        point.close * point.volume for point in second_series.points[-20:]
+    ) / 20
+    assert snapshot.liquidity_exposure[str(first_asset.id)] == pytest.approx(
+        first_value / first_avg_dollar_volume
+    )
+    assert snapshot.liquidity_exposure[str(second_asset.id)] == pytest.approx(
+        second_value / second_avg_dollar_volume
+    )
+
+
+def test_portfolio_correlation_aligns_on_shared_timestamps() -> None:
+    service = PortfolioRiskService.__new__(PortfolioRiskService)
+    correlation = service._corr(
+        {"2026-01-01": 0.01, "2026-01-02": 0.02, "2026-01-03": 0.90},
+        {"2026-01-01": 0.02, "2026-01-02": 0.04, "2026-01-04": -0.90},
+    )
+    assert correlation == pytest.approx(1.0)
+
+
+def test_portfolio_risk_warns_and_keeps_pairwise_covariance_without_shared_dates(tmp_path) -> None:
+    uow, user, first_asset, first_series = build_context(tmp_path, point_count=90)
+    uow.price_series.add(first_series)
+    second_asset = Asset(
+        ticker="MSFT",
+        name="Microsoft",
+        asset_type=AssetType.EQUITY,
+        provenance=provenance(),
+    )
+    uow.assets.add(second_asset)
+    start = first_series.points[-1].timestamp + timedelta(days=10)
+    second_points = [
+        PricePoint(
+            asset_id=second_asset.id,
+            timestamp=start + timedelta(days=index),
+            open=50.0 + index * 0.1,
+            high=51.0 + index * 0.1,
+            low=49.0 + index * 0.1,
+            close=50.0 + index * 0.1,
+            volume=1_000.0,
+            provenance=provenance(start + timedelta(days=index)),
+        )
+        for index in range(90)
+    ]
+    second_series = PriceSeries(
+        asset_id=second_asset.id,
+        interval="1d",
+        points=second_points,
+        provenance=provenance(second_points[-1].timestamp),
+    )
+    uow.price_series.add(second_series)
+    for asset, series in ((first_asset, first_series), (second_asset, second_series)):
+        uow.positions.add(
+            Position(
+                user_id=user.id,
+                asset_id=asset.id,
+                quantity=1,
+                cost_basis=series.points[0].close,
+                opened_at=series.points[0].timestamp,
+                provenance=provenance(),
+            )
+        )
+
+    snapshot = PortfolioRiskService(uow).calculate(user=user)
+
+    assert any("no_shared_trade_dates" in warning for warning in snapshot.warnings)
+    assert snapshot.covariance_matrix
+
+
 def test_refresh_explicitly_marks_real_cache_fallback_as_degraded(tmp_path) -> None:
     uow, user, asset, series = build_context(tmp_path)
     evidence = Evidence(

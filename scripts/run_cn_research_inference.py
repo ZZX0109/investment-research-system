@@ -18,6 +18,7 @@ from investment_research.training.models import PreparedPriceBar, TrainingSample
 from investment_research.training.parquet_store import PITParquetStore
 from investment_research.training.sequence_dataset import build_sequence_examples
 from investment_research.training.sequence_models import SequenceTaskRunner
+from investment_research.training.pit_join import PITJoinService
 from investment_research.training.research_feature_coverage import feature_coverage_breakdown
 from investment_research.pipeline.research_roster import load_verified_research_roster
 
@@ -31,6 +32,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--roster-root", type=Path, default=PROJECT / "artifacts/free_research_models")
     parser.add_argument("--object-store", type=Path, default=PROJECT / "var/cn-research/parquet")
     parser.add_argument("--decision-context", choices=("close_confirmed",), default="close_confirmed")
+    parser.add_argument(
+        "--decision-time",
+        help="Timezone-aware ISO-8601 PIT cutoff for inference/replay; defaults to the current UTC time.",
+    )
     parser.add_argument("--cohort", choices=("cn_equity_core", "cn_etf_benchmark"), required=True)
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--output", type=Path, default=PROJECT / "artifacts/predictions/cn-research.json")
@@ -40,6 +45,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    decision_time = _parse_decision_time(args.decision_time)
     index = json.loads(args.rebuild_index.read_text(encoding="utf-8"))
     if index.get("data_tier") != "research_pit" or index.get("deployment_ready"):
         raise SystemExit("inference requires a non-deployable research_pit rebuild index")
@@ -51,11 +57,26 @@ def main() -> int:
     predictions = []
     for symbol in args.symbols:
         symbol_samples = _samples_for_symbol(context, args.cohort, symbol, store)
-        sample = max(symbol_samples, key=lambda item: item.as_of_time)
+        visible_samples = [
+            item for item in symbol_samples
+            if item.as_of is not None
+            and item.as_of <= decision_time
+            and item.feature_cutoff <= decision_time
+        ]
+        sample = PITJoinService().latest_visible(
+            visible_samples,
+            decision_time,
+            effective_field="as_of_date",
+            available_field="as_of",
+        )
+        if sample is None:
+            raise ValueError(f"symbol has no PIT-visible sample at inference time:{symbol}")
         core_coverage, optional_coverage = feature_coverage_breakdown(
             sample.features, sample.missing_features
         )
-        reference_price = _latest_price(standard[symbol], store)
+        reference_price = _latest_price(
+            standard[symbol], store, decision_time=decision_time, cutoff_date=sample.as_of_date
+        )
         influence = [
             f"{name}={sample.features[name]:.4g}"
             for name in sorted(sample.features, key=lambda key: abs(float(sample.features[key])), reverse=True)[:5]
@@ -67,10 +88,12 @@ def main() -> int:
                 "decision_context": args.decision_context, "cohort": args.cohort,
                 "task": task, "symbol": symbol,
                 "trade_date": sample.as_of_date.isoformat(),
+                "decision_time": decision_time.isoformat(),
                 "frozen_at": datetime.now(timezone.utc).isoformat(),
                 "market_snapshot_id": context["snapshot_id"],
                 "market_snapshot_hash": context["snapshot_hash"],
                 "prediction_price": reference_price,
+                "reference_price_visibility": "visible" if reference_price is not None else "unproven_or_unavailable",
                 "coverage_ratio": sample.feature_coverage,
                 "core_feature_coverage": core_coverage,
                 "optional_feature_coverage": optional_coverage,
@@ -90,7 +113,9 @@ def main() -> int:
                 "provider_id": sample.provider_id or sample.provider,
                 "revision_id": sample.revision_id,
                 "source_delay_seconds": sample.source_delay_seconds,
-                "candidate_predictions": _sequence_challenger_predictions(scope, symbol_samples, task),
+                "candidate_predictions": _sequence_challenger_predictions(
+                    scope, symbol_samples, task, decision_time=decision_time
+                ),
                 "excluded_candidates": _excluded_sequence_challengers(scope),
                 "ensemble_weights": {},
             }
@@ -134,6 +159,7 @@ def main() -> int:
                     package=package, disagreement=disagreement,
                     cache_state=args.cache_state,
                     provider_conflict=_has_provider_conflict(index, symbol),
+                    price_visible=reference_price is not None,
                 )
                 diagnostic_prediction = dict(prediction) if reasons else None
                 record.update(
@@ -146,8 +172,17 @@ def main() -> int:
                     gating_reasons=reasons,
                     model_artifact_hashes=dict(roster.primary.artifact_hashes),
                     model_disagreement=disagreement,
+                    confidence_tier=_confidence_tier(task, prediction, package),
+                    confidence_policy=package.get("confidence_policy", {}),
                     model_role=role, model_candidate=(roster.primary if role == "primary" else roster.fallback).candidate_name,
                     roster_hash=roster.roster_hash,
+                    validation_report_refs={
+                        name: str((scope / "reports" / f"{name}.json").relative_to(PROJECT))
+                        for name in roster.primary.report_hashes
+                    },
+                    validation_report_hashes=dict(roster.primary.report_hashes),
+                    evaluation_ref=str((scope / "evaluation.json").relative_to(PROJECT)),
+                    evaluation_hash=roster.primary.artifact_hashes.get("evaluation.json"),
                     research_status=roster.research_status,
                     research_limitations=(
                         ["exploratory_result_not_a_research_ready_primary"]
@@ -176,9 +211,29 @@ def main() -> int:
     return 0
 
 
-def _latest_sample(context: dict, cohort: str, symbol: str, store: PITParquetStore) -> TrainingSample:
+def _latest_sample(
+    context: dict,
+    cohort: str,
+    symbol: str,
+    store: PITParquetStore,
+    decision_time: datetime | None = None,
+) -> TrainingSample:
     """Compatibility helper for callers that need one frozen latest row."""
-    return max(_samples_for_symbol(context, cohort, symbol, store), key=lambda item: item.as_of_time)
+    cutoff = decision_time or datetime.now(timezone.utc)
+    sample = PITJoinService().latest_visible(
+        [
+            item for item in _samples_for_symbol(context, cohort, symbol, store)
+            if item.as_of is not None
+            and item.as_of <= cutoff
+            and item.feature_cutoff <= cutoff
+        ],
+        cutoff,
+        effective_field="as_of_date",
+        available_field="as_of",
+    )
+    if sample is None:
+        raise ValueError(f"symbol has no PIT-visible sample at inference time:{symbol}")
+    return sample
 
 
 def _samples_for_symbol(context: dict, cohort: str, symbol: str, store: PITParquetStore) -> list[TrainingSample]:
@@ -200,12 +255,27 @@ def _samples_for_symbol(context: dict, cohort: str, symbol: str, store: PITParqu
     return samples
 
 
-def _latest_price(manifest: dict, store: PITParquetStore) -> float:
+def _latest_price(
+    manifest: dict,
+    store: PITParquetStore,
+    *,
+    decision_time: datetime,
+    cutoff_date,
+) -> float | None:
     rows = []
     for partition in manifest["partitions"]:
         rows.extend(store.read_partition(partition["parquet_ref"]))
     bars = [PreparedPriceBar.model_validate(row) for row in rows]
-    return float(max(bars, key=lambda item: item.trade_date).close_native)
+    visible = [
+        bar for bar in bars
+        if bar.trade_date <= cutoff_date
+        and bar.available_at is not None
+        and bar.available_at <= decision_time
+        and bar.published_at <= decision_time
+    ]
+    if not visible:
+        return None
+    return float(max(visible, key=lambda item: item.trade_date).close_native)
 
 
 def _standard_by_symbol(index: dict) -> dict[str, dict]:
@@ -243,7 +313,12 @@ def _sequence_challenger_evidence(scope: Path) -> dict[str, dict]:
     return output
 
 
-def _sequence_challenger_predictions(scope: Path, samples: list[TrainingSample], task: str) -> dict[str, dict]:
+def _sequence_challenger_predictions(
+    scope: Path,
+    samples: list[TrainingSample],
+    task: str,
+    decision_time: datetime | None = None,
+) -> dict[str, dict]:
     root = scope / "sequence"
     output: dict[str, dict] = {}
     if not root.is_dir():
@@ -260,7 +335,24 @@ def _sequence_challenger_predictions(scope: Path, samples: list[TrainingSample],
             artifact = (PROJECT / manifest["artifact_ref"]).resolve()
             if not artifact.is_file():
                 continue
-            examples = build_sequence_examples(samples, target_name=target, window_sessions=int(manifest["window_sessions"]))
+            visible_samples = samples
+            if decision_time is not None:
+                visible_samples = [
+                    sample for sample in samples
+                    if sample.as_of is not None
+                    and sample.as_of <= decision_time
+                    and sample.feature_cutoff <= decision_time
+                ]
+            examples = build_sequence_examples(
+                visible_samples,
+                target_name=target,
+                window_sessions=int(manifest["window_sessions"]),
+            )
+            if decision_time is not None:
+                examples = [
+                    example for example in examples
+                    if _parse_decision_time(example.decision_time) <= decision_time
+                ]
             if not examples:
                 continue
             runner = SequenceTaskRunner.load(artifact)
@@ -331,7 +423,7 @@ def _ensemble_with_sequence_challengers(task: str, base: dict, candidates: dict[
 def _predict(package: dict, sample: TrainingSample) -> tuple[dict, float | None]:
     if package.get("data_tier") != "research_pit" or package.get("deployment_ready"):
         raise ValueError("model package is not research-only")
-    vector = [[float(sample.features.get(name, 0.0)) for name in package["feature_order"]]]
+    vector = _inference_vector(sample, package["feature_order"])
     kind = package["kind"]
     if kind == "constant_risk":
         raw = float(package["probability"])
@@ -375,7 +467,7 @@ def _predict_fallback(package: dict, sample: TrainingSample) -> tuple[dict, floa
     component = package.get("comparator")
     if not component:
         raise ValueError("research fallback component unavailable")
-    vector = [[float(sample.features.get(name, 0.0)) for name in package["feature_order"]]]
+    vector = _inference_vector(sample, package["feature_order"])
     kind = component["kind"]
     if kind == "constant_risk":
         probability = float(component["probability"])
@@ -474,7 +566,7 @@ def _return_disagreement(component: dict | None, vector: list[list[float]], sele
 def _abstain_reasons(
     *, task: str, sample: TrainingSample, core_feature_coverage: float,
     package: dict, disagreement: float | None,
-    cache_state: str, provider_conflict: bool,
+    cache_state: str, provider_conflict: bool, price_visible: bool = True,
 ) -> list[str]:
     reasons: list[str] = []
     if core_feature_coverage < 0.85:
@@ -483,14 +575,22 @@ def _abstain_reasons(
         reasons.append(f"cache_{cache_state}")
     if provider_conflict:
         reasons.append("provider_conflict")
+    if not price_visible:
+        reasons.append("reference_price_pit_visibility_unproven")
     bounds = package.get("feature_bounds", {})
     if bounds:
-        outside = sum(
-            float(sample.features.get(name, 0.0)) < float(interval[0])
-            or float(sample.features.get(name, 0.0)) > float(interval[1])
+        comparable = [
+            (name, interval, sample.features.get(name))
             for name, interval in bounds.items()
+            if isinstance(interval, list) and len(interval) == 2
+            and interval[0] is not None and interval[1] is not None
+            and sample.features.get(name) is not None
+        ]
+        outside = sum(
+            float(value) < float(interval[0]) or float(value) > float(interval[1])
+            for _name, interval, value in comparable
         )
-        if outside / len(bounds) > 0.20:
+        if comparable and outside / len(comparable) > 0.20:
             reasons.append("out_of_distribution_feature_ratio_above_20pct")
     if disagreement is not None:
         if task.startswith("direction_") and disagreement > 0.30:
@@ -500,6 +600,52 @@ def _abstain_reasons(
         elif task == "return_20d" and disagreement > 0.05:
             reasons.append("return_p50_disagreement_above_0.05")
     return reasons
+
+
+def _parse_decision_time(value: str | None) -> datetime:
+    """Parse one canonical, timezone-aware cutoff for live inference and replay."""
+    if value is None:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"invalid --decision-time ISO-8601 value:{value}") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("--decision-time must include a timezone offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def _inference_vector(sample: TrainingSample, feature_order: list[str]) -> list[list[float]]:
+    from math import isfinite
+
+    row: list[float] = []
+    for name in feature_order:
+        value = sample.features.get(name)
+        if value is None:
+            row.append(float("nan"))
+            continue
+        numeric = float(value)
+        if not isfinite(numeric):
+            raise ValueError(f"non_finite_inference_feature:{name}")
+        row.append(numeric)
+    return [row]
+
+
+def _confidence_tier(task: str, prediction: dict, package: dict) -> str:
+    policy = package.get("confidence_policy", {})
+    high = policy.get("high_threshold")
+    medium = policy.get("medium_threshold")
+    if high is None or medium is None:
+        return "low"
+    if task.startswith("direction_"):
+        probabilities = prediction.get("calibrated_probability") or prediction.get("raw_probability") or {}
+        score = max((float(value) for value in probabilities.values()), default=0.0)
+    elif task == "return_20d":
+        score = -(float(prediction.get("p90", 0.0)) - float(prediction.get("p10", 0.0)))
+    else:
+        probability = prediction.get("calibrated_probability", prediction.get("raw_probability", 0.5))
+        score = abs(float(probability) - 0.5)
+    return "high" if score >= float(high) else "medium" if score >= float(medium) else "low"
 
 
 def _has_provider_conflict(index: dict, symbol: str) -> bool:

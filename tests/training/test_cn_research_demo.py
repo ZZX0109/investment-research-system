@@ -76,6 +76,9 @@ def test_acceptance_normalizes_evaluated_challenger_and_gate_semantics() -> None
 
     scope = status["scopes"]["cn_equity_core/direction_1d"]
     assert status["status"] == "available"
+    assert scope["artifact_available"] is False
+    assert scope["prediction_status"] == "unavailable"
+    assert scope["model_status"] == "unavailable"
     assert scope["evaluated_challengers"] == ["lightgbm", "xgboost"]
     assert "unevaluated_challengers" not in scope
     assert scope["research_gate"] == {

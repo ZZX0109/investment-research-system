@@ -342,7 +342,7 @@ const demoBundle: AnalysisBundle = {
       action: "hold",
       conviction: 0.51,
       reasoning: "Judge gate prevents stronger action because the evidence stack is still mostly synthetic.",
-      guardrails: ["Require live market confirmation before upgrading to buy."],
+      guardrails: ["Require live market confirmation before changing the research observation."],
       status: "active",
       version,
       provenance: {
@@ -537,7 +537,7 @@ const demoHistoricalBundle: AnalysisBundle = {
     analysis_run_id: "09c5233b-a4dc-4d8d-908f-cd7c7c9b2001",
     title: "NVDA Demo Analysis Report v0",
     report_version: "auto-0.9.0",
-    thesis: "A prior immutable run keeps the same thesis family but with a weaker confidence profile for comparison.",
+    thesis: "An earlier immutable run keeps the same thesis family and can be compared by data and reading status.",
     body_markdown:
       "# NVDA Historical Analysis Run\n\n- Run ID: `09c5233b-a4dc-4d8d-908f-cd7c7c9b2001`\n- Data modes: demo\n- Note: older seeded run retained for fixed-run comparison",
     provenance: {

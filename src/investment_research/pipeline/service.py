@@ -60,6 +60,7 @@ class AnalysisPipelineService:
         snapshot = self.snapshot_factory.build_snapshot(
             asset, resolution, decision_context=context
         )
+        pit_evidence = _pit_visible_evidence(snapshot)
         if snapshot.market_snapshot_id and snapshot.market_snapshot_hash:
             fetched_at = snapshot.captured_at
             coverage = ProviderCoverage(
@@ -103,12 +104,12 @@ class AnalysisPipelineService:
                     content_hash=snapshot.market_snapshot_hash,
                 )
             )
-        run = self.run_factory.build_run(asset=asset, user=user, snapshot=snapshot, evidence=resolution.evidence)
+        run = self.run_factory.build_run(asset=asset, user=user, snapshot=snapshot, evidence=pit_evidence)
         conclusions = self.conclusion_factory.build_outputs(
             asset=asset,
             run=run,
             snapshot=snapshot,
-            evidence=resolution.evidence,
+            evidence=pit_evidence,
         )
 
         self.uow.snapshots.add(str(run.id), snapshot)
@@ -131,7 +132,7 @@ class AnalysisPipelineService:
         )
         correlation_id = str(stored_run.id)
         if self.uow.domain.is_registered_user(user.id):
-            for evidence in resolution.evidence:
+            for evidence in snapshot.evidence_snapshot:
                 self.uow.domain.register_evidence(evidence=evidence, owner=user)
             self.uow.domain.record_research_run(
                 run=stored_run, owner=user, correlation_id=correlation_id
@@ -156,7 +157,7 @@ class AnalysisPipelineService:
             run=stored_run,
             snapshot=snapshot,
             source_meta=snapshot.source_meta,
-            evidence=resolution.evidence,
+            evidence=snapshot.evidence_snapshot,
             predictions=[conclusions.prediction],
             risk_conclusions=[conclusions.risk],
             recommendations=[conclusions.recommendation],
@@ -188,3 +189,22 @@ class AnalysisPipelineService:
             judge_scores=self.uow.judge_scores.list_for_run(run_id),
             reports=self.uow.reports.list_for_run(run_id),
         )
+
+
+def _pit_visible_evidence(snapshot) -> list[object]:
+    """Return only evidence with a verifiable public time at the cutoff."""
+    decision_time = snapshot.decision_time
+    if decision_time is None:
+        return []
+    visible: list[object] = []
+    for item in snapshot.evidence_snapshot:
+        if getattr(item, "publication_time_verified", True) is False:
+            continue
+        available = (
+            getattr(item, "available_at", None)
+            or getattr(item, "published_at", None)
+            or getattr(item, "collected_at", None)
+        )
+        if available is not None and available <= decision_time:
+            visible.append(item)
+    return visible

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from investment_research.api.auth_routes import get_auth_service, get_auth_settings
 from investment_research.api.routes import (
+    _load_latest_long_term_scorecard,
     _load_latest_research_prediction,
     _load_latest_research_universe,
     get_analysis_provider_registry,
@@ -18,6 +19,7 @@ from investment_research.domain.models import Asset, Evidence
 from investment_research.main import app
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.analysis_intake import AnalysisProviderSettings, build_provider_registry
+from investment_research.service.deep_long_term import LONG_TERM_TASKS, write_long_term_model_readings
 
 
 def _attach_csrf_header(client: TestClient, settings: AuthSettings) -> None:
@@ -99,6 +101,109 @@ def test_asset_routes_round_trip_with_sqlite(tmp_path) -> None:
     assert list_response.json()[0]["provenance"]["source_name"] == "iex-cloud-demo"
 
 
+def test_research_lifecycle_status_exposes_research_only_boundary(tmp_path) -> None:
+    client = configure_authenticated_client(tmp_path, "lifecycle.db")
+
+    response = client.get("/api/v1/research-lifecycle/status")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_tier"] == "research_pit"
+    assert payload["status"] == "research_only"
+    assert payload["deployment_ready"] is False
+    assert isinstance(payload["jobs"], list)
+    assert isinstance(payload["blocking_reasons"], list)
+
+
+def test_latest_long_term_scorecard_is_read_only_and_fail_closed(tmp_path) -> None:
+    report = tmp_path / "artifacts" / "long_term_training" / "latest.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        json.dumps({
+            "status": "research_only",
+            "scorecards": [{
+                "symbol": "600000.SH",
+                "as_of_date": "2026-06-30",
+                "long_term_quality": 72.0,
+                "evidence_completeness": 96.0,
+                "long_term_model_readings": {
+                    task: {
+                        "q10": values[0], "q50": values[1], "q90": values[2],
+                        "horizon_days": horizon, "model": "fixture-model",
+                        "model_version": f"fixture:{task}", "data_as_of": "2026-06-30T07:00:00+00:00",
+                        "snapshot_id": "fixture-snapshot", "artifact_hash": "a" * 64,
+                    }
+                    for task, values, horizon in (
+                        ("excess_return_120d", (-0.08, 0.03, 0.14), 120),
+                        ("excess_return_240d", (-0.12, 0.06, 0.21), 240),
+                        ("future_max_drawdown_120d", (-0.32, -0.18, -0.08), 120),
+                        ("future_max_drawdown_240d", (-0.41, -0.23, -0.11), 240),
+                    )
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+    available = _load_latest_long_term_scorecard(project_root=tmp_path, symbol="600000.SH")
+    missing = _load_latest_long_term_scorecard(project_root=tmp_path, symbol="000001.SZ")
+
+    assert available["status"] == "available"
+    assert available["deployment_ready"] is False
+    assert available["scorecard"]["long_term_quality"] == 72.0
+    assert available["long_term_model_readings"]["excess_return_120d"]["q50"] == 0.03
+    assert missing["status"] == "unavailable"
+    assert missing["scorecard"] is None
+
+
+def test_latest_long_term_scorecard_reads_separate_four_task_artifact(tmp_path) -> None:
+    report = tmp_path / "artifacts" / "long_term_training" / "latest.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({
+        "status": "research_only",
+        "scorecards": [{"symbol": "600000", "as_of_date": "2026-06-30", "long_term_quality": 72.0}],
+    }), encoding="utf-8")
+    rows = {}
+    for task in LONG_TERM_TASKS:
+        horizon = int(task.rsplit("_", 1)[-1][:-1])
+        rows[task] = [{
+            "task": task, "symbol": "600000", "horizon_days": horizon,
+            "q10": -0.12, "q50": 0.03, "q90": 0.18,
+                "model": "deep_mlp", "model_version": "fixture",
+                "data_as_of": "2026-06-30T07:00:00+00:00", "snapshot_id": "snapshot-1",
+                "snapshot_hash": "b" * 64,
+                "artifact_hash": "a" * 64, "status": "research_only", "deployment_ready": False,
+        }]
+    output = write_long_term_model_readings(tmp_path, rows)
+
+    available = _load_latest_long_term_scorecard(project_root=tmp_path, symbol="600000.SH")
+
+    assert available["long_term_model_readings"]["excess_return_240d"]["q50"] == 0.03
+    assert available["model_readings_source_ref"] == str(output.relative_to(tmp_path))
+    assert len(available["model_readings_source_hash"]) == 64
+
+
+def test_latest_long_term_scorecard_drops_partial_embedded_readings(tmp_path) -> None:
+    report = tmp_path / "artifacts" / "long_term_training" / "latest.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({
+        "status": "research_only",
+        "scorecards": [{
+            "symbol": "600000",
+            "as_of_date": "2026-06-30",
+            "long_term_model_readings": {
+                "excess_return_120d": {"q10": -0.1, "q50": 0.0, "q90": 0.1},
+            },
+        }],
+    }), encoding="utf-8")
+
+    response = _load_latest_long_term_scorecard(project_root=tmp_path, symbol="600000")
+
+    assert response["status"] == "available"
+    assert response["long_term_model_readings"] is None
+
+
 def test_agent_function_tool_contract_is_authenticated_and_read_only(tmp_path) -> None:
     client = configure_authenticated_client(tmp_path, "agent-tools.db")
 
@@ -118,8 +223,44 @@ def test_agent_function_tool_contract_is_authenticated_and_read_only(tmp_path) -
         "get_company_announcements",
         "get_shadow_performance",
         "search_financial_knowledge",
+        "get_financial_document",
+        "get_rule_revision_timeline",
+        "get_knowledge_coverage",
+        "get_financial_line_items",
+        "compare_company_disclosures",
+        "get_long_term_scorecard",
+        "get_long_term_model_readings",
+        "get_long_term_data_trust",
+        "get_long_term_evidence_balance",
+        "get_long_term_fact_cards",
+        "search_latest_news",
     ]
     assert all(tool["parameters"]["additionalProperties"] is False for tool in tools)
+
+
+def test_workbuddy_connection_uses_revocable_token_and_read_only_mcp(tmp_path) -> None:
+    client = configure_authenticated_client(tmp_path, "workbuddy.db")
+    created = client.post("/api/v1/workbuddy/connections", json={"name": "local-workbuddy"})
+    assert created.status_code == 201
+    issued = created.json()
+    assert issued["token"].startswith("irwb_")
+    assert issued["token"] not in str(client.get("/api/v1/workbuddy/connections").json())
+
+    denied = client.post("/api/v1/workbuddy/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert denied.status_code == 401
+    headers = {"Authorization": f"Bearer {issued['token']}"}
+    initialized = client.post("/api/v1/workbuddy/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert initialized.status_code == 200
+    assert initialized.json()["result"]["capabilities"] == {"tools": {}}
+    listed = client.post("/api/v1/workbuddy/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert {item["name"] for item in listed.json()["result"]["tools"]} >= {"get_research_overview", "get_asset_research", "search_financial_knowledge"}
+    overview = client.post("/api/v1/workbuddy/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_research_overview", "arguments": {}}})
+    assert overview.status_code == 200
+    assert overview.json()["result"]["structuredContent"]["status"] == "research_only"
+    revoked = client.delete(f"/api/v1/workbuddy/connections/{issued['id']}")
+    assert revoked.status_code == 204
+    assert client.post("/api/v1/workbuddy/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 4, "method": "tools/list"}).status_code == 401
+    app.dependency_overrides.clear()
 
 
 def test_asset_can_be_removed_from_owner_workspace_without_erasing_history(tmp_path) -> None:
@@ -320,7 +461,7 @@ def test_latest_research_universe_lists_history_separately_from_frozen_predictio
     }
     assert payload["symbols"][0] == {
         "symbol": "600519",
-        "name": "600519",
+            "name": "名称待补充",
         "exchange": "XSHG",
         "asset_type": "equity",
         "provider": "baostock",
@@ -330,6 +471,10 @@ def test_latest_research_universe_lists_history_separately_from_frozen_predictio
         "cohort": "cn_equity_core",
         "frozen_result_available": True,
     }
+    named = _load_latest_research_universe(
+        project_root=tmp_path, symbol_names={"600519": "贵州茅台"},
+    )
+    assert named["symbols"][0]["name"] == "贵州茅台"
 
 
 def test_domain_catalog_exposes_provider_configuration(tmp_path) -> None:

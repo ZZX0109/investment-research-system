@@ -45,6 +45,8 @@ from investment_research.repository.forecasts import ResearchForecastRepository
 from investment_research.repository.pit_catalog import PITCatalogRepository
 from investment_research.repository.shadow_runs import ShadowRunOutcomeRepository, ShadowRunRepository
 from investment_research.repository.knowledge import FinancialKnowledgeRepository
+from investment_research.repository.workbuddy import WorkBuddyConnectionRepository
+from investment_research.repository.conversations import ConversationRepository
 
 _MIGRATED_DATABASES: set[str] = set()
 
@@ -134,6 +136,8 @@ class SQLiteUnitOfWork:
         self.shadow_runs = ShadowRunRepository(self.connection)
         self.shadow_outcomes = ShadowRunOutcomeRepository(self.connection)
         self.financial_knowledge = FinancialKnowledgeRepository(self.connection)
+        self.workbuddy_connections = WorkBuddyConnectionRepository(self.connection)
+        self.conversations = ConversationRepository(self.connection)
 
     def close(self) -> None:
         self.connection.close()
@@ -179,6 +183,8 @@ class PostgresUnitOfWork(SQLiteUnitOfWork):
         self.shadow_runs = ShadowRunRepository(self.connection)
         self.shadow_outcomes = ShadowRunOutcomeRepository(self.connection)
         self.financial_knowledge = FinancialKnowledgeRepository(self.connection)
+        self.workbuddy_connections = WorkBuddyConnectionRepository(self.connection)
+        self.conversations = ConversationRepository(self.connection)
 
 
 def create_unit_of_work() -> SQLiteUnitOfWork:

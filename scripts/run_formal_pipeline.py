@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=PROJECT / "config" / "formal_training.yaml")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--publish", action="store_true", help="Atomically publish only after all manifest gates pass")
+    parser.add_argument(
+        "--data-root", type=Path, default=PROJECT / "var/cn-research",
+        help="immutable active snapshot root required by the training worker",
+    )
     return parser.parse_args()
 
 
@@ -58,6 +62,8 @@ def main() -> int:
         str(args.config.resolve()),
         "--run-root",
         str(run_root),
+        "--data-root",
+        str(args.data_root.resolve()),
     ]]
     plan = {
         "training_run_id": identity.training_run_id,

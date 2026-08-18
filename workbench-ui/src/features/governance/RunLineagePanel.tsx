@@ -112,7 +112,7 @@ export function RunLineagePanel() {
                 <strong>{l("血缘元数据缺失", "Lineage Metadata Missing")}</strong>
                 <span className="tag">{l("阻断", "BLOCK")}</span>
               </div>
-              <p>{l("所选运行缺少必要的来源元数据。记录保留用于审计，但不得作为可信研究结论展示。", "The selected run is missing required source metadata. Keep the record visible for audit, but do not surface it as a trustworthy recommendation.")}</p>
+              <p>{l("所选运行缺少必要的来源元数据。记录保留用于审计，但应先补齐来源信息再作研究解读。", "The selected run is missing required source metadata. Keep it for audit, and complete the source information before interpreting it.")}</p>
             </article>
           ) : null}
           {isStaleAsOf(detailSummary.as_of) ? (
@@ -169,7 +169,7 @@ export function RunLineagePanel() {
             <ul className="flat-list">
               <li>{l("评审得分", "Judge score")}: {Math.round(detailSummary.judge_score * 100)}%</li>
               <li>{l("观察立场", "Observation stance")}: {term(detailSummary.recommendation_action)}</li>
-              <li>{l("模型置信度", "Model confidence")}: {Math.round(detailSummary.model_confidence * 100)}%</li>
+              <li>{l("模型输出指标（内部）", "Model output metric (internal)")}: {Math.round(detailSummary.model_confidence * 100)}%</li>
               <li>{l("模型", "Model")}: {detailSummary.model_name}@{detailSummary.model_version}</li>
               <li>{l("模型状态", "Model status")}: {term(detailSummary.model_status)}</li>
               <li>{l("已批准", "Approved")}: {detailSummary.deployment_approved ? l("是", "yes") : l("否", "no")}</li>
@@ -221,7 +221,7 @@ export function RunLineagePanel() {
                   {Math.round(comparisonSummary.judge_score_delta * 100)} {l("点", "pts")}
                 </li>
                 <li>
-                  {l("置信度变化", "Confidence delta")}: {comparisonSummary.confidence_delta >= 0 ? "+" : ""}
+                  {l("读数指标变化", "Reading metric delta")}: {comparisonSummary.confidence_delta >= 0 ? "+" : ""}
                   {Math.round(comparisonSummary.confidence_delta * 100)} {l("点", "pts")}
                 </li>
                 <li>

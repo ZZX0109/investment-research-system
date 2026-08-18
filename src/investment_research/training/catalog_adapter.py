@@ -77,6 +77,7 @@ class FormalPITDataset(BaseModel):
                     ),
                     market_snapshot_id=str(record.market_snapshot_id),
                     feature_version=record.feature_version,
+                    label_version=record.label_version,
                     data_version=self.manifest.dataset_hash,
                     features=features,
                     feature_coverage=1.0 - (

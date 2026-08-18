@@ -1,5 +1,7 @@
 # Trustworthy Training Foundation
 
+> 迁移说明：本文是通用/历史训练基础材料。当前 A 股长期主线的事实边界、`research_only` 和快照门禁以 [`current-system.md`](current-system.md) 为准；本文中的 approved/formal 设计不能当作当前发布状态。
+
 This document records the current training-oriented foundation added to the repository so model work can move from "trained something" toward "proved it does not leak future information and is useful in research workflow decisions."
 
 ## Scope implemented now

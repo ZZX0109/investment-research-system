@@ -1,0 +1,74 @@
+{
+  "schema_version": "research-optimization-queue-v1",
+  "status": "queued",
+  "device_policy": {
+    "cuda_visible_devices": "0",
+    "torch_device": "cuda",
+    "gpu_memory_fraction": 0.8
+  },
+  "universe": {
+    "equities": 162,
+    "etfs": 5,
+    "total": 167,
+    "scope": "cn_equity_core + cn_etf_benchmark",
+    "note": "ETF is included as market/style context and is not silently mixed with equity alpha labels."
+  },
+  "primary_targets": [
+    "future_quality_persistence_4q",
+    "future_quality_persistence_8q",
+    "excess_return_120d",
+    "excess_return_240d",
+    "future_max_drawdown_120d",
+    "future_max_drawdown_240d"
+  ],
+  "primary_metrics": [
+    "rank_ic",
+    "top_k_excess_return_after_cost",
+    "top_bottom_spread_after_cost"
+  ],
+  "validation": {
+    "method": "rolling_time_out_of_sample",
+    "purge_and_embargo": true,
+    "train_window_periods": 24,
+    "validation_periods": 4,
+    "holdout_periods": 8,
+    "stress_periods": 4,
+    "purge_periods": 4,
+    "embargo_periods": 1,
+    "minimum_forward_periods": 60,
+    "final_test_is_immutable": true
+  },
+  "stages": [
+    {
+      "id": "A_data_gate",
+      "status": "queued",
+      "action": "audit_full_162_equity_pool_plus_5_etf_context_and_long_term_labels",
+      "depends_on": []
+    },
+    {
+      "id": "B_full_pool_baseline",
+      "status": "blocked_on_A",
+      "action": "run_quarterly_interpretable_baselines_on_relative_return_and_drawdown",
+      "architectures": ["constant", "ridge", "elastic_net", "random_forest", "lightgbm", "xgboost"],
+      "depends_on": ["A_data_gate"]
+    },
+    {
+      "id": "C_feature_ablation",
+      "status": "blocked_on_B",
+      "action": "add_quality_valuation_risk_feature_groups_one_at_a_time_and_report_rank_icir",
+      "depends_on": ["B_full_pool_baseline"]
+    },
+    {
+      "id": "D_panel_models",
+      "status": "queued_after_panel_input",
+      "action": "optional_panel_challengers_stockmixer_and_master_after_baseline_stability",
+      "depends_on": ["C_feature_ablation"]
+    },
+    {
+      "id": "E_final_test",
+      "status": "blocked_on_model_selection",
+      "action": "freeze_model_once_then_run_independent_final_test_and_cost_aware_portfolio",
+      "depends_on": ["D_panel_models"]
+    }
+  ]
+}

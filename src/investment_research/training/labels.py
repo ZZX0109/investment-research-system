@@ -99,13 +99,19 @@ def generate_tradeable_labels(
         # execution-cost floor.  The legacy policy remains reproducible when
         # callers retain its original version string.
         cost_floor = policy.minimum_cost_boundary
-        if policy.version == "cn-direction-volatility-label-v2":
+        if policy.version in {
+            "cn-direction-volatility-label-v2",
+            "cn-direction-volatility-label-v3",
+        }:
             round_trip = policy.etf_round_trip_cost if instrument_is_etf else policy.stock_round_trip_cost
             cost_floor = max(cost_floor, 2.0 * round_trip)
         threshold = max(
             cost_floor,
             trailing_vol * sqrt(horizon) * policy.volatility_multiplier,
         )
+        standardized = terminal_return / max(trailing_vol * sqrt(horizon), 1e-12)
+        setattr(labels, f"volatility_standardized_return_{horizon}d", standardized)
+        setattr(labels, f"direction_threshold_{horizon}d", threshold)
         direction = (
             "up"
             if terminal_return > threshold
@@ -114,6 +120,20 @@ def generate_tradeable_labels(
             else "flat"
         )
         setattr(labels, f"direction_{horizon}d", direction)
+
+    # Generate the execution-aware 5-session excess-return label independently
+    # of the 20-session horizon.  Previously this block lived inside the
+    # ``len(window_20) == 20`` branch, so otherwise valid 5d observations near
+    # the sample tail inherited the 20d availability constraint.
+    window_5 = ordered[entry_index : entry_index + 5]
+    if len(window_5) == 5 and context is not None and labels.future_return_5d is not None:
+        benchmark_entry = context.benchmark_lookup.get(window_5[0].trade_date)
+        benchmark_terminal = context.benchmark_lookup.get(window_5[-1].trade_date)
+        if benchmark_entry is not None and benchmark_terminal is not None:
+            benchmark_entry_price = _bar_open(benchmark_entry)
+            if benchmark_entry_price > 0:
+                benchmark_return = benchmark_terminal.close_normalized / benchmark_entry_price - 1.0
+                labels.excess_return_5d = labels.future_return_5d - benchmark_return
 
     window_20 = ordered[entry_index : entry_index + 20]
     if len(window_20) == 20:
@@ -130,6 +150,9 @@ def generate_tradeable_labels(
             adverse = min(adverse, (low / entry_price) - 1.0)
             favorable = max(favorable, (high / entry_price) - 1.0)
         labels.future_max_drawdown_20d = worst
+        labels.drawdown_exceeds_8pct_20d = worst <= -0.08
+        labels.drawdown_exceeds_12pct_20d = worst <= -0.12
+        labels.drawdown_exceeds_15pct_20d = worst <= -0.15
         labels.maximum_adverse_excursion_20d = adverse
         labels.maximum_favorable_excursion_20d = favorable
         labels.encountered_suspension_20d = any(
@@ -137,7 +160,17 @@ def generate_tradeable_labels(
         )
         labels.touched_limit_up_20d = any(bar.is_limit_up for bar in window_20)
         labels.touched_limit_down_20d = any(bar.is_limit_down for bar in window_20)
-    for horizon in (60, 120):
+        if context is not None:
+            benchmark_entry = context.benchmark_lookup.get(entry.trade_date)
+            benchmark_terminal = context.benchmark_lookup.get(window_20[-1].trade_date)
+            if benchmark_entry is not None and benchmark_terminal is not None:
+                benchmark_entry_price = _bar_open(benchmark_entry)
+                if benchmark_entry_price > 0:
+                    benchmark_return = benchmark_terminal.close_normalized / benchmark_entry_price - 1.0
+                    labels.excess_return_20d = labels.future_return_20d_from_open - benchmark_return
+    long_term_available = True
+    long_term_reasons: list[str] = []
+    for horizon in (60, 120, 240):
         window = ordered[entry_index : entry_index + horizon]
         if len(window) == horizon:
             peak = entry_price
@@ -146,6 +179,25 @@ def generate_tradeable_labels(
                 peak = max(peak, _bar_high(bar))
                 worst = min(worst, (_bar_low(bar) / peak) - 1.0)
             setattr(labels, f"future_max_drawdown_{horizon}d", worst)
+            benchmark_entry = context.benchmark_lookup.get(window[0].trade_date) if context is not None else None
+            benchmark_terminal = context.benchmark_lookup.get(window[-1].trade_date) if context is not None else None
+            if benchmark_entry is not None and benchmark_terminal is not None:
+                benchmark_entry_price = _bar_open(benchmark_entry)
+                if benchmark_entry_price > 0:
+                    benchmark_return = benchmark_terminal.close_normalized / benchmark_entry_price - 1.0
+                    terminal_return = window[-1].close_normalized / entry_price - 1.0
+                    setattr(labels, f"excess_return_{horizon}d", terminal_return - benchmark_return)
+                else:
+                    long_term_available = False
+                    long_term_reasons.append(f"benchmark_entry_price_invalid_{horizon}d")
+            else:
+                long_term_available = False
+                long_term_reasons.append(f"benchmark_missing_{horizon}d")
+        else:
+            long_term_available = False
+            long_term_reasons.append(f"insufficient_{horizon}_session_horizon")
+    labels.long_term_label_available = long_term_available
+    labels.long_term_label_unavailable_reason = None if long_term_available else ";".join(long_term_reasons)
     return labels
 
 
@@ -219,7 +271,7 @@ def generate_multitask_labels(
         returns_5d = [(value / base_close) - 1.0 for value in future_closes[:5]]
         labels.maximum_adverse_excursion_5d = min(returns_5d)
         labels.maximum_favorable_excursion_5d = max(returns_5d)
-    for horizon in (20, 60, 120):
+    for horizon in (5, 20, 60, 120):
         horizon_dates = future_dates[:horizon]
         closes = [price_lookup[item].close_normalized for item in horizon_dates]
         setattr(

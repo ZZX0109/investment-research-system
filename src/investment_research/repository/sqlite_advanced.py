@@ -201,6 +201,13 @@ class SQLiteDocumentArtifactRepository:
         ).fetchall()
         return [DocumentArtifact.model_validate_json(_payload(r)) for r in rows]
 
+    def delete_for_user(self, item_id: str, user_id: str) -> bool:
+        cursor = self.connection.execute(
+            "DELETE FROM document_artifacts WHERE id=? AND user_id=?", (item_id, user_id)
+        )
+        self.connection.commit()
+        return cursor.rowcount > 0
+
 
 class SQLiteResearchAuditRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:

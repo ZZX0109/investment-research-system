@@ -58,6 +58,7 @@ class TrainingDatasetBuilder:
         benchmark_bars: list[PreparedPriceBar] | None = None,
         sector_reference_bars: list[PreparedPriceBar] | None = None,
         style_reference_bars: list[PreparedPriceBar] | None = None,
+        extra_features_by_date: dict | None = None,
         events: list[PointInTimeEvent] | None = None,
         decision_context: DecisionContextType
         | str = DecisionContextType.CLOSE_CONFIRMED,
@@ -69,6 +70,7 @@ class TrainingDatasetBuilder:
         benchmark_bars = benchmark_bars or []
         sector_reference_bars = sector_reference_bars or []
         style_reference_bars = style_reference_bars or []
+        extra_features_by_date = extra_features_by_date or {}
         benchmark_returns = _asof_reference_returns(ordered, benchmark_bars)
         sector_returns = _asof_reference_returns(ordered, sector_reference_bars)
         style_returns = _asof_reference_returns(ordered, style_reference_bars)
@@ -148,6 +150,26 @@ class TrainingDatasetBuilder:
                 style_reference_symbol=instrument.style_reference_symbol,
                 market=instrument.market,
             )
+            features.update({
+                str(name): float(value)
+                for name, value in extra_features_by_date.get(bar.trade_date, {}).items()
+                if value is not None
+            })
+            # Cross-sectional and auxiliary timelines are merged after the
+            # per-bar fields are built.  If an auxiliary value is present,
+            # it satisfies the corresponding contract field and must not
+            # continue to count as missing merely because the raw bar model
+            # has no per-security column for it.
+            missing_features = [
+                name for name in missing_features if name not in features
+            ]
+            for horizon in (1, 5, 20):
+                asset_key = f"ret_{horizon}d"
+                benchmark_key = f"benchmark_ret_{horizon}d"
+                if asset_key in features and benchmark_key in features:
+                    features[f"relative_strength_{horizon}d"] = (
+                        features[asset_key] - features[benchmark_key]
+                    )
             labels = generate_multitask_labels(
                 symbol=instrument.symbol,
                 as_of_date=bar.trade_date,
@@ -159,10 +181,19 @@ class TrainingDatasetBuilder:
             )
             policy = (
                 TradeableLabelPolicy(
-                    version="cn-direction-volatility-label-v2",
+                    version=(
+                        "cn-direction-volatility-label-v3"
+                        if self.feature_version.startswith("cn-research-feature-v4")
+                        else "cn-direction-volatility-label-v2"
+                    ),
                     minimum_cost_boundary=0.0,
                 )
-                if self.feature_version.endswith("features-v3")
+                if self.feature_version in {
+                    "cn-research-feature-v3",
+                    "cn-research-feature-v4",
+                    "cn-research-feature-v4.1",
+                    "investment-risk-features-v3",
+                }
                 else None
             )
             tradeable_labels = generate_tradeable_labels(
@@ -178,13 +209,30 @@ class TrainingDatasetBuilder:
                 "future_return_5d",
                 "future_return_20d",
                 "future_return_20d_from_open",
+                "excess_return_5d",
+                "excess_return_20d",
+                "excess_return_60d",
+                "excess_return_120d",
+                "excess_return_240d",
+                "volatility_standardized_return_1d",
+                "volatility_standardized_return_5d",
+                "volatility_standardized_return_20d",
+                "direction_threshold_1d",
+                "direction_threshold_5d",
+                "direction_threshold_20d",
+                "drawdown_exceeds_8pct_20d",
+                "drawdown_exceeds_12pct_20d",
+                "drawdown_exceeds_15pct_20d",
                 "future_max_drawdown_20d",
                 "future_max_drawdown_60d",
                 "future_max_drawdown_120d",
+                "future_max_drawdown_240d",
                 "entry_trade_date",
                 "entry_delay_sessions",
                 "label_available",
                 "label_unavailable_reason",
+                "long_term_label_available",
+                "long_term_label_unavailable_reason",
                 "maximum_adverse_excursion_20d",
                 "maximum_favorable_excursion_20d",
                 "encountered_suspension_20d",
@@ -213,6 +261,43 @@ class TrainingDatasetBuilder:
                 missing_features = sorted(
                     set([*missing_features, *event_feature_names])
                 )
+            if self.feature_version.startswith("cn-research-feature-v4"):
+                expected_fundamentals = (
+                    "fundamental_roe_avg",
+                    "fundamental_net_margin",
+                    "fundamental_gross_margin",
+                    "fundamental_eps_ttm",
+                    "fundamental_equity_yoy",
+                    "fundamental_asset_yoy",
+                    "fundamental_net_income_yoy",
+                    "fundamental_eps_yoy",
+                    "fundamental_parent_net_income_yoy",
+                    "fundamental_receivable_turnover",
+                    "fundamental_inventory_turnover",
+                    "fundamental_asset_turnover",
+                    "fundamental_current_ratio",
+                    "fundamental_quick_ratio",
+                    "fundamental_cash_ratio",
+                    "fundamental_liability_to_asset",
+                    "fundamental_cfo_to_revenue",
+                    "fundamental_cfo_to_net_profit",
+                    "fundamental_cfo_to_gross_revenue",
+                    "fundamental_dupont_roe",
+                    "fundamental_equity_multiplier",
+                    "fundamental_dupont_asset_turnover",
+                    "fundamental_age_days",
+                )
+                missing_features = sorted(set([
+                    *missing_features,
+                    *(name for name in expected_fundamentals if name not in features),
+                ]))
+                # Preserve the difference between a genuine zero and an
+                # unavailable observation.  The numerical value stays absent
+                # and fold-fitted imputers consume the explicit indicator.
+                original_names = sorted(set(features) | set(missing_features))
+                missing_set = set(missing_features)
+                for name in original_names:
+                    features[f"missing__{name}"] = 1.0 if name in missing_set else 0.0
             samples.append(
                 TrainingSample(
                     symbol=instrument.symbol,
@@ -284,6 +369,7 @@ class TrainingDatasetBuilder:
 
         missing_features: list[str] = []
         features = {
+            "ret_1d": window_return(closes[-2:]),
             "ret_5d": window_return(trailing_5),
             "ret_20d": window_return(trailing_20),
             "vol_5d": realized_volatility(trailing_5),
@@ -300,8 +386,13 @@ class TrainingDatasetBuilder:
         }
         features.update(event_features)
         if (
-            self.feature_version in {"cn-research-feature-v3", "investment-risk-features-v3"}
-            or self.feature_version.endswith(("features-v2", "features-v3"))
+            self.feature_version in {
+                "cn-research-feature-v3",
+                "cn-research-feature-v4",
+                "cn-research-feature-v4.1",
+                "investment-risk-features-v3",
+            }
+            or self.feature_version.endswith(("features-v2", "features-v3", "feature-v4"))
         ):
             self._add_v2_features(
                 features,
@@ -313,27 +404,36 @@ class TrainingDatasetBuilder:
         if benchmark_symbol and benchmark_return is not None:
             features["benchmark_ret_20d"] = benchmark_return
             features["relative_strength_20d"] = features["ret_20d"] - benchmark_return
-        else:
+        elif not self.feature_version.startswith("cn-research-feature-v4"):
             features["benchmark_ret_20d"] = 0.0
             features["relative_strength_20d"] = 0.0
+        else:
+            pass
+        if not (benchmark_symbol and benchmark_return is not None):
             missing_features.extend(["benchmark_ret_20d", "relative_strength_20d"])
         if sector_reference_symbol and sector_reference_return is not None:
             features["sector_ret_20d"] = sector_reference_return
             features["sector_relative_strength_20d"] = (
                 features["ret_20d"] - sector_reference_return
             )
-        else:
+        elif not self.feature_version.startswith("cn-research-feature-v4"):
             features["sector_ret_20d"] = 0.0
             features["sector_relative_strength_20d"] = 0.0
+        else:
+            pass
+        if not (sector_reference_symbol and sector_reference_return is not None):
             missing_features.extend(["sector_ret_20d", "sector_relative_strength_20d"])
         if style_reference_symbol and style_reference_return is not None:
             features["style_ret_20d"] = style_reference_return
             features["style_relative_strength_20d"] = (
                 features["ret_20d"] - style_reference_return
             )
-        else:
+        elif not self.feature_version.startswith("cn-research-feature-v4"):
             features["style_ret_20d"] = 0.0
             features["style_relative_strength_20d"] = 0.0
+        else:
+            pass
+        if not (style_reference_symbol and style_reference_return is not None):
             missing_features.extend(["style_ret_20d", "style_relative_strength_20d"])
         return features, sorted(set(missing_features))
 
@@ -364,6 +464,32 @@ class TrainingDatasetBuilder:
             )
         else:
             missing_features.append("relative_liquidity_20d")
+        features["st_flag"] = 1.0 if latest.is_st else 0.0
+        if latest.previous_close is not None and latest.previous_close > 0:
+            if latest.open_native is not None:
+                features["overnight_gap_1d"] = (
+                    latest.open_native / latest.previous_close - 1.0
+                )
+            else:
+                missing_features.append("overnight_gap_1d")
+            if latest.high_native is not None and latest.low_native is not None:
+                features["intraday_range_1d"] = (
+                    latest.high_native - latest.low_native
+                ) / latest.previous_close
+            else:
+                missing_features.append("intraday_range_1d")
+        else:
+            missing_features.extend(["overnight_gap_1d", "intraday_range_1d"])
+        for feature_name, value, lower, upper in (
+            ("valuation_pe_ttm", latest.pe_ttm, -200.0, 200.0),
+            ("valuation_pb_mrq", latest.pb_mrq, -20.0, 50.0),
+            ("valuation_ps_ttm", latest.ps_ttm, -10.0, 100.0),
+            ("valuation_pcf_ttm", latest.pcf_ncf_ttm, -200.0, 200.0),
+        ):
+            if value is None:
+                missing_features.append(feature_name)
+            else:
+                features[feature_name] = min(upper, max(lower, float(value)))
         if latest.market_breadth_5d is not None:
             features["market_breadth_5d"] = latest.market_breadth_5d
         else:
@@ -433,7 +559,14 @@ def _resolve_event_coverage_status(value: str, event_count: int) -> EventCoverag
 def _is_event_feature(name: str) -> bool:
     return any(
         marker in name
-        for marker in ("event", "news", "filing", "earnings", "guidance", "surprise")
+        # Announcement-derived aggregates and regulatory scores are event
+        # features too.  Keeping them out of this list previously allowed a
+        # `partial`/`fetch_failed` event source to inject a misleading zero.
+        # V4 must distinguish "confirmed none" from "coverage unknown".
+        for marker in (
+            "event", "news", "filing", "earnings", "guidance", "surprise",
+            "announcement_", "regulatory_",
+        )
     )
 
 

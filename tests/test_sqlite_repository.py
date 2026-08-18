@@ -37,7 +37,7 @@ def test_sqlite_asset_repository_round_trips_traceable_asset(tmp_path: Path) -> 
     assert stored.provenance.source_type == DataSourceType.BACKFILLED
     assert stored.version.schema_version == "1.0.0"
     assert version_row is not None
-    assert version_row["version_num"] == "0017_financial_knowledge"
+    assert version_row["version_num"] == "0021_conversations"
 
 
 def test_workbench_service_persists_demo_analysis_run(tmp_path: Path) -> None:

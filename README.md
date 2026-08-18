@@ -4,12 +4,12 @@
 
 ### 零预算 · 研究级 · 可复现 · 证据驱动
 
-面向 A 股日线研究的完整工作台：从免费数据、Research PIT、模型训练、风险解释到 Shadow 前向验证。
+面向 A 股长期投资研究的完整工作台：从免费数据、Research PIT、长期质量评估、风险解释到 Shadow 前向验证。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-149ECA?logo=react&logoColor=white)
-![Tests](https://img.shields.io/badge/Python_tests-397_passed-16A34A)
+![Tests](https://img.shields.io/badge/Python_tests-637_passed-16A34A)
 ![Research Only](https://img.shields.io/badge/status-research__only-7C3AED)
 ![Deployment](https://img.shields.io/badge/deployment__ready-false-B45309)
 
@@ -18,12 +18,17 @@
 > [!IMPORTANT]
 > 本平台使用免费公开数据，所有数据和模型固定为 `research_pit / research_only / deployment_ready=false`。结果仅用于量化研究、教学、比赛展示和模型实验，不构成投资建议，也不能直接用于实盘交易。
 
+当前 A 股长期投资主线、数据层和已废弃架构的唯一事实源见
+[`docs/current-system.md`](docs/current-system.md)。
+
 **第一次使用？**
 
 - 网页操作：[用户操作手册](docs/用户操作手册.md)
 - 带截图的 Word 版本：[A 股量化研究平台－界面与操作手册](docs/A股量化研究平台-界面与操作手册.docx)
 - 技术原理：[技术白皮书](docs/technical-whitepaper.md)
+- WorkBuddy 接入：[MCP 连接指南](docs/WorkBuddy-MCP接入指南.md)
 - 最快启动：`npm run dev:research-platform`
+- 比赛演示：[长期投资 AI 研究助手 · 比赛演示手册](docs/competition-demo.md)
 - 公网展示：[Render 只读演示部署说明](docs/render-public-demo.md)
 
 本项目不追求给出“买入”“卖出”或“明天必涨/必跌”的口号，而是把公开数据下可验证的研究过程完整留存：数据从哪里来、何时抓到、质量如何、模型使用了什么输入、哪些任务可用、何时应主动暂缓判断，以及预测在后续交易日的实际表现。
@@ -32,15 +37,15 @@
 
 ### 核心研究仪表盘
 
-同一页面集中展示研究对象、四任务结果、价格与回撤曲线，以及数据和模型的研究级边界。用户先看结论与图表，需要核验时再展开技术与审计详情。
+同一页面集中展示研究对象、经营质量/成长/估值/股东回报、组合影响和证据完整度。1/5/20 日读数只放在技术详情中，作为短期诊断，不作为长期结论。
 
 <p align="center">
   <img src="docs/images/research-dashboard.jpg" alt="A 股量化研究平台核心研究仪表盘" width="820" />
 </p>
 
-### 四任务研究结果
+### 短周期诊断（技术详情）
 
-方向、收益和回撤任务分别展示，不用单一“涨跌”标签替代概率与区间。每张卡片同时标明它是正式结论、研究观察还是暂不可用。
+方向、收益和回撤任务分别展示，不用单一“涨跌”标签替代概率与区间；它们必须标注为 research-only/技术诊断，不得包装成上涨胜率或买卖信号。
 
 <p align="center">
   <img src="docs/images/research-task-overview.jpg" alt="1 日方向、5 日方向、20 日收益和20 日回撤任务概览" width="760" />
@@ -48,7 +53,7 @@
 
 ### 风险情景与观察依据
 
-风险结果同时提供参考概率、可信度、较乐观/较悲观情景和主要观察因素，帮助用户理解模型为什么给出当前读数，以及下一交易日应该观察什么变化。
+风险结果同时提供参考读数、较乐观/较悲观情景和主要观察因素，帮助用户理解模型为什么给出当前读数，以及下一交易日应该观察什么变化。
 
 <p align="center">
   <img src="docs/images/research-risk-outlook.jpg" alt="回撤风险结论、情景分析和主要观察因素" width="920" />
@@ -59,7 +64,8 @@
 | 能力 | 用户获得的结果 | 系统留下的证据 |
 | --- | --- | --- |
 | 免费 A 股数据更新 | 股票和 ETF 收盘后研究数据 | Provider、请求窗口、原始/标准化 hash、revision、失败原因 |
-| 四任务独立研究 | 1 日方向、5 日方向、20 日收益区间、20 日回撤风险 | 独立 dataset、fold、模型、评估报告与 roster |
+| 长期横截面研究 | 季度级经营质量、4/8 季度质量持续性、120/240 日超额收益与长期回撤 | PIT 快照、滚动 OOF、成本后 Top-K/Top-Bottom、行业/市场状态稳定性 |
+| 短周期诊断 | 1 日/5 日方向、20 日收益区间和回撤风险，仅供观察 | 独立研究产物、校准、Shadow 与拒答原因 |
 | 价格与风险可视化 | 收益走势、回撤轨迹、风险情景 | 冻结数据日期、snapshot ID/hash |
 | AI 研究助手 | 用通俗语言解释当前结果与限制 | Function Calling 记录、知识来源、引用链接、工具 hash |
 | 数据质量与拒答 | 明确展示 `degraded`、`unavailable` 或 `abstain` 原因 | 覆盖率、缓存状态、Provider 冲突、模型分歧 |
@@ -73,28 +79,26 @@ flowchart LR
     A["AKShare / Baostock<br/>免费公开数据"] --> B["Raw 原始层<br/>内容寻址与 Hash"]
     B --> C["Standard 标准层<br/>日历、复权、状态与 Revision"]
     C --> D["Research PIT 快照<br/>CN + close_confirmed"]
-    D --> E["统一 Feature / Sample"]
-    E --> F1["1/5 日方向概率"]
-    E --> F2["20 日收益 P10/P50/P90"]
-    E --> F3["20 日最大回撤风险"]
-    F1 --> G["Research Model Roster"]
-    F2 --> G
-    F3 --> G
-    G --> H["研究仪表盘 / AI 解读"]
-    H --> I["1/5/20/60 日 Shadow 回填"]
+    D --> E["统一 PIT Feature / Sample"]
+    E --> F["季度长期基线：质量/超额收益/回撤"]
+    E --> G["短周期诊断：1/5/20 日（辅助）"]
+    F --> H["长期 scorecard / 研究清单"]
+    G --> H
+    H --> I["研究仪表盘 / AI 通俗解读"]
+    I --> J["长期 Shadow 与后续回填"]
 ```
 
 一次用户研究的核心流程是：
 
 1. 选择固定研究池中的股票或 ETF。
 2. 系统读取已经冻结的收盘数据和数据质量状态。
-3. 四个任务分别加载精确匹配的研究模型与校准器。
-4. 页面展示概率、区间、风险、模型分歧和数据限制。
-5. 如果证据不足，模型候选读数仍可作为研究观察展示，但必须明确标记限制。
+3. 长期基线先按季度滚动时间外推，短周期模型只作为辅助诊断。
+4. 页面先展示经营质量、证据和不确定性；概率/区间等专业数值在技术详情中展开。
+5. 如果证据不足，页面降级为“证据不足/暂不判断”，不把候选读数包装成投资结论。
 6. AI 助手只能调用服务端允许的只读工具，不自行计算价格或风险概率。
 7. 当日结果进入不可变 Shadow，未来只追加真实结果回填。
 
-当前主线是 **CN + close_confirmed**：A 股日线与少量宽基 ETF，在每个交易日收盘确认后运行。系统输出四类相互独立的研究结果：`direction_1d`、`direction_5d`、`return_20d` 和 `drawdown_20d`。所有公开数据及其模型产物永久标记为：
+当前主线是 **CN + close_confirmed + long_term_investment_quality**：以季度 PIT 快照为主，对完整股票池做长期质量、估值、相对收益和风险评估。`direction_1d`、`direction_5d`、`return_20d` 和 `drawdown_20d` 保留为短期辅助观察，不再作为首页核心结论。所有公开数据及其模型产物永久标记为：
 
 ```text
 data_tier=research_pit
@@ -236,7 +240,7 @@ INVESTMENT_RESEARCH_DATABASE_URL=sqlite:///./var/investment_research.db
 
 ## 4. 启动本地工作台
 
-一条命令会启动 API、数据库迁移、调度器和 Vite 前端：
+一条命令会启动 API、数据库迁移、短任务调度器、独立训练 worker 和 Vite 前端：
 
 ```bash
 npm run dev:research-platform
@@ -276,22 +280,56 @@ python3 scripts/start_research_platform.py --api-port 8010 --web-port 5180
 | `get_four_task_forecasts` | 1/5 日方向、20 日收益区间、20 日回撤四个独立研究任务 |
 | `get_company_announcements` | 决策时点前已公开并进入证据库的公司公告 |
 | `get_shadow_performance` | 不可变 Research Shadow 的有效场次和回填数量 |
-| `search_financial_knowledge` | 带发布日期、生效时间、可见时间、来源 URL 和内容 hash 的金融知识 |
+| `search_financial_knowledge` | 混合检索公告、规则、宏观和用户私有资料 |
+| `get_financial_document` | 读取一个可引用文档及页码/条款 |
+| `get_rule_revision_timeline` | 查询规则的历史修订时间线 |
+| `get_knowledge_coverage` | 查询公告目录、正文和失败来源覆盖状态 |
+| `compare_company_disclosures` | 比较同一标的不同时期公告类别和原文证据 |
 | `collect_pit_evidence` / `build_29_features` / `approved_model_inference` / `quality_gate` | 原有 PIT 证据、特征、模型与质量门禁 |
 
-金融知识目录由迁移 `0017_financial_knowledge` 创建。每条知识记录均保存 `published_at`、`effective_from/to`、`available_at`、revision、来源链接和内容 hash；检索会按本次研究的 `as_of` 过滤，不能把后来发布或后来修订的规则用于历史解释。公开知识固定为 `research_pit`，API 不能把它直接写成 `formal_pit`。
+金融知识目录由迁移 `0017_financial_knowledge` 创建，迁移 `0019_financial_knowledge_rag` 增加来源、抓取批次、文档修订、切片、向量、覆盖账本和检索快照。每条知识记录均保存 `published_at`、`first_observed_at`、`collected_at`、`available_at`、revision、来源链接和内容 hash；`available_at` 至少为来源发布时间和平台首次成功获取时间中的较晚者。检索会按本次研究的 `as_of` 选择当时有效的 revision，不能把后来发布或后来更正的内容用于历史解释。公开知识固定为 `research_pit`，API 不能把它直接写成 `formal_pit`。
 
 需要特别理解：**门禁拒绝模型结论，不等于助手什么都不能解释。** 当数据质量、模型分歧或证据覆盖不满足门槛时，助手仍会解释已经读取到的价格、模型候选值、数据限制和后续观察条件，并将状态标为“模型结论暂缓”。它不会把这些参考读数包装成正式预测或买卖建议。回答下方的“引用来源”可以打开公告或知识来源；没有外部引用时，页面会明确说明回答只整理了平台结构化数据。
+
+知识库不依赖大模型即可工作。默认先使用 SQLite FTS/确定性中文词组检索；安装 `.[knowledge]` 并完成本地索引后，增加 `BAAI/bge-small-zh-v1.5` 中文向量召回，再融合来源权威度、标的匹配和时间过滤。用户自己的 API Key 只用于把已检索事实组织成通俗回答，不参与索引，也不能绕过用户隔离和 citation 校验。
+
+安装并构建本地语义索引：
+
+```bash
+python3 -m pip install -e ".[knowledge,documents]"
+python3 scripts/reindex_financial_knowledge.py
+```
+
+同步公告目录和官方规则、运行质量审计及固定 120 题检索评测：
+
+```bash
+python3 scripts/sync_financial_knowledge.py --mode incremental
+python3 scripts/audit_financial_knowledge.py
+python3 scripts/evaluate_financial_knowledge.py
+```
+
+全市场历史公告元数据采用断点回补，不建议在一次命令中抓完：
+
+```bash
+python3 scripts/sync_financial_knowledge.py --mode backfill --max-days 30
+```
 
 知识库查询接口（均需登录）：
 
 ```text
 GET  /api/v1/financial-knowledge
 GET  /api/v1/financial-knowledge/search?q=...&as_of=...
-POST /api/v1/financial-knowledge
+GET  /api/v1/financial-knowledge/coverage
+GET  /api/v1/financial-knowledge/{document_id}
+POST /api/v1/financial-knowledge/uploads
+GET  /api/v1/financial-knowledge/user-uploads
+DELETE /api/v1/financial-knowledge/uploads/{document_id}
+POST /api/v1/financial-knowledge/refresh?mode=incremental
 ```
 
-新增知识时必须使用 HTTPS 来源、正确的 SHA-256 内容 hash，并满足 `available_at >= published_at`；重复内容按 hash 幂等返回旧记录，不覆盖历史内容。
+新增知识时必须使用 HTTPS 来源、正确的 SHA-256 内容 hash，并满足 `available_at >= published_at`；重复内容按 hash 幂等返回旧记录，不覆盖历史内容。PDF 保留页码，规则按章/条切片，普通文本按约 600 个中文字符和 80 字重叠切片。用户资料按账号隔离，删除资料时同步删除原对象、切片与向量。新闻和无明确全文许可的研报只保存标题、摘要、链接和时间元数据。
+
+知识质量报告写入 `artifacts/financial_knowledge/`。完整审计要求 PIT 泄漏、跨账号读取、孤立切片均为零；检索评测以 Recall@10 ≥ 85%、MRR@10 ≥ 65%、citation 有效率 100% 为目标。未达到时报告明确为 `blocked`，但不会影响量化研究页面使用已有价格和模型读数。
 
 ## 6. 最快验证：不联网 Dry Run
 
@@ -335,6 +373,8 @@ python3 scripts/run_cn_research_demo.py
 ```
 
 默认设计目标是 100 只股票 + 5 只 ETF；实际运行会严格执行最少样本、最少历史、质量与 Provider Gate。公开源覆盖不足时，正确结果是 `partial`、`blocked`、`unavailable` 或 `abstain`，不是降低门槛生成看似正常的预测。
+
+默认运行先枚举 **160 只流动性候选股**（再加 5 只固定 ETF），为“100 股固定研究池”的质量筛选留出缓冲，而不是悄悄复用少量演示股票。需要扩大公共采集范围时可显式指定，例如 `--candidate-universe-size 300`；`--profile smoke` 的 `--max-symbols` 仅用于本地连通性测试。
 
 ### 建议先跑小范围 smoke
 
@@ -388,6 +428,142 @@ artifacts/cn_research_demo/latest-backend-acceptance.json
 | Sample | 特征与未来标签、决策时间、标签窗口、样本状态 | 否，按版本重建 |
 
 每条免费历史回补数据都保留 `historical_available_at_unproven_public_backfill`。这允许研究训练和历史评估，但永久阻断正式 PIT 发布。
+
+### 下载结果进入训练前的快照门禁
+
+下载进程不得直接写入当前训练目录。先将已完成的下载结果复制到独立的
+`var/cn-research/landing/<download_run_id>/`，并按 `raw/`、`standard/`、`pit/` 三层保存；为每个文件补齐数据集、层级、Provider、日期范围、行数、发布时间/可用时间/采集时间覆盖率、revision、缺失原因、质量状态和 SHA-256，再执行完整性校验。通过校验后，系统会把 landing 目录原子提升为
+`var/cn-research/snapshots/<snapshot_id>/`，并原子更新 `var/cn-research/active.json`；训练程序只允许读取 active 指针指向的不可变快照。
+
+准备并校验快照：
+
+```bash
+python3 scripts/prepare_research_snapshot.py \
+  --source-root <已完成下载目录> \
+  --data-root var/cn-research \
+  --source-ready-manifest <下载完成清单.json> \
+  --run-id <download_run_id> \
+  --snapshot-id <snapshot_id> \
+  --metadata <file-metadata.json> \
+  --pit-leakage-audit <pit-leakage-report.json> \
+  --activate
+```
+
+训练前强制检查 active 快照、文件 hash、行情覆盖率、必需数据集、PIT 时间覆盖率、标签成熟度和泄漏审计：
+
+```bash
+python3 scripts/check_research_snapshot.py \
+  --data-root var/cn-research \
+  --minimum-market-coverage 0.99 \
+  --minimum-industry-coverage 0.98
+```
+
+`pit_leakage_errors=0` 不能再由默认值充当审计证据。快照 manifest 必须同时保存
+PIT 泄漏审计文件引用、文件 SHA-256 和显式错误计数；检查器会重新读取文件、核对 hash
+和计数后才接受零错误。准备快照时可传入 `--pit-leakage-audit <leakage-report.json>`，
+或在 metadata 的 `manifest` 中提供这三个字段；缺少任一项都保持 `blocked`。
+
+只有门禁返回 `passed=true` 才允许训练。长期投资训练的迁移合同是
+`config/long_term_training.yaml`，它锁定季度级长期质量、120/240 日超额收益与回撤标签；5/20 日超额收益由面板研究任务作为辅助观察，均使用 PIT 财报、横截面
+Rank IC、扣费后 Top-K、换手和回撤评价，并自动开启快照门禁：
+
+长期评估摘要还会按年份、行业和决策时点可见的市场状态（`bull`、`bear`、`range`、
+`high_vol`；缺少输入则为 `unknown`）拆分 Rank IC；状态标签只来自 PIT 特征，
+不使用未来标签反推。
+
+长期门禁还要求同一快照同时声明 raw/qfq 行情、交易状态、复权因子、证券/行业映射、
+财报、公司行为、事件、融资、市场宽度和宏观数据；任何一类缺失都只能输出
+`blocked`，不能用零值或“没有事件”代替未知。
+
+长期模型即使通过训练门禁也不能自动替换研究主模型。使用
+`scripts/evaluate_long_term_promotion.py` 复核最终留出集的成本后收益、Rank IC 和
+至少 60 个独立有效 Shadow 交易日；该脚本只生成候选审查报告，不写 roster，也不设置
+`deployment_ready=true`。
+
+Artifact 索引可用 `scripts/index_training_artifacts.py` 生成；清理默认只做 dry-run，
+只有人工明确传入 `--apply` 才删除已过保留期且没有引用的文件：
+
+```bash
+python3 scripts/prune_training_artifacts.py \
+  --root artifacts/long_term_training \
+  --index artifacts/long_term_training/index.json
+```
+
+`run_training_job.py` 与 `run_retraining.py` 的 real/auto 多市场路径已默认停用；只有显式
+传入 `--allow-legacy-multi-market` 才能做历史兼容回放。长期主线使用训练 worker 或
+`scripts/run_research_optimization_queue.py` 调度 `scripts/run_long_term_training.py`，
+后者读取季度级合同、active 快照和 PIT 门禁，并在门禁失败时只写入 `blocked` 报告。
+短周期 runner 的结果不得在前端表述为长期投资结论，也不得把缺失数据编码为有效的零事件。
+
+所有研究训练入口（包括辅助表格、序列和面板 runner）都要求样本 manifest 声明
+`data_snapshot_id` 与 `data_snapshot_manifest_hash`，并与当前 `active.json` 完全一致；
+外部 manifest 列表只允许作为已绑定的索引，`landing/<download_run_id>` 和其中的未完成
+文件一律拒绝读取。重新生成样本时，使用 `scripts/build_free_research_samples.py`
+的 `--data-root var/cn-research` 让它记录当前 active 快照绑定。
+
+运行时进程也已拆分：API 不启动调度器（除非显式设置兼容环境变量），
+`scripts/run_research_worker.py` 只负责调度/短任务，`scripts/run_training_worker.py`
+独立领取长期训练 Job。训练 worker 以锁文件保证单实例，并把成功、失败、重试状态写回
+同一份 Job 账本。
+
+当前数据缺口的人工可读说明见 [`docs/current-data-gaps.md`](docs/current-data-gaps.md)，
+机器可读版本见 `artifacts/download_manifests/latest.json`。
+
+下载完成后的只读输出审计可用：
+
+```bash
+python3 scripts/audit_download_output.py
+```
+
+财报还应先做逐字段覆盖审计（不修改 raw）：
+
+```bash
+python3 scripts/audit_cn_financial_coverage.py
+```
+
+所有长期训练前置条件也可以汇总为一份只读机器报告；它会校验 active 指针、下载
+manifest、财报 PIT、历史证券/交易状态、宏观 PIT 和长期训练状态，任一项未证明就返回
+`blocked`：
+
+```bash
+python3 scripts/audit_long_term_readiness.py
+```
+
+它会输出公司-报告期-字段的目标数、观测数、低覆盖字段和 PIT 可用时间状态，结果写入
+`artifacts/cn_financial_coverage/latest.json`；采集时间不能冒充公告后的可用时间。
+
+宏观原始数据可用以下命令归一化为统一观察期/PIT 审计产物（同样不修改 raw）：
+
+```bash
+python3 scripts/build_cn_macro_pit.py
+```
+
+当前公开源未提供可核验的发布日期，宏观记录会保持 `degraded` 并进入下载清单阻断项，不能直接进入历史训练。
+
+结果写入 `artifacts/download_manifests/latest.json`。当前审计已发现行情、复权、
+财报、行业、公司行为、事件、融资、宏观、交易状态和 PIT 时间记录；但交易状态仍是
+`degraded`，历史证券主数据的 ST/退市/代码变更字段也未覆盖，市场宽度的历史股票池也未证明，所以状态为 `blocked`，不会生成 active 快照。
+
+数据修订只需生成受影响范围计划，不会覆盖旧快照：
+
+```bash
+python3 scripts/plan_incremental_rebuild.py \
+  --changes artifacts/revisions/changes.json \
+  --output artifacts/revisions/incremental-plan.json \
+  --trading-calendar artifacts/revisions/cn-trading-calendar.json \
+  --snapshot-id snapshot-old --model-version model-old
+```
+
+计划会分别按已验证交易日历扩展特征回看区间和前向标签区间，并列出需要失效的快照/模型引用；
+未提供交易日历时仅保留兼容性的自然日回退，并在产物中标记为未验证。
+
+只有审计状态为 `ready_for_landing` 才能生成 landing 元数据：
+
+```bash
+python3 scripts/build_snapshot_metadata.py \
+  --manifest artifacts/download_manifests/latest.json \
+  --output artifacts/download_manifests/landing-metadata.json
+```
 
 ### Provider 规则
 
@@ -469,7 +645,7 @@ artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 - cohort 版本、snapshot ID/hash、`research_pit` 数据等级与 `synthetic_count=0`。
 - `available_at <= decision_time` 证据；免费回补缺失该证据时必须保留研究级限制。
 
-## 10. 四项研究任务
+## 10. 研究任务
 
 | 任务 | 输出 | 标签与时间范围 | 不可替代关系 |
 | --- | --- | --- | --- |
@@ -477,6 +653,9 @@ artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 | `direction_5d` | up/down/flat 三分类概率 | 下一可交易开盘后的 5 日方向 | 独立标签与校准 |
 | `return_20d` | P10/P50/P90 收益区间 | 20 日收益分布 | 不由方向概率推导 |
 | `drawdown_20d` | 最大回撤分布、阈值回撤概率、排序 | 20 日内最大回撤 | 不等同于下跌概率 |
+| `future_quality_persistence_4q/8q` | 长期经营质量持续性评分 | 未来 4/8 个季度 PIT 财务快照 | 仅使用之后可见的财务快照 |
+| `excess_return_120d/240d` | 行业/市场中性相对收益排名 | 未来约 6/12 个月 | 以 Rank IC、Top-K 和成本后表现评估 |
+| `future_max_drawdown_120d/240d` | 长期风险排序 | 未来约 6/12 个月最大回撤 | 不等同于短期方向概率 |
 
 标签从决策后的首个可交易开盘开始。停牌或无法买入的一字涨停最多顺延 5 个交易日；无法入场或窗口不足的样本不进入训练。收益标签采用快照冻结的 qfq 口径；涨跌停、停牌与可交易状态始终使用 raw 口径。
 
@@ -487,11 +666,11 @@ artifacts/cn_research_cohorts/        固定研究池版本与排除原因
 所有任务在同一研究快照、同一特征契约和全市场时间边界下运行：
 
 ```text
-504 个交易日训练窗
-126 个交易日验证窗
-purge / embargo = 该任务 horizon
-最近 252 个交易日 = 一次性最终留出
-其中最近 126 个交易日 = 压力切片
+季度决策期：24 个训练期 / 4 个验证期
+purge = 4 个决策期，embargo = 1 个决策期
+最近 8 个决策期 = 一次性最终留出
+其中最近 4 个决策期 = 压力切片
+最长 960 日标签对应至少 1,260 个交易日历史
 校准 = 仅使用 time-OOF prediction
 ```
 
@@ -529,11 +708,16 @@ artifacts/free_research_models/
     task_manifest.json
     research_model_roster.json
     evaluation.json
+    predictions.parquet       # 逐行 OOF/holdout/stress 预测，zstd 压缩
     leakage_report.json
     fold_report.json
     calibration_report.json
     artifact_hash_report.json
     ...模型及预处理产物...
+
+长期主线的基线报告位于 `artifacts/long_term_training/`；其摘要 JSON 只保留指标、快照和
+预测 Parquet 引用。调用 `scripts/index_training_artifacts.py` 生成内容寻址索引，再用
+`scripts/prune_training_artifacts.py` 做引用完整性校验和可回收文件清理。
 ```
 
 常见推理状态：
@@ -552,7 +736,7 @@ artifacts/free_research_models/
 每个有效交易日、收盘质量 Gate 通过后，系统最多冻结一次 Shadow。原始记录不可修改，至少保存：
 
 - 交易日、决策上下文、snapshot ID/hash、价格与 Provider chain。
-- 四任务预测、raw/calibrated 输出、置信区间、模型分歧与解释事实。
+- 四任务预测、raw/calibrated 输出、预测区间、模型分歧与解释事实。
 - 模型/校准器/roster hash、数据质量 mask、事件缺失 mask、cache 状态。
 - 是否 abstain 以及完整 reason code。
 
@@ -565,6 +749,37 @@ python3 scripts/backfill_research_shadow.py \
   --session-id <shadow-session-uuid> \
   --standard-manifest <对应标准层-manifest.json>
 ```
+
+## 13.1 持续更新与受控自进化
+
+研究版不是每天重训模型，而是把“数据新鲜度”和“模型更新”分开：
+
+| 周期 | 自动任务 | 是否训练/替换模型 |
+| --- | --- | --- |
+| 每日收盘后 | 更新公开行情与事件、冻结快照、生成四任务研究读数、冻结 Shadow、回填到期结果 | 不训练；当天数据不会立即成为训练标签 |
+| 每周 | 汇总覆盖率、Provider 切换、缺失率、PSI、Brier/ECE、拒答率和 Shadow 表现 | 仅生成监控报告；异常时创建月度训练建议 |
+| 每月 | 只使用已经成熟的标签重建样本，执行相同 fold、purge/embargo、OOF 校准和留出评估 | 生成 candidate，不自动越过 Shadow 门槛 |
+| 每季度 | 重建固定研究池、复核标签/特征并运行 MLP、TCN、PatchTST、iTransformer challenger | 只进入 challenger/shadow，不因复杂度自动成为主模型 |
+
+一键执行一个生命周期计划（只计划、不访问 Provider）可使用：
+
+```bash
+python3 scripts/run_research_lifecycle.py --as-of 2026-08-08T10:00:00+08:00
+```
+
+需要真正执行到期的免费采集或训练时显式加 `--execute`。该参数复用持久化 Job 账本：短任务由调度 worker 处理，长期训练只入队并由 `scripts/run_training_worker.py` 独立执行；每个任务通过 `IngestionJob` 的幂等键、重试次数和失败原因保证手动执行、定时执行和进程重启都不会重复生成模型。生命周期状态也可从 `GET /api/v1/research-lifecycle/status` 查询。
+
+候选只有同时满足数据等级、泄漏审计、hash、留出/压力窗口、基线/分组稳定性、三个随机种子和至少 60 个有效 Research Shadow session 后，才会进入候选审查；当前长期 promotion evaluator 仍不会写入 roster 或设置 `deployment_ready=true`。替换会保留上一版本和 promotion 记录；上线后退化可回滚。这个“自进化”永远不能修改标签定义、删除历史预测或使用 synthetic 数据。
+
+生命周期产物均固定带：
+
+```text
+data_tier=research_pit
+status=research_only
+deployment_ready=false
+```
+
+因此“自动替换”不是无人监管的实盘发布，而是有证据门槛、可回滚、可审计的研究模型轮换。
 
 ## 14. 前端使用说明
 
@@ -669,13 +884,13 @@ python3 -c "import akshare, baostock, pyarrow; print('providers ready')"
 
 ## 18. 正式授权模式（未来扩展）
 
-正式路径使用 PostgreSQL + 对象存储 Parquet，并要求商业数据主源/备用源、授权证明、SLA、历史可见时间、revision、证券状态、公司行动和完整审计证据。其入口保持 fail-closed：
+正式路径使用 PostgreSQL + 对象存储 Parquet，并要求商业数据主源/备用源、授权证明、SLA、交易所日历引用、历史可见时间、revision、证券状态、公司行动和完整审计证据。预检会固定产出 CN、US、HK、JP × 两种决策上下文 × 四任务的 32 个 scope：可执行的 scope 生成真实评估报告，缺少外部条件的 scope 生成带具体原因的 `blocked` 报告；不会再用 `pending_*` 占位文本假装运行完成。
 
 ```bash
 python3 scripts/run_formal_pipeline.py --config config/formal_training.yaml --dry-run
 ```
 
-只有全部预检、PIT/leakage、训练、校准、最终留出、审批、artifact hash 和至少 20 个有效正式 Shadow session 均通过，才可能请求发布。当前免费研究数据永远不能绕过这些条件。
+只有全部预检、PIT/leakage、训练、校准、最终留出、审批、artifact hash 和至少 60 个有效正式 Shadow session 均通过，才可能请求发布。当前免费研究数据永远不能绕过这些条件。
 
 本地 PostgreSQL/MinIO 验收环境定义在 [compose.yml](deploy/local-infra/compose.yml)。配置 `.env` 中的 `INVESTMENT_RESEARCH_POSTGRES_PASSWORD`、`INVESTMENT_RESEARCH_MINIO_ACCESS_KEY` 和 `INVESTMENT_RESEARCH_MINIO_SECRET_KEY` 后可运行：
 

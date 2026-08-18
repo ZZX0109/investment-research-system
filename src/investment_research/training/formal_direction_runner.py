@@ -12,7 +12,8 @@ from investment_research.training.formal_training import (
 )
 from investment_research.training.models import TrainingSample
 from investment_research.training.numeric_safety import guarded_model_math, require_finite
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime_groups, fit_regime_thresholds, regime_matches
+from investment_research.training.tabular_preprocessing import estimator_pipeline, sample_matrix
 
 
 CLASSES = ("up", "down", "flat")
@@ -39,6 +40,7 @@ class FormalDirectionTrainingResult:
     scope_id: str
     fold_hash: str
     horizon: int
+    label_multiplier: float
     candidates: list[DirectionCandidateResult]
     selected_candidate: str
     holdout_probabilities: list[dict[str, float]]
@@ -69,13 +71,16 @@ class FormalDirectionTrainingRunner:
         holdout, folds, fold_hash = plan.build()
         if not folds:
             raise ValueError("direction scope has no valid purged folds")
+        label_multiplier = _select_label_multiplier(folds, horizon)
         features = sorted({name for sample in holdout.development for name in sample.features})
         results: list[DirectionCandidateResult] = []
         raw_by_candidate: dict[str, list[dict[str, float]]] = {}
         labels: list[str] | None = None
         oof_fold_ids: list[str] | None = None
         for name in DIRECTION_CANDIDATES[:-1]:
-            probabilities, actual, candidate_fold_ids, regimes = self._oof(name, folds, features, horizon)
+            probabilities, actual, candidate_fold_ids, regimes = self._oof(
+                name, folds, features, horizon, label_multiplier
+            )
             calibrated = _calibrate_multiclass(
                 probabilities, actual, apply_probabilities=probabilities,
                 prediction_fold_ids=candidate_fold_ids,
@@ -98,7 +103,8 @@ class FormalDirectionTrainingRunner:
         )
         holdout_ledger.claim(scope_id=plan.scope_id, dataset_hash=dataset_hash, fold_hash=fold_hash)
         raw_holdout = self._fit_predict(
-            selected.name, holdout.development, holdout.holdout_12m, features, horizon
+            selected.name, holdout.development, holdout.holdout_12m, features, horizon,
+            label_multiplier,
         )
         # Calibrators are fit only on time-OOF development predictions.
         selected_oof = next(item for item in results if item.name == selected.name)
@@ -109,7 +115,8 @@ class FormalDirectionTrainingRunner:
             prediction_fold_ids=oof_fold_ids,
         )
         raw_stress = self._fit_predict(
-            selected.name, holdout.development, holdout.stress_6m, features, horizon
+            selected.name, holdout.development, holdout.stress_6m, features, horizon,
+            label_multiplier,
         )
         calibrated_stress = _calibrate_multiclass(
             selected_oof.raw_probabilities,
@@ -119,29 +126,32 @@ class FormalDirectionTrainingRunner:
         )
         return FormalDirectionTrainingResult(
             scope_id=plan.scope_id, fold_hash=fold_hash, horizon=horizon,
+            label_multiplier=label_multiplier,
             candidates=results, selected_candidate=selected.name,
             holdout_probabilities=calibrated_holdout,
-            holdout_labels=[_direction(item, horizon) for item in holdout.holdout_12m],
+            holdout_labels=[_direction(item, horizon, label_multiplier) for item in holdout.holdout_12m],
             stress_probabilities=calibrated_stress,
-            stress_labels=[_direction(item, horizon) for item in holdout.stress_6m],
+            stress_labels=[_direction(item, horizon, label_multiplier) for item in holdout.stress_6m],
         )
 
-    def _oof(self, name, folds, features, horizon):
+    def _oof(self, name, folds, features, horizon, label_multiplier=0.5):
         probabilities: list[dict[str, float]] = []
         labels: list[str] = []
         fold_ids: list[str] = []
         regimes: list[str] = []
         for fold in folds:
             thresholds = fit_regime_thresholds(fold.train)
-            probabilities.extend(self._fit_predict(name, fold.train, fold.validation, features, horizon))
-            labels.extend(_direction(sample, horizon) for sample in fold.validation)
+            probabilities.extend(self._fit_predict(
+                name, fold.train, fold.validation, features, horizon, label_multiplier
+            ))
+            labels.extend(_direction(sample, horizon, label_multiplier) for sample in fold.validation)
             fold_ids.extend([fold.fold.fold_id] * len(fold.validation))
-            regimes.extend(classify_market_regime(sample, thresholds) for sample in fold.validation)
+            regimes.extend(classify_market_regime_groups(sample, thresholds) for sample in fold.validation)
         return probabilities, labels, fold_ids, regimes
 
-    def _fit_predict(self, name, train, evaluate, features, horizon):
+    def _fit_predict(self, name, train, evaluate, features, horizon, label_multiplier=0.5):
         fit_train = balanced_panel_fit_samples(train)
-        labels = [_direction(item, horizon) for item in fit_train]
+        labels = [_direction(item, horizon, label_multiplier) for item in fit_train]
         if name == "constant-class":
             return [_frequencies(labels)] * len(evaluate)
         if name == "random":
@@ -152,7 +162,7 @@ class FormalDirectionTrainingRunner:
         estimator = _estimator(name)
         matrix = _matrix(fit_train, features)
         evaluation = _matrix(evaluate, features)
-        if name == "xgboost":
+        if name.startswith("xgboost"):
             encoded = [_class_index(label) for label in labels]
             with guarded_model_math():
                 estimator.fit(matrix, encoded)
@@ -168,54 +178,81 @@ class FormalDirectionTrainingRunner:
 
 
 def _estimator(name):
-    if name == "logistic-regression":
+    if name.startswith("logistic-regression"):
         from sklearn.linear_model import LogisticRegression
         from sklearn.multiclass import OneVsRestClassifier
-        from sklearn.preprocessing import FunctionTransformer
-        from sklearn.pipeline import make_pipeline
-        from sklearn.preprocessing import StandardScaler
-        return make_pipeline(
-            StandardScaler(),
-            FunctionTransformer(_clip_scaled_values),
+        return estimator_pipeline(
             OneVsRestClassifier(LogisticRegression(
-                solver="liblinear", C=0.01, max_iter=1000,
+                solver="liblinear", C=0.1 if name.endswith("regularized") else 0.01, max_iter=1000,
                 class_weight="balanced", random_state=42,
             )),
+            scale=True,
         )
-    if name == "random-forest":
+    if name.startswith("random-forest"):
         from sklearn.ensemble import RandomForestClassifier
-        return RandomForestClassifier(n_estimators=200, max_depth=6, min_samples_leaf=2, class_weight="balanced_subsample", random_state=42)
-    if name == "lightgbm":
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(RandomForestClassifier(n_estimators=350 if regularized else 200, max_depth=8 if regularized else 6, min_samples_leaf=10 if regularized else 2, max_features="sqrt" if regularized else 1.0, class_weight="balanced_subsample", random_state=42, n_jobs=4))
+    if name.startswith("lightgbm"):
         import lightgbm as lgb
-        return lgb.LGBMClassifier(n_estimators=200, learning_rate=0.05, num_leaves=31, class_weight="balanced", random_state=42, verbose=-1)
-    if name == "xgboost":
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(lgb.LGBMClassifier(n_estimators=350 if regularized else 200, learning_rate=0.025 if regularized else 0.05, num_leaves=15 if regularized else 31, min_child_samples=80 if regularized else 20, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1 if regularized else 0.0, reg_lambda=1.0 if regularized else 0.0, class_weight="balanced", random_state=42, verbose=-1, n_jobs=4))
+    if name.startswith("xgboost"):
         import xgboost as xgb
-        return xgb.XGBClassifier(
-            objective="multi:softprob", num_class=len(CLASSES), n_estimators=200,
-            max_depth=5, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
-            random_state=42, verbosity=0, n_jobs=1,
-        )
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(xgb.XGBClassifier(
+            objective="multi:softprob", num_class=len(CLASSES), n_estimators=350 if regularized else 200,
+            max_depth=3 if regularized else 5, learning_rate=0.03 if regularized else 0.05,
+            min_child_weight=5 if regularized else 1, reg_lambda=2.0 if regularized else 1.0,
+            subsample=0.8, colsample_bytree=0.8,
+            # ``hist`` preserves the same deterministic boosting objective
+            # while avoiding expensive exact split search on the full panel.
+            tree_method="hist", max_bin=255,
+            random_state=42, verbosity=0, n_jobs=4,
+        ))
     raise ValueError(f"unsupported direction candidate: {name}")
 
 
-def _direction(sample: TrainingSample, horizon: int) -> str:
-    value = getattr(sample.labels, f"direction_{horizon}d")
-    if value not in CLASSES:
+def _direction(sample: TrainingSample, horizon: int, multiplier: float = 0.5) -> str:
+    """Apply a development-selected volatility boundary without touching holdout data."""
+    raw = getattr(sample.labels, f"future_return_{horizon}d")
+    standardized = getattr(sample.labels, f"volatility_standardized_return_{horizon}d")
+    if raw is None or standardized is None:
         raise ValueError(f"direction_{horizon}d label unavailable")
-    return value
+    # z = return / volatility_scale.  Recover the scale stored by the PIT
+    # label builder, then apply the candidate multiplier and the versioned
+    # two-times-round-trip-cost floor.
+    scale = abs(float(raw) / float(standardized)) if abs(float(standardized)) > 1e-12 else 0.0
+    is_etf = getattr(sample.instrument_type, "value", sample.instrument_type) == "etf"
+    cost_floor = 0.0024 if is_etf else 0.0042
+    threshold = max(cost_floor, scale * multiplier)
+    return "up" if raw > threshold else "down" if raw < -threshold else "flat"
+
+
+def _select_label_multiplier(folds, horizon: int) -> float:
+    """Select 0.25/0.50/0.75 only from development time-OOF folds."""
+    from sklearn.metrics import f1_score
+
+    scores: dict[float, list[float]] = {value: [] for value in (0.25, 0.50, 0.75)}
+    for fold in folds:
+        for multiplier in scores:
+            actual = [_direction(sample, horizon, multiplier) for sample in fold.validation]
+            source = "benchmark_ret_20d" if horizon == 5 else "ret_5d"
+            predicted = [
+                max(_heuristic(float(sample.features.get(source, 0.0))), key=_heuristic(float(sample.features.get(source, 0.0))).get)
+                for sample in fold.validation
+            ]
+            scores[multiplier].append(float(f1_score(
+                actual, predicted, labels=list(CLASSES), average="macro", zero_division=0,
+            )))
+    return max(scores, key=lambda value: (sum(scores[value]) / max(len(scores[value]), 1), -abs(value - 0.5)))
 
 
 def _vector(sample, features):
-    return [float(sample.features.get(name, 0.0)) for name in features]
+    return [sample.features.get(name) for name in features]
 
 
 def _matrix(samples, features):
-    import numpy as np
-    import pandas as pd
-
-    values = np.asarray([_vector(item, features) for item in samples], dtype=float)
-    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
-    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=features)
+    return sample_matrix(samples, features)
 
 
 def _clip_scaled_values(values):
@@ -290,7 +327,7 @@ def _metrics(name, raw_probabilities, probabilities, labels, fold_hash, *, regim
     regime_metrics = {}
     if regimes:
         for regime in REGIMES:
-            indexes = [index for index, value in enumerate(regimes) if value == regime]
+            indexes = [index for index, value in enumerate(regimes) if regime_matches(value, regime)]
             if not indexes:
                 continue
             actual = [labels[index] for index in indexes]

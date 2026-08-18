@@ -146,7 +146,7 @@ AI 测试官与岗位的核心方向高度匹配，重点对应 LLM Evaluation�
 
 AI 测试官需要修复项目映射合同测试，完成 `npm test` 全绿；完成冻结盲测；降低误阻塞率和人工复核率；完成生产 Compose 验收；重新运行最新版本的完整 Demo。
 
-投研系统需要运行 [run_cn_research_demo.py](/Users/afa/Desktop/Hack/scripts/run_cn_research_demo.py)，生成四类任务的研究模型产物、研究 roster、评估报告和第一批 Research Shadow 记录。当前仍应保持 `deployment_ready: false`，不把免费研究数据包装成正式交易模型。
+投研系统需要运行 `python3 scripts/run_cn_research_demo.py`，生成四类任务的研究模型产物、研究 roster、评估报告和第一批 Research Shadow 记录。当前仍应保持 `deployment_ready: false`，不把免费研究数据包装成正式交易模型。
 
 ## 七、面试准备优先级
 

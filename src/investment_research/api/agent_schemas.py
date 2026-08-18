@@ -14,9 +14,25 @@ class AgentRunCreateRequest(BaseModel):
     user_preference: Literal["conservative", "growth", "short_term", "fund"] = "conservative"
 
 
+class ConversationCreateRequest(BaseModel):
+    """Bind a multi-turn conversation to one asset + one as_of."""
+
+    asset_id: str = Field(min_length=1)
+    as_of: datetime
+    title: str | None = Field(default=None, max_length=200)
+
+
+class ConversationMessageCreateRequest(BaseModel):
+    """A user's question in an existing conversation."""
+
+    content: str = Field(min_length=1, max_length=4000)
+    provider_profile_id: str | None = None
+    user_preference: Literal["conservative", "growth", "short_term", "fund"] = "conservative"
+
+
 class ProviderProfileCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    protocol: Literal["openai_compatible", "anthropic_messages", "ollama", "mock"]
+    protocol: Literal["openai_compatible", "anthropic_messages", "gemini_generate_content", "ollama", "mock"]
     endpoint: str | None = None
     model: str = Field(min_length=1, max_length=256)
     credential_ref: str | None = None
@@ -28,7 +44,7 @@ class ProviderProfileCreateRequest(BaseModel):
 
 class ProviderProfilePatchRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    protocol: Literal["openai_compatible", "anthropic_messages", "ollama", "mock"] | None = None
+    protocol: Literal["openai_compatible", "anthropic_messages", "gemini_generate_content", "ollama", "mock"] | None = None
     endpoint: str | None = None
     model: str | None = Field(default=None, min_length=1, max_length=256)
     credential_ref: str | None = None

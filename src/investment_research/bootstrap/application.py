@@ -9,14 +9,12 @@ from fastapi.responses import FileResponse
 
 from investment_research.api.artifact_security import validate_agent_api_settings, validate_artifact_access_settings
 from investment_research.api.auth_routes import router as auth_router
-from investment_research.api.credential_routes import router as credential_router
 from investment_research.api.routes import router
-from investment_research.api.run_bundle_routes import router as run_bundle_router
 from investment_research.api.agent_routes import router as agent_router
+from investment_research.api.workbuddy_routes import router as workbuddy_router
 from investment_research.api.security_middleware import BasicRateLimiter, allowed_origins, security_headers
 from investment_research.auth.security import validate_auth_settings
 from investment_research.bootstrap.settings import validate_runtime_storage
-from investment_research.service.credential_vault import validate_credential_vault_settings
 from investment_research.service.scheduling import LocalResearchScheduler
 from investment_research.config import env_flag
 
@@ -32,8 +30,10 @@ def create_app() -> FastAPI:
         validate_auth_settings()
         validate_agent_api_settings()
         validate_artifact_access_settings()
-        validate_credential_vault_settings()
-        scheduler_enabled = env_flag("INVESTMENT_RESEARCH_SCHEDULER_ENABLED", True)
+        # Keep long-running collection/training workers out of the API
+        # process. Deploy ``scripts/run_research_worker.py`` separately; the
+        # legacy in-process mode remains opt-in for local compatibility.
+        scheduler_enabled = env_flag("INVESTMENT_RESEARCH_SCHEDULER_ENABLED", False)
         if scheduler_enabled:
             scheduler.start()
         try:
@@ -49,17 +49,15 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=[
-            "authorization", "content-type", "x-csrf-token", "x-test-officer-token",
-            "x-test-officer-run-token", "x-test-officer-project-token",
+            "authorization", "content-type", "x-csrf-token",
         ],
     )
     app.middleware("http")(BasicRateLimiter())
     app.middleware("http")(security_headers)
     app.include_router(router)
     app.include_router(auth_router)
-    app.include_router(run_bundle_router)
-    app.include_router(credential_router)
     app.include_router(agent_router)
+    app.include_router(workbuddy_router)
     _attach_static_workbench(app)
     return app
 

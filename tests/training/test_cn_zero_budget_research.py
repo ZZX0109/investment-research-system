@@ -210,6 +210,88 @@ def test_cn_primary_failure_uses_baostock_and_never_yfinance(monkeypatch, tmp_pa
     assert all(item["provider_chain"] == ["akshare", "baostock"] for item in output)
 
 
+def test_cn_universe_discovery_does_not_silently_keep_demo_symbols(monkeypatch) -> None:
+    module = _load_free_fetcher()
+
+    class Primary:
+        def enumerate_symbols(self):
+            raise RuntimeError("public listing endpoint unavailable")
+
+    class Backup:
+        def enumerate_symbols(self, *, as_of):
+            return ["600000", "000001"]
+
+    class BackupContext:
+        def __enter__(self):
+            return Backup()
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(module, "AkshareDailyResearchProvider", Primary)
+    monkeypatch.setattr(module, "BaostockDailyResearchProvider", BackupContext)
+
+    symbols = module._symbols_by_market(None, None, discover_cn=True)["cn"]
+
+    assert {"600000", "000001"}.issubset(symbols)
+    assert set(module.ETF_RESEARCH_SYMBOLS).issubset(symbols)
+    assert "300750" not in symbols
+
+
+def test_capped_cn_discovery_uses_liquid_buffer_before_fixed_etfs(monkeypatch) -> None:
+    module = _load_free_fetcher()
+
+    class Backup:
+        def enumerate_liquid_candidates(self):
+            return ["600000", "000001", "300001"]
+
+    class BackupContext:
+        def __enter__(self):
+            return Backup()
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(module, "BaostockDailyResearchProvider", BackupContext)
+
+    symbols = module._symbols_by_market(None, 2, discover_cn=True)["cn"]
+
+    assert symbols[:5] == list(module.ETF_RESEARCH_SYMBOLS)
+    assert symbols[5:] == ["000001", "300001"]
+
+
+def test_baostock_batch_adapter_reuses_session_and_reconnects_after_error(monkeypatch) -> None:
+    module = _load_free_fetcher()
+    opened: list[object] = []
+    closed: list[object] = []
+
+    class Provider:
+        def __enter__(self):
+            opened.append(self)
+            return self
+
+        def __exit__(self, *_args):
+            closed.append(self)
+
+        def fetch(self, symbol, **_kwargs):
+            if symbol == "bad":
+                raise RuntimeError("socket protocol failure")
+            return symbol
+
+    monkeypatch.setattr(module, "BaostockDailyResearchProvider", Provider)
+    adapter = module._PerRequestBaostock()
+    assert adapter.fetch("one") == "one"
+    assert adapter.fetch("two") == "two"
+    assert len(opened) == 1
+    with __import__("pytest").raises(RuntimeError, match="socket protocol failure"):
+        adapter.fetch("bad")
+    assert len(closed) == 1
+    assert adapter.fetch("three") == "three"
+    assert len(opened) == 2
+    adapter.close()
+    assert len(closed) == 2
+
+
 def test_full_history_ignores_existing_incremental_cursor(monkeypatch, tmp_path) -> None:
     module = _load_free_fetcher()
     starts = []

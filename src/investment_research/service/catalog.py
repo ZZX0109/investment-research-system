@@ -161,7 +161,7 @@ class DomainCatalogService:
             action=RecommendationAction.HOLD,
             conviction=0.58,
             reasoning="Judge gating prevents a stronger recommendation because demo evidence dominates the run.",
-            guardrails=["Requires real price confirmation before buy-grade action."],
+            guardrails=["Requires real data confirmation before changing the research observation."],
             provenance=provenance,
         )
         report = ResearchReport(

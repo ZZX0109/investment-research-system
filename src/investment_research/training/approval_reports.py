@@ -49,6 +49,15 @@ class FormalApprovalReportWriter:
         missing = set(REQUIRED_SCOPE_REPORTS) - set(reports)
         if missing:
             raise ValueError("required scope reports missing: " + ", ".join(sorted(missing)))
+        pending = [
+            name for name, report in reports.items()
+            if str(report.get("status", "")).startswith("pending")
+        ]
+        if pending:
+            raise ValueError(
+                "formal approval evidence cannot contain pending placeholders: "
+                + ", ".join(sorted(pending))
+            )
         scope_root = self.root / training_run_id / market / decision_context / task
         scope_root.mkdir(parents=True, exist_ok=True)
         generated_at = self.clock()

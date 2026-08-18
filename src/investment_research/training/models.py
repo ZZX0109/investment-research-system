@@ -316,6 +316,13 @@ class PreparedPriceBar(BaseModel):
     volume: float
     amount: float | None = None
     turnover_rate: float | None = None
+    previous_close: float | None = None
+    percentage_change: float | None = None
+    pe_ttm: float | None = None
+    pb_mrq: float | None = None
+    ps_ttm: float | None = None
+    pcf_ncf_ttm: float | None = None
+    is_st: bool = False
     margin_financing_balance: float | None = None
     market_breadth_5d: float | None = None
     currency: str
@@ -355,9 +362,16 @@ class LabelSet(BaseModel):
     symbol: str
     as_of_date: date
     future_max_drawdown_20d: float | None = None
+    future_max_drawdown_5d: float | None = None
     future_max_drawdown_60d: float | None = None
     future_max_drawdown_120d: float | None = None
+    future_max_drawdown_240d: float | None = None
+    # Quarterly forward quality labels are populated only by the long-term
+    # snapshot labeler, never inferred from the current-period fundamentals.
+    future_quality_persistence_4q: float | None = None
+    future_quality_persistence_8q: float | None = None
     future_volatility_20d: float | None = None
+    future_volatility_5d: float | None = None
     future_volatility_60d: float | None = None
     future_volatility_120d: float | None = None
     future_return_20d: float | None = None
@@ -367,18 +381,32 @@ class LabelSet(BaseModel):
     post_earnings_abnormal_move_5d: float | None = None
     news_event_shock_3d: float | None = None
     excess_return_20d: float | None = None
+    excess_return_5d: float | None = None
     excess_return_60d: float | None = None
     excess_return_120d: float | None = None
+    excess_return_240d: float | None = None
     industry_excess_return_20d: float | None = None
+    industry_excess_return_5d: float | None = None
     industry_excess_return_60d: float | None = None
     industry_excess_return_120d: float | None = None
     future_return_1d: float | None = None
     future_return_5d: float | None = None
     future_return_20d_from_open: float | None = None
+    volatility_standardized_return_1d: float | None = None
+    volatility_standardized_return_5d: float | None = None
+    volatility_standardized_return_20d: float | None = None
+    direction_threshold_1d: float | None = None
+    direction_threshold_5d: float | None = None
+    direction_threshold_20d: float | None = None
+    drawdown_exceeds_8pct_20d: bool | None = None
+    drawdown_exceeds_12pct_20d: bool | None = None
+    drawdown_exceeds_15pct_20d: bool | None = None
     entry_trade_date: date | None = None
     entry_delay_sessions: int | None = None
     label_available: bool = True
     label_unavailable_reason: str | None = None
+    long_term_label_available: bool = False
+    long_term_label_unavailable_reason: str | None = None
     maximum_adverse_excursion_20d: float | None = None
     maximum_favorable_excursion_20d: float | None = None
     encountered_suspension_20d: bool | None = None
@@ -412,6 +440,10 @@ class TrainingSample(BaseModel):
     market_snapshot_id: str | None = None
     market_snapshot_hash: str | None = Field(default=None, min_length=64, max_length=64)
     feature_version: str
+    # Deliberately separate from the data snapshot and feature contract.  Old
+    # fixtures may not carry it yet, but new PIT readers must propagate the
+    # source label contract instead of deriving it from model_version.
+    label_version: str = "unknown"
     data_version: str
     features: dict[str, float] = Field(default_factory=dict)
     feature_coverage: float = 1.0

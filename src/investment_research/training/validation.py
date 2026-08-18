@@ -108,6 +108,57 @@ def build_walk_forward_folds(
     return folds
 
 
+def build_period_walk_forward_folds(
+    dates: list[date],
+    *,
+    train_periods: int,
+    validation_periods: int,
+    purge_periods: int,
+    embargo_periods: int,
+    label_horizon_days: int,
+    regime_reference: list[PreparedPriceBar] | None = None,
+) -> list[WalkForwardFold]:
+    """Build folds over already-collapsed monthly/quarterly decision dates.
+
+    ``build_walk_forward_folds`` counts trading sessions.  Long-term quality
+    snapshots count quarter/month observations instead, so using that helper
+    directly would turn a requested 24-period train window into 24 calendar
+    dates.  This variant keeps period counts for splitting while retaining the
+    real label/purge horizon in the fold evidence.
+    """
+    if min(train_periods, validation_periods, purge_periods, embargo_periods) < 0:
+        raise ValueError("period windows cannot be negative")
+    if train_periods <= 0 or validation_periods <= 0:
+        raise ValueError("train_periods and validation_periods must be positive")
+    ordered_dates = sorted(set(dates))
+    gap = max(purge_periods, embargo_periods)
+    if len(ordered_dates) < train_periods + gap + validation_periods:
+        return []
+    folds: list[WalkForwardFold] = []
+    start = 0
+    fold_index = 1
+    while start + train_periods + gap + validation_periods <= len(ordered_dates):
+        train_dates = ordered_dates[start : start + train_periods]
+        validation_start = start + train_periods + gap
+        validation_dates = ordered_dates[validation_start : validation_start + validation_periods]
+        folds.append(
+            WalkForwardFold(
+                fold_id=f"wf-period-{fold_index:03d}",
+                train_start=train_dates[0],
+                train_end=train_dates[-1],
+                validation_start=validation_dates[0],
+                validation_end=validation_dates[-1],
+                regime=infer_market_regime(validation_dates, regime_reference=regime_reference),
+                label_horizon_days=label_horizon_days,
+                purge_days=purge_periods,
+                embargo_days=embargo_periods,
+            )
+        )
+        start += validation_periods
+        fold_index += 1
+    return folds
+
+
 def infer_market_regime(
     validation_dates: list[date],
     *,

@@ -29,13 +29,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-step",
         action="append",
-        choices=("fetch_real_data", "fetch_real_events", "retraining", "audits"),
+        choices=("snapshot_gate", "fetch_real_data", "fetch_real_events", "retraining", "audits"),
         default=[],
         help="Re-run a step even when --resume finds a reusable successful result.",
     )
     parser.add_argument("--refresh-real-data", action="store_true", help="Fetch real OHLCV bundles before training.")
     parser.add_argument("--refresh-real-events", action="store_true", help="Fetch earnings/news events before training.")
     parser.add_argument("--skip-audits", action="store_true", help="Skip post-training audit script.")
+    parser.add_argument(
+        "--require-snapshot-gate",
+        action="store_true",
+        help="Require an active, hash-verified research snapshot before training starts.",
+    )
+    parser.add_argument(
+        "--snapshot-data-root",
+        type=Path,
+        default=PROJECT / "var" / "cn-research",
+        help="Root containing active.json and snapshots/.",
+    )
+    parser.add_argument(
+        "--long-term-config",
+        type=Path,
+        default=None,
+        help="Validate and record the long-term training contract; this also requires the snapshot gate.",
+    )
+    parser.add_argument(
+        "--allow-legacy-multi-market",
+        action="store_true",
+        help="Explicitly opt in to the retired four-market compatibility runner.",
+    )
     parser.add_argument("--status", type=Path, default=DEFAULT_STATUS)
     parser.add_argument("--log", type=Path, default=None)
     return parser.parse_args()
@@ -272,6 +294,10 @@ def make_initial_status(args: argparse.Namespace, *, stamp: str, log_path: Path)
         "refresh_real_data": args.refresh_real_data,
         "refresh_real_events": args.refresh_real_events,
         "skip_audits": args.skip_audits,
+        "require_snapshot_gate": args.require_snapshot_gate,
+        "snapshot_data_root": str(args.snapshot_data_root),
+        "long_term_config": str(args.long_term_config) if args.long_term_config else None,
+        "training_contract": getattr(args, "training_contract", None),
         "current_step": None,
         "log_path": str(log_path),
         "steps": [],
@@ -297,6 +323,10 @@ def prepare_status(args: argparse.Namespace) -> tuple[dict, Path]:
     existing["refresh_real_data"] = args.refresh_real_data
     existing["refresh_real_events"] = args.refresh_real_events
     existing["skip_audits"] = args.skip_audits
+    existing["require_snapshot_gate"] = args.require_snapshot_gate
+    existing["snapshot_data_root"] = str(args.snapshot_data_root)
+    existing["long_term_config"] = str(args.long_term_config) if args.long_term_config else None
+    existing["training_contract"] = getattr(args, "training_contract", None)
     existing["current_step"] = None
     existing["log_path"] = str(log_path)
     existing.setdefault("steps", [])
@@ -339,6 +369,29 @@ def maybe_run_step(
 
 def main() -> int:
     args = parse_args()
+    if args.data_source in {"real", "auto"} and not args.allow_legacy_multi_market:
+        raise SystemExit(
+            "legacy multi-market training job is disabled; use the A-share long-term "
+            "queue/worker and scripts/run_long_term_training.py"
+        )
+    if args.long_term_config:
+        # Validate before creating a running status so a typo or an accidental
+        # short-horizon target cannot start a retraining subprocess.
+        sys.path.insert(0, str(PROJECT / "src"))
+        from investment_research.training.long_term_config import load_long_term_training_config
+
+        contract = load_long_term_training_config(args.long_term_config)
+        args.training_contract = {
+            "profile": contract.profile,
+            "schema_version": contract.schema_version,
+            "canonical_hash": contract.canonical_hash(),
+            "horizons_days": contract.horizons_days,
+            "targets": contract.targets,
+            "primary_targets": contract.primary_targets,
+            "auxiliary_targets": contract.auxiliary_targets,
+            "evaluation_metrics": contract.evaluation_metrics,
+        }
+        args.require_snapshot_gate = True
     RUNS.mkdir(parents=True, exist_ok=True)
     status, log_path = prepare_status(args)
     write_status(args.status, status)
@@ -346,6 +399,22 @@ def main() -> int:
     python = sys.executable
     forced_steps = set(args.force_step or [])
     try:
+        if args.require_snapshot_gate:
+            maybe_run_step(
+                status=status,
+                status_path=args.status,
+                log_path=log_path,
+                name="snapshot_gate",
+                command=[
+                    python,
+                    "scripts/check_research_snapshot.py",
+                    "--data-root",
+                    str(args.snapshot_data_root),
+                    *(["--long-term-config", str(args.long_term_config)] if args.long_term_config else []),
+                ],
+                resume=args.resume,
+                forced_steps=forced_steps,
+            )
         if args.data_source == "real" and args.refresh_real_data:
             maybe_run_step(
                 status=status,
@@ -379,6 +448,9 @@ def main() -> int:
                 args.data_source,
                 "--profile",
                 args.profile,
+                "--snapshot-data-root",
+                str(args.snapshot_data_root),
+                *( ["--allow-legacy-multi-market"] if args.allow_legacy_multi_market else [] ),
             ],
             resume=args.resume,
             forced_steps=forced_steps,

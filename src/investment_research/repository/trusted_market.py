@@ -14,6 +14,7 @@ from investment_research.domain.trusted_market import (
     SecurityStateRecord,
     VersionedMarketBar,
 )
+from investment_research.training.pit_join import PITJoinService
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -35,11 +36,20 @@ class TrustedMarketRepository:
         if row is None:
             return None
         security = SecurityMasterRecord.model_validate_json(str(row[1]))
-        state_row = self.connection.execute(
-            "SELECT payload_json FROM security_state_history WHERE security_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?) ORDER BY effective_from DESC LIMIT 1",
+        if security.available_at > as_of:
+            return None
+        state_rows = self.connection.execute(
+            "SELECT payload_json FROM security_state_history WHERE security_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?)",
             (str(security.id), as_of.isoformat(), as_of.isoformat()),
-        ).fetchone()
-        state = None if state_row is None else SecurityStateRecord.model_validate_json(str(state_row[0]))
+        ).fetchall()
+        states = [SecurityStateRecord.model_validate_json(str(item[0])) for item in state_rows]
+        state = PITJoinService().latest_visible(
+            states,
+            as_of,
+            effective_field="effective_from",
+            available_field="available_at",
+            revision_field="id",
+        )
         return security, state
 
     def add_security_state(self, item: SecurityStateRecord) -> SecurityStateRecord:

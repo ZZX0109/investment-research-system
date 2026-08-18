@@ -27,8 +27,11 @@ RUN pip install .
 
 COPY --from=workbench-build /app/dist-workbench ./dist-workbench
 RUN mkdir -p /app/var/public-demo /app/runs/secrets
+RUN addgroup --system app && adduser --system --ingroup app app \
+    && chown -R app:app /app
 
 ENV INVESTMENT_RESEARCH_STATIC_DIR=/app/dist-workbench \
     INVESTMENT_RESEARCH_DATABASE_PATH=/app/var/public-demo/investment_research.db
+USER app
 EXPOSE 10000
 CMD ["python", "scripts/start_public_demo.py"]

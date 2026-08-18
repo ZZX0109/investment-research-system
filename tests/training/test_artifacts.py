@@ -1,98 +1,86 @@
-from datetime import date
+from pathlib import Path
+from datetime import datetime, timezone
 
-from investment_research.training.artifacts import TrainingArtifactStore
-from investment_research.training.models import (
-    FoldMetric,
-    ModelCard,
-    PromotionGateCheck,
-    PromotionGatePolicy,
-    PromotionGateResult,
-    RegimeCoverageRecord,
-    SkippedTrainerRecord,
-    TrainingExperimentAuditSummary,
-    TrainingExperimentReport,
-    TrainingExperimentResult,
-    TrainingSampleCoverageSummary,
+from investment_research.training.artifacts import (
+    ArtifactIndex,
+    discover_local_references,
+    append_to_index,
+    invalidate_artifacts_for_plan,
+    register_artifact,
+    validate_index,
 )
 
 
-def _card() -> ModelCard:
-    return ModelCard(
-        model_id="baseline-risk-d-v1-f-v1",
-        task_name="future_max_drawdown_20d",
-        algorithm_family="linear_baseline",
-        algorithm_name="correlation_logit",
-        data_version="d-v1",
-        feature_version="f-v1",
-        label_version="l-v1",
-        training_window_start=date(2023, 1, 1),
-        training_window_end=date(2025, 12, 31),
-        validation_metrics=[FoldMetric(fold_id="wf-001", regime="bull", metric_name="top_bucket_drawdown_lift", metric_value=0.1)],
+def test_artifact_index_discovers_local_refs_and_ignores_external_urls(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    target = root / "predictions.parquet"
+    target.write_bytes(b"predictions")
+    report = root / "evaluation.json"
+    report.write_text(
+        '{"prediction_artifact": {"ref": "predictions.parquet"}, "source_ref": "https://example.com/source"}',
+        encoding="utf-8",
     )
 
+    assert discover_local_references(root, report) == ["predictions.parquet"]
+    record = register_artifact(root, report, kind="evaluation")
+    assert record.references == ["predictions.parquet"]
 
-def test_training_artifact_store_writes_report_and_model_card(tmp_path) -> None:
-    store = TrainingArtifactStore(tmp_path)
-    card = _card()
-    report = TrainingExperimentReport(
-        target_name="future_max_drawdown_20d",
-        baseline_model_id=card.model_id,
-        audit=TrainingExperimentAuditSummary(
-            sample_coverage=TrainingSampleCoverageSummary(
-                sample_count=32,
-                symbol_count=2,
-                symbols=["AAPL", "NVDA"],
-                data_issue_code_counts={"future_event": 1},
-            ),
-            regime_coverage=[
-                RegimeCoverageRecord(
-                    regime="unknown",
-                    fold_count=3,
-                    validation_prediction_count=18,
-                    validation_start=date(2025, 10, 1),
-                    validation_end=date(2025, 12, 31),
-                )
-            ],
-            skipped_trainers=[
-                SkippedTrainerRecord(
-                    trainer_name="patchtst",
-                    algorithm_family="patchtst",
-                    reason="missing optional dependency: No module named 'patchtst'",
-                )
-            ],
-        ),
-        results=[
-            TrainingExperimentResult(
-                trainer_name="linear-baseline",
-                algorithm_family="linear_baseline",
-                model_card=card,
-                promotion_result=PromotionGateResult(
-                    candidate_model_id=card.model_id,
-                    eligible=True,
-                    effective_policy=PromotionGatePolicy(),
-                    checks=[
-                        PromotionGateCheck(
-                            check_name="minimum_alert_precision",
-                            status="passed",
-                            actual_value=0.7,
-                            threshold_value=0.5,
-                            detail="Candidate alert precision meets minimum.",
-                        )
-                    ],
-                ),
-                eligible_for_approval=True,
-            )
-        ],
+
+def test_artifact_index_hashes_and_detects_tampering(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    payload = root / "predictions.parquet"
+    payload.write_bytes(b"compressed-predictions")
+    record = register_artifact(root, payload, kind="predictions")
+    index = append_to_index(tmp_path / "index.json", record)
+    assert isinstance(index, ArtifactIndex)
+    assert validate_index(root, index) == []
+    payload.write_bytes(b"tampered")
+    assert any(item.startswith("size_mismatch") or item.startswith("hash_mismatch") for item in validate_index(root, index))
+
+
+def test_artifact_index_rejects_dangling_references(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    payload = root / "report.json"
+    payload.write_text("{}", encoding="utf-8")
+    record = register_artifact(root, payload, kind="report", references=["missing-model.json"])
+    index = ArtifactIndex(generated_at=datetime.now(timezone.utc), artifacts=[record])
+    assert "dangling_reference:" in "\n".join(validate_index(root, index))
+
+
+def test_incremental_plan_marks_only_lineage_matched_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    affected_path = root / "affected.json"
+    unaffected_path = root / "unaffected.json"
+    affected_path.write_text("affected", encoding="utf-8")
+    unaffected_path.write_text("unaffected", encoding="utf-8")
+    affected = register_artifact(
+        root,
+        affected_path,
+        kind="feature",
+        metadata={"symbol": "600519.SH", "start_date": "2024-01-01", "end_date": "2024-03-31"},
     )
-
-    report_path = store.write_experiment_report(report, name="demo")
-    card_path = store.write_model_card(card, name=card.model_id)
-
-    assert report_path.exists()
-    assert card_path.exists()
-    report_text = report_path.read_text(encoding="utf-8")
-    assert '"sample_count": 32' in report_text
-    assert '"regime": "unknown"' in report_text
-    assert '"trainer_name": "patchtst"' in report_text
-    assert '"check_name": "minimum_alert_precision"' in report_text
-    assert '"minimum_alert_precision": 0.5' in report_text
+    unaffected = register_artifact(
+        root,
+        unaffected_path,
+        kind="feature",
+        metadata={"symbol": "000001.SZ", "start_date": "2024-01-01", "end_date": "2024-03-31"},
+    )
+    index = ArtifactIndex(generated_at=datetime.now(timezone.utc), artifacts=[affected, unaffected])
+    plan = {
+        "plan_hash": "a" * 64,
+        "plan": {
+            "affected_symbols": ["600519.SH"],
+            "feature_ranges": {"600519.SH": ["2024-01-15", "2024-02-15"]},
+            "label_ranges": {"600519.SH": ["2023-01-01", "2024-01-31"]},
+            "invalidated_snapshot_ids": [],
+            "invalidated_model_versions": [],
+        },
+    }
+    updated, ids = invalidate_artifacts_for_plan(index, plan)
+    assert ids == [affected.artifact_id]
+    assert updated.artifacts[0].lifecycle == "rebuild_required"
+    assert updated.artifacts[1].lifecycle == "active"

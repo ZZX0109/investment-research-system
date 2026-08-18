@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, is_dataclass
-from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -20,7 +19,6 @@ PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT / "src"))
 
 from investment_research.training.approval_reports import (
-    REQUIRED_SCOPE_REPORTS,
     FormalApprovalReportWriter,
 )
 from investment_research.training.formal_direction_runner import FormalDirectionTrainingRunner
@@ -30,7 +28,14 @@ from investment_research.training.formal_training import FinalHoldoutLedger, can
 from investment_research.training.formal_training import FormalScopeTrainingPlan
 from investment_research.training.catalog_runtime import open_formal_catalog
 from investment_research.training.pipeline_config import load_training_pipeline_config
+from investment_research.training.formal_scope_reports import build_formal_scope_reports
 from investment_research.domain.pit import ModelApprovalEvidence
+from investment_research.training.active_snapshot_guard import (
+    ActiveSnapshotInputError,
+    require_active_snapshot,
+    require_training_snapshot_gate,
+)
+from investment_research.training.snapshot_landing import SnapshotGateConfig
 
 
 TASKS = ("drawdown_20d", "direction_1d", "direction_5d", "return_20d")
@@ -41,6 +46,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--object-store-root", type=Path)
+    parser.add_argument(
+        "--data-root", type=Path, default=PROJECT / "var/cn-research",
+        help="immutable active snapshot root; formal training refuses to run without it",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +57,11 @@ def main() -> int:
     args = parse_args()
     config = load_training_pipeline_config(args.config)
     run_root = args.run_root.resolve()
+    try:
+        active = require_active_snapshot(args.data_root)
+        require_training_snapshot_gate(active, config=SnapshotGateConfig(), labels_mature=True)
+    except ActiveSnapshotInputError as exc:
+        raise SystemExit(f"formal training blocked by active snapshot gate: {exc}") from exc
     training_run_id = os.environ.get("INVESTMENT_RESEARCH_TRAINING_RUN_ID")
     if not training_run_id:
         raise SystemExit("INVESTMENT_RESEARCH_TRAINING_RUN_ID is required for formal training")
@@ -117,7 +131,12 @@ def main() -> int:
                 report_hashes = writer.write(
                     training_run_id=training_run_id, market=market,
                     decision_context=context, task=task,
-                    reports=_reports_for_scope(dataset.manifest.model_dump(mode="json"), plan, result_payload),
+                    reports=build_formal_scope_reports(
+                        dataset_manifest=dataset.manifest.model_dump(mode="json"),
+                        plan=plan,
+                        result=result_payload,
+                        samples=samples,
+                    ),
                 )
                 _register_approval_evidence(
                     adapter.catalog, report_hashes=report_hashes, evidence_root=run_root / "approval_evidence",
@@ -175,28 +194,6 @@ def _run_task(task, *, samples, market, context, dataset_hash, ledger):
     )
 
 
-def _reports_for_scope(dataset_manifest, plan, result):
-    candidates = result.get("candidates", [])
-    selected = result.get("selected_candidate")
-    selected_payload = next((item for item in candidates if item.get("name") == selected), {})
-    common = {"dataset_manifest": dataset_manifest, "training_result": result}
-    reports = {
-        "dataset_manifest": dataset_manifest,
-        "leakage_audit": {"status": "catalog_verified", "dataset_hash": dataset_manifest["dataset_hash"]},
-        "fold": {"fold_hash": result["fold_hash"], "candidate_count": len(candidates)},
-        "feature_coverage": {"status": "from_pit_dataset_manifest", "row_count": dataset_manifest["row_count"]},
-        "ablation": {"status": "pending_formal_feature_group_execution", **common},
-        "calibration": {"status": "time_oof_only", "selected": selected_payload},
-        "market_industry_regime": {"status": "pending_group_evaluation", **common},
-        "holdout_12m": {"status": "evaluated_once", "selected": selected, "result": result},
-        "stress_6m": {"status": "pending_stress_slice_aggregation", "selected": selected},
-        "cost_liquidity": {"status": "pending_authorized_market_rules"},
-        "artifact_hash": {"candidate_result_hash": _hash(result), "deployable_artifacts_persisted": False},
-        "approval": {"status": "research_only", "reason": "candidate_evidence_only"},
-    }
-    return {name: reports[name] for name in REQUIRED_SCOPE_REPORTS}
-
-
 def _jsonable(value):
     if is_dataclass(value):
         return _jsonable(asdict(value))
@@ -205,10 +202,6 @@ def _jsonable(value):
     if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     return value
-
-
-def _hash(value) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _register_approval_evidence(

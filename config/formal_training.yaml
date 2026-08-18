@@ -27,6 +27,7 @@ providers:
     supports_historical_pit: false
     supports_revisions: false
     historical_time_fields: []
+    exchange_calendar_ref: null
   cn:
     primary: licensed-cn-primary
     backup: licensed-cn-backup
@@ -37,6 +38,7 @@ providers:
     supports_historical_pit: false
     supports_revisions: false
     historical_time_fields: []
+    exchange_calendar_ref: null
   hk:
     primary: licensed-hk-primary
     backup: licensed-hk-backup
@@ -47,6 +49,7 @@ providers:
     supports_historical_pit: false
     supports_revisions: false
     historical_time_fields: []
+    exchange_calendar_ref: null
   jp:
     primary: licensed-jp-primary
     backup: licensed-jp-backup
@@ -57,6 +60,7 @@ providers:
     supports_historical_pit: false
     supports_revisions: false
     historical_time_fields: []
+    exchange_calendar_ref: null
 cache_ttl:
   daily_bars_seconds: 86400
   events_seconds: 3600

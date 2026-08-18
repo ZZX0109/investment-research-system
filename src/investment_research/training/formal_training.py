@@ -43,8 +43,11 @@ RISK_CANDIDATES = (
     "linear-baseline",
     "logistic-regression",
     "random-forest",
+    "random-forest-regularized",
     "lightgbm",
+    "lightgbm-regularized",
     "xgboost",
+    "xgboost-regularized",
     "time-oof-weighted-ensemble",
 )
 DIRECTION_CANDIDATES = (
@@ -53,17 +56,24 @@ DIRECTION_CANDIDATES = (
     "momentum",
     "random",
     "logistic-regression",
+    "logistic-regression-regularized",
     "random-forest",
+    "random-forest-regularized",
     "lightgbm",
+    "lightgbm-regularized",
     "xgboost",
+    "xgboost-regularized",
     "time-oof-weighted-ensemble",
 )
 RETURN_CANDIDATES = (
     "historical-distribution",
     "linear-quantile",
     "quantile-random-forest",
+    "quantile-random-forest-regularized",
     "lightgbm-quantile",
+    "lightgbm-quantile-regularized",
     "xgboost-quantile",
+    "xgboost-quantile-regularized",
     "time-oof-weighted-ensemble",
 )
 

@@ -14,7 +14,8 @@ from investment_research.training.formal_training import (
 )
 from investment_research.training.models import TrainingSample
 from investment_research.training.numeric_safety import guarded_model_math, require_finite
-from investment_research.training.research_evaluation import REGIMES, classify_market_regime, fit_regime_thresholds
+from investment_research.training.research_evaluation import REGIMES, classify_market_regime_groups, fit_regime_thresholds, regime_matches
+from investment_research.training.tabular_preprocessing import estimator_pipeline, sample_matrix
 
 
 @dataclass(frozen=True)
@@ -27,8 +28,11 @@ class RiskCandidateResult:
     calibration_method: str | None
     brier: float
     auroc: float | None
+    pr_auc: float | None
     ece: float
     alert_precision: float
+    base_rate: float
+    alert_coverage: float
     drawdown_lift: float
     regime_metrics: dict[str, dict[str, float | None]]
     fold_hash: str
@@ -86,6 +90,7 @@ class FormalRiskTrainingRunner:
                 training_fold_ids=["development_only"],
             )
             calibrated = calibrator.predict_many(scores)
+            alert_coverage = _select_alert_coverage(calibrated, candidate_labels)
             result = RiskCandidateResult(
                 name=name,
                 raw_oof_scores=scores,
@@ -95,10 +100,13 @@ class FormalRiskTrainingRunner:
                 calibration_method=calibrator.method.value,
                 brier=_brier(calibrated, candidate_labels),
                 auroc=_auroc(candidate_labels, calibrated),
+                pr_auc=_pr_auc(candidate_labels, calibrated),
                 ece=_binary_ece(calibrated, candidate_labels),
-                alert_precision=_alert_precision(calibrated, candidate_labels),
-                drawdown_lift=_drawdown_lift(calibrated, candidate_labels),
-                regime_metrics=_risk_regime_metrics(calibrated, candidate_labels, regimes),
+                alert_precision=_alert_precision(calibrated, candidate_labels, alert_coverage),
+                base_rate=sum(candidate_labels) / len(candidate_labels),
+                alert_coverage=alert_coverage,
+                drawdown_lift=_drawdown_lift(calibrated, candidate_labels, alert_coverage),
+                regime_metrics=_risk_regime_metrics(calibrated, candidate_labels, regimes, alert_coverage),
                 fold_hash=fold_hash,
             )
             candidates.append(result)
@@ -108,16 +116,19 @@ class FormalRiskTrainingRunner:
             fold_ids = candidate_fold_ids
         assert labels is not None and fold_ids is not None
         ensemble = _ensemble(raw_predictions, labels)
+        ensemble_alert_coverage = _select_alert_coverage(ensemble, labels)
         candidates.append(
             RiskCandidateResult(
                 name="time-oof-weighted-ensemble", raw_oof_scores=ensemble,
                 oof_scores=ensemble, oof_labels=labels, oof_fold_ids=fold_ids,
                 calibration_method="time_oof_weighted",
                 brier=_brier(ensemble, labels), auroc=_auroc(labels, ensemble), fold_hash=fold_hash,
+                pr_auc=_pr_auc(labels, ensemble),
                 ece=_binary_ece(ensemble, labels),
-                alert_precision=_alert_precision(ensemble, labels),
-                drawdown_lift=_drawdown_lift(ensemble, labels),
-                regime_metrics=_risk_regime_metrics(ensemble, labels, regimes),
+                alert_precision=_alert_precision(ensemble, labels, ensemble_alert_coverage),
+                base_rate=sum(labels) / len(labels), alert_coverage=ensemble_alert_coverage,
+                drawdown_lift=_drawdown_lift(ensemble, labels, ensemble_alert_coverage),
+                regime_metrics=_risk_regime_metrics(ensemble, labels, regimes, ensemble_alert_coverage),
             )
         )
         # The ensemble remains a reported challenger until its constituent
@@ -168,7 +179,7 @@ class FormalRiskTrainingRunner:
             scores.extend(fold_scores)
             labels.extend(_label(item, self.drawdown_threshold) for item in fold.validation)
             ids.extend([fold.fold.fold_id] * len(fold.validation))
-            regimes.extend(classify_market_regime(item, thresholds) for item in fold.validation)
+            regimes.extend(classify_market_regime_groups(item, thresholds) for item in fold.validation)
         if len(set(labels)) < 2:
             raise ValueError(f"risk candidate {name} has one-class OOF labels")
         return scores, labels, ids, regimes
@@ -194,42 +205,36 @@ class FormalRiskTrainingRunner:
 
 
 def _estimator(name: str):
-    if name == "linear-baseline" or name == "logistic-regression":
+    if name in {"linear-baseline", "logistic-regression"}:
         from sklearn.linear_model import LogisticRegression
-        from sklearn.preprocessing import FunctionTransformer
-        from sklearn.pipeline import make_pipeline
-        from sklearn.preprocessing import StandardScaler
-        return make_pipeline(
-            StandardScaler(),
-            FunctionTransformer(_clip_scaled_values),
+        return estimator_pipeline(
             LogisticRegression(
                 solver="liblinear", C=0.01, max_iter=1000,
                 class_weight="balanced", random_state=42,
             ),
+            scale=True,
         )
-    if name == "random-forest":
+    if name.startswith("random-forest"):
         from sklearn.ensemble import RandomForestClassifier
-        return RandomForestClassifier(n_estimators=200, max_depth=6, min_samples_leaf=2, class_weight="balanced_subsample", random_state=42)
-    if name == "lightgbm":
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(RandomForestClassifier(n_estimators=350 if regularized else 200, max_depth=8 if regularized else 6, min_samples_leaf=10 if regularized else 2, max_features="sqrt" if regularized else 1.0, class_weight="balanced_subsample", random_state=42, n_jobs=4))
+    if name.startswith("lightgbm"):
         import lightgbm as lgb
-        return lgb.LGBMClassifier(n_estimators=200, learning_rate=0.05, num_leaves=31, class_weight="balanced", random_state=42, verbose=-1)
-    if name == "xgboost":
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(lgb.LGBMClassifier(n_estimators=350 if regularized else 200, learning_rate=0.025 if regularized else 0.05, num_leaves=15 if regularized else 31, min_child_samples=80 if regularized else 20, subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1 if regularized else 0.0, reg_lambda=1.0 if regularized else 0.0, class_weight="balanced", random_state=42, verbose=-1, n_jobs=4))
+    if name.startswith("xgboost"):
         import xgboost as xgb
-        return xgb.XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42, verbosity=0, n_jobs=1)
+        regularized = name.endswith("regularized")
+        return estimator_pipeline(xgb.XGBClassifier(n_estimators=350 if regularized else 200, max_depth=3 if regularized else 5, learning_rate=0.03 if regularized else 0.05, min_child_weight=5 if regularized else 1, reg_lambda=2.0 if regularized else 1.0, subsample=0.8, colsample_bytree=0.8, tree_method="hist", max_bin=255, random_state=42, verbosity=0, n_jobs=4))
     raise ValueError(f"unsupported formal risk candidate: {name}")
 
 
 def _vector(sample: TrainingSample, feature_order: list[str]) -> list[float]:
-    return [float(sample.features.get(name, 0.0)) for name in feature_order]
+    return [sample.features.get(name) for name in feature_order]
 
 
 def _matrix(samples: list[TrainingSample], feature_order: list[str]):
-    import numpy as np
-    import pandas as pd
-
-    values = np.asarray([_vector(item, feature_order) for item in samples], dtype=float)
-    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
-    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=feature_order)
+    return sample_matrix(samples, feature_order)
 
 
 def _clip_scaled_values(values):
@@ -263,6 +268,14 @@ def _auroc(labels: list[int], scores: list[float]) -> float | None:
     return float(roc_auc_score(labels, scores))
 
 
+def _pr_auc(labels: list[int], scores: list[float]) -> float | None:
+    if len(set(labels)) < 2:
+        return None
+    from sklearn.metrics import average_precision_score
+
+    return float(average_precision_score(labels, scores))
+
+
 def _ensemble(predictions: dict[str, list[float]], labels: list[int]) -> list[float]:
     weights = {name: 1.0 / max(_brier(values, labels), 1e-8) for name, values in predictions.items()}
     total = sum(weights.values())
@@ -291,15 +304,28 @@ def _alert_precision(scores: list[float], labels: list[int], fraction: float = 0
     return sum(labels[index] for index in selected) / len(selected)
 
 
-def _drawdown_lift(scores: list[float], labels: list[int]) -> float:
+def _select_alert_coverage(scores: list[float], labels: list[int]) -> float:
+    """Freeze an alert budget from development OOF predictions only."""
     prevalence = sum(labels) / len(labels)
-    return _alert_precision(scores, labels) / prevalence - 1 if prevalence else 0.0
+    candidates = (0.10, 0.15, 0.20, 0.25, 0.30)
+    return max(
+        candidates,
+        key=lambda fraction: (
+            _alert_precision(scores, labels, fraction) - prevalence,
+            -fraction,
+        ),
+    )
 
 
-def _risk_regime_metrics(scores: list[float], labels: list[int], regimes: list[str]) -> dict[str, dict[str, float | None]]:
+def _drawdown_lift(scores: list[float], labels: list[int], fraction: float = 0.2) -> float:
+    prevalence = sum(labels) / len(labels)
+    return _alert_precision(scores, labels, fraction) / prevalence - 1 if prevalence else 0.0
+
+
+def _risk_regime_metrics(scores: list[float], labels: list[int], regimes: list[str], alert_coverage: float = 0.2) -> dict[str, dict[str, float | None]]:
     output: dict[str, dict[str, float | None]] = {}
     for regime in REGIMES:
-        indexes = [index for index, value in enumerate(regimes) if value == regime]
+        indexes = [index for index, value in enumerate(regimes) if regime_matches(value, regime)]
         if not indexes:
             continue
         group_scores = [scores[index] for index in indexes]
@@ -307,8 +333,11 @@ def _risk_regime_metrics(scores: list[float], labels: list[int], regimes: list[s
         output[regime] = {
             "sample_count": float(len(indexes)),
             "auroc": _auroc(group_labels, group_scores),
+            "pr_auc": _pr_auc(group_labels, group_scores),
             "brier": _brier(group_scores, group_labels),
-            "alert_precision": _alert_precision(group_scores, group_labels),
-            "drawdown_lift": _drawdown_lift(group_scores, group_labels),
+            "alert_precision": _alert_precision(group_scores, group_labels, alert_coverage),
+            "base_rate": sum(group_labels) / len(group_labels),
+            "alert_coverage": alert_coverage,
+            "drawdown_lift": _drawdown_lift(group_scores, group_labels, alert_coverage),
         }
     return output

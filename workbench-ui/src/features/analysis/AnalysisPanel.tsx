@@ -47,7 +47,7 @@ export function AnalysisPanel() {
             <InlineNotice
               title={l("来源元数据缺失", "Source Metadata Missing")}
               tone="block"
-              body={l("运行已加载，但模式、数据源或数据截至时间不完整。重新生成运行前，请勿采信结论。", "The run loaded, but its mode/provider/as-of metadata is incomplete. Do not trust the conclusion until the run is regenerated.")}
+              body={l("运行已加载，但模式、数据源或数据截至时间不完整。请先补齐来源信息，再使用该运行。", "The run loaded, but its mode/provider/as-of metadata is incomplete. Review the source metadata before using this run.")}
             />
           ) : null}
           {staleSource ? (
@@ -85,13 +85,19 @@ export function AnalysisPanel() {
                 <div className="metric-card__value">{term(dossier.judgeVerdict)}</div>
               </div>
               <div className="metric-card">
-                <div className="eyebrow">{l("置信度", "Confidence")}</div>
-                <div className="metric-card__value">{Math.round(dossier.confidence * 100)}%</div>
+                <div className="eyebrow">{l("研究读数状态", "Research reading status")}</div>
+                <div className="metric-card__value">{term(dossier.modelStatus)}</div>
               </div>
               <div className="metric-card">
-                <div className="eyebrow">{l("风险概率", "Risk Probability")}</div>
+                <div className="eyebrow">{l("风险观察", "Risk observation")}</div>
                 <div className="metric-card__value">
-                  {dossier.riskProbability == null ? "n/a" : `${Math.round(dossier.riskProbability * 100)}%`}
+                  {dossier.riskProbability == null
+                    ? l("暂无", "n/a")
+                    : dossier.riskProbability >= 0.65
+                      ? l("近期波动偏高", "Higher near-term volatility")
+                      : dossier.riskProbability >= 0.4
+                        ? l("需要继续观察", "Needs further observation")
+                        : l("暂未偏高", "Not elevated in this reading")}
                 </div>
               </div>
               <div className="metric-card">

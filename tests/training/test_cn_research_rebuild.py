@@ -60,7 +60,8 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
             "--as-of", days[-1].isoformat(), "--max-equities", "1",
                 "--minimum-equities", "1",
                 "--minimum-history-sessions", "250",
-                "--minimum-training-sessions", "250",
+            "--minimum-training-sessions", "250",
+            "--allow-current-cohort-breadth",
         ],
         cwd=project, text=True, capture_output=True, check=False,
     )
@@ -92,6 +93,17 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
         if isinstance(row["event_missing_mask"], str)
         else row["event_missing_mask"].get("event_source_unavailable") == 1.0
         for row in rows
+    )
+    etf_manifests = close["sample_manifests"]["cn_etf_benchmark"]
+    assert etf_manifests
+    etf_manifest = json.loads(Path(etf_manifests[-1]).read_text(encoding="utf-8"))
+    assert etf_manifest["cohort_role"] == "benchmark_only"
+    assert etf_manifest["ranking_label_eligible"] is False
+    etf_rows = PITParquetStore(LocalObjectStore(parquet_root)).read_partition(etf_manifest["sample_parquet_ref"])
+    assert etf_rows
+    assert all(
+        (json.loads(row["labels"]) if isinstance(row["labels"], str) else row["labels"])["long_term_label_available"] is False
+        for row in etf_rows
     )
     leakage = json.loads(Path(close["leakage_report_ref"]).read_text(encoding="utf-8"))
     assert leakage["research_error_count"] == 0

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Run the fixed zero-budget CN research demonstration end to end.
 
-The command deliberately stops at the first failed evidence stage.  It never
-turns public backfills into formal PIT data and never bypasses cohort, model,
-artifact, or shadow gates.
+Stages are fail-isolated: a blocked equity cohort does not prevent the ETF
+cohort from producing its own immutable research evidence.  The command never
+turns public backfills into formal PIT data or bypasses cohort, model, artifact
+or shadow gates.
 """
 from __future__ import annotations
 
@@ -27,8 +28,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the reproducible CN research demo")
     parser.add_argument("--profile", choices=("full", "smoke"), default="full")
     parser.add_argument(
-        "--candidate-universe-size", type=int, default=None,
-        help="Optional development-only collection cap. The default discovers the full free CN universe.",
+        "--candidate-universe-size", type=int, default=160,
+        help="Liquid public candidate buffer used to build the fixed 100-stock cohort; pass a larger value for broader research collection.",
     )
     parser.add_argument("--max-symbols", type=int, default=None, help="Development-only provider cap; omit for the fixed 100-stock plus 5-ETF workflow.")
     parser.add_argument(
@@ -56,6 +57,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-sequence-challengers", action="store_true", help="Skip true-window deep challenger runs; tabular research tasks remain unchanged.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report", type=Path, default=PROJECT / "artifacts/cn_research_demo/latest.json")
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Pin a fixed run_id so a relaunched guardian process resumes the SAME run directory "
+             "(断点续跑) instead of creating a new timestamped run. Default: timestamped run_id.",
+    )
     return parser.parse_args()
 
 
@@ -79,7 +87,7 @@ def main() -> int:
         "status": "running",
         "deployment_ready": False,
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "run_id": f"cn-research-demo-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}",
+        "run_id": args.run_id or f"cn-research-demo-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}",
         "profile": args.profile,
         "stages": [],
         "cohorts": {},
@@ -164,6 +172,9 @@ def main() -> int:
                     report["tasks"][f"{cohort}/{task}"] = {"status": "unavailable", "gating_reasons": ["sample_manifests_missing"]}
                 blocked = True
                 continue
+            manifest_list_path = _write_manifest_list(
+                run_model_root / "manifest-lists" / f"{cohort}.json", manifests
+            )
             if cohort == "cn_equity_core" and len(cohort_payload.get("members", [])) < args.minimum_cohort_symbols:
                 cohort_report.update(
                     status="blocked",
@@ -203,15 +214,35 @@ def main() -> int:
                      "--output-root", str(run_model_root),
                      "--minimum-cohort-symbols", str(args.minimum_cohort_symbols),
                      "--tasks", task, "--training-run-id", train_id,
-                     "--sample-manifest", *manifests],
+                     "--sample-manifest-file", str(manifest_list_path)],
                     report, timeout=24 * 60 * 60, allow_failure=True,
                 )
                 summary_path = _path_from_stdout(train_stdout)
+                # The task summary is written to the deterministic scope root
+                # and is authoritative even when a supervisor truncates the
+                # subprocess stdout.  Without this fallback completed
+                # tabular tasks were incorrectly reported as unavailable.
+                if summary_path is None:
+                    expected_summary = (
+                        run_model_root / "cn" / "close_confirmed" / cohort
+                        / f"{train_id}.json"
+                    )
+                    summary_path = expected_summary if expected_summary.is_file() else None
                 task_record = _training_task_record(summary_path, task)
-                if task_record.get("status") == "research_only" and not args.skip_sequence_challengers:
+                # The five ETFs are a deliberately small benchmark/generalisation
+                # cohort.  They retain simple baselines and Shadow evidence, but
+                # must not spend local compute training deep architectures or be
+                # treated as promotion evidence.  Sequence challengers are
+                # trained only on the full fixed equity cohort.
+                if (
+                    cohort == "cn_equity_core"
+                    and task_record.get("status") == "research_only"
+                    and not args.skip_sequence_challengers
+                ):
                     task_record["sequence_challengers"] = _run_sequence_challengers(
                         cohort=cohort, task=task, manifests=manifests,
                         run_id=train_id, report=report, output_root=run_model_root,
+                        manifest_list_path=manifest_list_path,
                     )
                     _attach_sequence_challengers_to_roster(task_record)
                 report["tasks"][f"{cohort}/{task}"] = task_record
@@ -402,14 +433,18 @@ def _session_range(members: list[dict[str, Any]]) -> dict[str, int | None]:
     return {"minimum": min(values) if values else None, "maximum": max(values) if values else None}
 
 
-def _run_sequence_challengers(*, cohort: str, task: str, manifests: list[str], run_id: str, report: dict[str, Any], output_root: Path | None = None) -> dict[str, Any]:
+def _run_sequence_challengers(*, cohort: str, task: str, manifests: list[str], run_id: str, report: dict[str, Any], output_root: Path | None = None, manifest_list_path: Path | None = None) -> dict[str, Any]:
     architectures = ("patchtst", "tcn", "itransformer", "deep_mlp")
     window = 20 if task == "direction_1d" else 60 if task == "direction_5d" else 120
     output: dict[str, Any] = {}
     for architecture in architectures:
         command = [sys.executable, "scripts/run_sequence_research_training.py", "--cohort", cohort,
              "--task", task, "--architecture", architecture, "--window", str(window),
-             "--training-run-id", f"{run_id}-sequence-{architecture}", "--sample-manifest", *manifests]
+             "--training-run-id", f"{run_id}-sequence-{architecture}"]
+        if manifest_list_path is not None:
+            command.extend(["--sample-manifest-file", str(manifest_list_path)])
+        else:
+            command.extend(["--sample-manifest", *manifests])
         if output_root is not None:
             command.extend(["--output-root", str(output_root)])
         stdout = _run(
@@ -418,8 +453,25 @@ def _run_sequence_challengers(*, cohort: str, task: str, manifests: list[str], r
             report, timeout=24 * 60 * 60, allow_failure=True,
         )
         artifact = _path_from_stdout(stdout)
+        # Do not make task availability depend on captured stdout.  Long
+        # challenger runs are often launched under a supervisor whose output
+        # is truncated; the fixed scope path is the authoritative artifact
+        # location.  Read it after the subprocess exits even when stdout is
+        # empty or the process was restarted by the hourly guardian.
         if artifact is None:
-            output[architecture] = {"status": "unavailable", "gating_reasons": ["sequence_manifest_missing"]}
+            artifact = (
+                (output_root or PROJECT / "artifacts/free_research_models")
+                / "cn" / "close_confirmed" / cohort / task / "sequence"
+                / architecture / "sequence_evaluation.json"
+            )
+            if not artifact.is_file():
+                artifact = None
+        if artifact is None:
+            output[architecture] = {
+                "status": "unavailable",
+                "gating_reasons": ["sequence_manifest_missing"],
+                "stdout_capture": "incomplete" if not stdout.strip() else "present",
+            }
             continue
         manifest = artifact.parent / "sequence_manifest.json"
         output[architecture] = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {"status": "unavailable", "gating_reasons": ["sequence_manifest_missing"]}
@@ -455,6 +507,13 @@ def _portable_ref(path: Path) -> str:
         return resolved.relative_to(PROJECT.resolve()).as_posix()
     except ValueError:
         return str(resolved)
+
+
+def _write_manifest_list(path: Path, manifests: list[str]) -> Path:
+    """Freeze the full partition list without exceeding the OS argument limit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"sample_manifests": manifests}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def _verify_rosters(cohort: str, report: dict[str, Any]) -> None:

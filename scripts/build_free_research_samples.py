@@ -23,6 +23,7 @@ from investment_research.domain.data_tier import DataTier, RESEARCH_VISIBILITY_A
 from investment_research.training.dataset import TrainingDatasetBuilder
 from investment_research.training.models import CanonicalInstrument, CoverageGroup, InstrumentType, Market, PreparedPriceBar
 from investment_research.training.parquet_store import PITParquetStore
+from investment_research.training.active_snapshot_guard import require_active_snapshot
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--standard-manifest", type=Path, required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--object-store", type=Path, default=PROJECT / "data" / "free_research_standard")
+    parser.add_argument("--data-root", type=Path, default=PROJECT / "var/cn-research")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--snapshot-manifest", type=Path, required=True)
     parser.add_argument("--decision-context", choices=("close_confirmed", "pre_open"), default="close_confirmed")
@@ -39,6 +41,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    active = require_active_snapshot(args.data_root)
     standard = json.loads(args.standard_manifest.read_text(encoding="utf-8"))
     snapshot = json.loads(args.snapshot_manifest.read_text(encoding="utf-8"))
     if standard.get("formal_pit_eligible"):
@@ -104,6 +107,11 @@ def main() -> int:
         "decision_context": args.decision_context, "feature_version": "investment-risk-features-v2",
         "market_snapshot_id": snapshot["market_snapshot_id"],
         "market_snapshot_hash": snapshot_hash,
+        # This is the data-layer lineage, distinct from the market feature
+        # snapshot used by the model.  Trainers require both values so a
+        # stale/free sample cannot be mixed with a newly activated dataset.
+        "data_snapshot_id": active.snapshot_id,
+        "data_snapshot_manifest_hash": active.manifest_hash,
         "sample_parquet_ref": ref, "payload_hash": payload_hash, "schema_hash": schema_hash,
         "row_count": row_count, "generated_at": datetime.now(timezone.utc).isoformat(),
     }

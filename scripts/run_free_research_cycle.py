@@ -10,7 +10,7 @@ to run it after each market close.
 from __future__ import annotations
 
 import argparse
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import json
 from pathlib import Path
 import subprocess
@@ -169,7 +169,23 @@ def _freeze_research_shadows(*, coverage_payload: dict, markets: set[str], conte
     output: list[dict[str, str]] = []
     for market in sorted(markets):
         zone_by_market = {"cn": "Asia/Shanghai", "us": "America/New_York", "hk": "Asia/Hong_Kong", "jp": "Asia/Tokyo"}
-        local_date = trade_date or frozen_at.astimezone(ZoneInfo(zone_by_market[market])).date()
+        if trade_date is not None:
+            local_date = trade_date
+        else:
+            local_now = frozen_at.astimezone(ZoneInfo(zone_by_market[market]))
+            local_date = local_now.date()
+            # A close-confirmed shadow must never be frozen for the current
+            # civil date before the configured confirmation time.  With an
+            # exchange calendar file, the builder below resolves holidays;
+            # without one, at least keep the weekend fallback deterministic.
+            close_confirmation = {
+                "cn": time(15, 10), "us": time(16, 10),
+                "hk": time(16, 10), "jp": time(15, 40),
+            }[market]
+            if local_now.time() < close_confirmation:
+                local_date -= timedelta(days=1)
+            while local_date.weekday() >= 5:
+                local_date -= timedelta(days=1)
         # Schedulers should pass the exchange trade date explicitly on holiday
         # boundaries.  This default is only the market-local civil date.
         decision = build_market_decision_context(
@@ -247,6 +263,8 @@ def _freeze_prediction_file(path: Path, *, root: Path) -> list[dict[str, str]]:
             provider_conflict=bool(record.get("provider_conflict", False)),
             roster_hash=record.get("roster_hash"),
             model_candidate=record.get("model_candidate"),
+            confidence_tier=record.get("confidence_tier", "unavailable"),
+            confidence_policy=dict(record.get("confidence_policy", {})),
             market_regime=record.get("market_regime", "unknown"),
             candidate_predictions=dict(record.get("candidate_predictions", {})),
             ensemble_weights={str(key): float(value) for key, value in record.get("ensemble_weights", {}).items()},

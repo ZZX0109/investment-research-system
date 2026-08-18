@@ -5,6 +5,7 @@ from investment_research.training.sequence_dataset import build_sequence_example
 from investment_research.training.sequence_models import SequenceModelConfig, SequenceTaskRunner, sequence_input_width
 from investment_research.training.sequence_calibration import decide_with_disagreement, fit_direction_calibrators, weighted_direction_ensemble
 from investment_research.training.sequence_experiment import evaluate_predictions, split_sequence_examples
+from scripts.run_sequence_research_training import _sequence_date_ranges
 
 
 def _rows(n=28):
@@ -84,6 +85,16 @@ def test_sequence_walk_forward_fold_hash_uses_pydantic_fold_contract():
     assert folds[0][0].fold_id.startswith("wf-")
 
 
+def test_sequence_artifact_records_exact_development_holdout_and_shadow_ranges():
+    examples = build_sequence_examples(_rows(1000), target_name="direction_1d", window_sessions=20)
+    ranges = _sequence_date_ranges(examples, task="direction_1d")
+    assert set(ranges) == {"development", "final_fit", "holdout", "shadow"}
+    assert all(ranges[name]["status"] == "recorded" for name in ranges)
+    assert ranges["development"]["start"] <= ranges["final_fit"]["start"]
+    assert ranges["final_fit"]["end"] < ranges["holdout"]["start"]
+    assert ranges["shadow"]["start"] >= ranges["holdout"]["start"]
+
+
 def test_sequence_runner_fits_true_window_and_is_reproducible(tmp_path):
     examples = build_sequence_examples(_rows(30), target_name="direction_1d", window_sessions=20)
     config = SequenceModelConfig(architecture="tcn", task="direction_1d", window_sessions=20, max_epochs=2, patience=1, hidden_size=8, tcn_blocks=1, attention_heads=1)
@@ -134,3 +145,36 @@ def test_sequence_metrics_are_grouped_by_market_regime():
 
     assert set(metrics["regime_metrics"]) == {"bull", "bear", "range"}
     assert metrics["regime_metrics"]["bull"]["sample_count"] == 2.0
+
+
+def test_long_term_quantile_metrics_include_icir_cost_drawdown_and_capacity_contract() -> None:
+    metrics = evaluate_predictions(
+        "excess_return_120d",
+        [[-0.1, index * 0.01, 0.1 + index * 0.01] for index in range(10)],
+        [-0.02, 0.01, 0.03, -0.01, 0.04, 0.02, 0.01, -0.03, 0.02, 0.05],
+        decision_dates=["2025-01-02"] * 5 + ["2026-01-02"] * 5,
+        industry_keys=["banks"] * 5 + ["technology"] * 5,
+        data_completeness=[0.99] * 5 + [0.96] * 5,
+        symbols=[f"S{index:03d}" for index in range(10)],
+    )
+    assert "rank_icir" in metrics
+    assert metrics["turnover"] == 1.0
+    assert "max_drawdown_after_cost" in metrics
+    assert "capacity_estimate" in metrics
+    assert set(metrics["year_rank_ic"]) == {"2025", "2026"}
+    assert set(metrics["industry_rank_ic"]) == {"banks", "technology"}
+    assert set(metrics["data_completeness_rank_ic"]) == {"coverage_at_least_98%", "coverage_95_to_98%"}
+
+
+def test_drawdown_quantile_metrics_namespace_regime_contract() -> None:
+    metrics = evaluate_predictions(
+        "future_max_drawdown_120d",
+        [[-0.20, -0.10, -0.02] for _ in range(10)],
+        [-0.12, -0.08, -0.15, -0.04, -0.10, -0.07, -0.13, -0.06, -0.09, -0.11],
+        regimes=["bull"] * 5 + ["bear"] * 5,
+        decision_dates=["2025-01-02"] * 5 + ["2026-01-02"] * 5,
+        industry_keys=["banks"] * 5 + ["technology"] * 5,
+        data_completeness=[0.99] * 5 + [0.96] * 5,
+    )
+    assert set(metrics["risk_regime_metrics"]) == {"bull", "bear"}
+    assert "regime_metrics" not in metrics

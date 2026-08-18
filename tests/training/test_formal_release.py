@@ -39,6 +39,8 @@ def test_blocked_preflight_materializes_all_32_fail_closed_scopes(tmp_path) -> N
     index = materialize_blocked_release_matrix(tmp_path, preflight=_blocked_report())
     assert len(index.entries) == 32
     assert index.ready_scope_count == 0
+    assert {entry.status for entry in index.entries} == {"blocked"}
+    assert all("authorization_evidence_missing" in entry.gating_reasons for entry in index.entries)
     status = validate_release_matrix(
         tmp_path,
         markets=["cn", "us", "hk", "jp"],

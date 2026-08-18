@@ -19,6 +19,7 @@ REQUIRED_PIT_FIELDS = (
     "available_at",
     "revision",
 )
+FORMAL_MARKETS = ("cn", "us", "hk", "jp")
 
 
 class PreflightStatus(str, Enum):
@@ -37,11 +38,13 @@ class MarketPreflight(BaseModel):
 
 
 class FormalPreflightReport(BaseModel):
-    schema_version: str = "formal-pit-preflight-v1"
+    schema_version: str = "formal-pit-preflight-v2"
     training_run_id: str
     generated_at: datetime
     status: PreflightStatus
     markets: list[MarketPreflight]
+    required_markets: list[str] = Field(default_factory=lambda: list(FORMAL_MARKETS))
+    configuration_errors: list[str] = Field(default_factory=list)
     legacy_inputs_rejected: list[str] = Field(default_factory=list)
     required_pit_fields: list[str] = Field(default_factory=lambda: list(REQUIRED_PIT_FIELDS))
     report_hash: str = ""
@@ -58,7 +61,22 @@ def run_formal_preflight(
     project_root: Path,
 ) -> FormalPreflightReport:
     markets: list[MarketPreflight] = []
-    for market in config.markets:
+    configured_markets = set(config.markets)
+    configuration_errors = [
+        f"unsupported_formal_market:{market}"
+        for market in sorted(configured_markets - set(FORMAL_MARKETS))
+    ]
+    for market in FORMAL_MARKETS:
+        if market not in configured_markets or market not in config.providers:
+            markets.append(
+                MarketPreflight(
+                    market=market,
+                    status=PreflightStatus.BLOCKED,
+                    primary_provider="not-configured",
+                    missing_requirements=["formal_market_not_configured"],
+                )
+            )
+            continue
         provider = config.providers[market]
         missing: list[str] = []
         if not provider.authorized:
@@ -71,6 +89,8 @@ def run_formal_preflight(
             missing.append("backup_provider_missing")
         if not provider.catalog_ref:
             missing.append("pit_catalog_ref_missing")
+        if not provider.exchange_calendar_ref:
+            missing.append("exchange_calendar_reference_missing")
         if not provider.supports_historical_pit:
             missing.append("historical_pit_capability_unconfirmed")
         if not provider.supports_revisions:
@@ -95,7 +115,7 @@ def run_formal_preflight(
     ]
     status = (
         PreflightStatus.PASSED
-        if all(item.status == PreflightStatus.PASSED for item in markets)
+        if not configuration_errors and all(item.status == PreflightStatus.PASSED for item in markets)
         else PreflightStatus.BLOCKED
     )
     report = FormalPreflightReport(
@@ -103,6 +123,7 @@ def run_formal_preflight(
         generated_at=datetime.now(timezone.utc),
         status=status,
         markets=markets,
+        configuration_errors=configuration_errors,
         legacy_inputs_rejected=legacy,
     )
     payload = report.model_dump(mode="json", exclude={"report_hash"})

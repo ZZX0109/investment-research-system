@@ -1,0 +1,100 @@
+schema_version: long-term-training-config-v1
+profile: long_term_investment_quality
+label_policy: pit-available-quarterly-fundamentals-v2
+label_version: cn-long-term-label-v2
+snapshot_frequency: quarterly
+snapshot_cadence: quarter_end
+primary_decision_unit: symbol_quarter_end
+short_horizon_role: auxiliary_market_observation
+feature_groups:
+  - quality_and_balance_sheet
+  - cash_flow_and_growth
+  - valuation_relative_to_industry
+  - shareholder_returns_and_dilution
+  - industry_competition_and_market_state
+  - macro_and_liquidity
+  - events_and_corporate_actions
+horizons_days: [120, 240, 480, 960]
+targets:
+  - future_quality_persistence_4q
+  - future_quality_persistence_8q
+  - excess_return_120d
+  - excess_return_240d
+  - future_max_drawdown_120d
+  - future_max_drawdown_240d
+primary_targets:
+  - excess_return_120d
+  - excess_return_240d
+  - future_max_drawdown_120d
+  - future_max_drawdown_240d
+auxiliary_targets:
+  - future_quality_persistence_4q
+  - future_quality_persistence_8q
+required_snapshot_datasets:
+  - daily_bars_raw
+  - daily_bars_qfq
+  - cn_trading_status
+  - cn_adjustment_factors_research
+  - cn_security_master_research
+  - cn_historical_universe_memberships
+  - cn_fundamentals_research
+  - cn_corporate_actions_research
+  - events
+  - cn_margin_financing_sh
+  - cn_margin_financing_sz
+  - cn_market_breadth_derived
+  - cn_macro_cpi_monthly
+  - cn_macro_ppi_monthly
+  - cn_macro_pmi_monthly
+  - cn_macro_lpr
+  - cn_macro_shibor
+  - cn_macro_m2
+  - cn_macro_social_financing
+  - cn_macro_fx_rmb
+  - cn_macro_pit
+evaluation_metrics:
+  - rank_ic
+  - rank_icir
+  - top_k_excess_return
+  - top_bottom_spread
+  - top_k_excess_return_after_cost
+  - top_bottom_spread_after_cost
+  - pinball_loss
+  - mae
+  - interval_coverage
+  - turnover
+  - max_drawdown
+  - capacity
+  - year_stability
+  - industry_stability
+  - regime_stability
+  - data_completeness_stability
+  - calibration
+purge_days: 960
+embargo_days: 120
+purge_periods: 4
+embargo_periods: 1
+min_history_days: 1260
+train_window_periods: 24
+validation_periods: 4
+final_holdout_periods: 8
+stress_periods: 4
+minimum_shadow_sessions: 60
+minimum_financial_coverage: 0.95
+minimum_rank_ic: 0.02
+minimum_cost_adjusted_return: 0.0
+top_k: 20
+transaction_cost_bps: 15.0
+require_snapshot_gate: true
+require_pit_financials: true
+require_mature_labels: true
+score_outputs:
+  - long_term_quality
+  - growth_stability
+  - valuation_position
+  - shareholder_return
+  - long_term_risk
+  - evidence_completeness
+status_bands:
+  robust: 70
+  observe: 45

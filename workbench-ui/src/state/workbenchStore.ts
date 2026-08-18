@@ -2,9 +2,10 @@ import { create } from "zustand";
 import type { WorkbenchMode } from "../api/types";
 
 function initialMode(): WorkbenchMode {
-  if (typeof window === "undefined") return "research";
-  const requested = new URLSearchParams(window.location.search).get("mode");
-  return requested === "demo" || requested === "sandbox" || requested === "real" ? requested : "research";
+  // This workbench has one user-facing product: the A-share research view.
+  // Legacy URLs may still contain ?mode=real/demo/sandbox, but must not turn
+  // a visitor's interface into a misleading "formal" or seeded workspace.
+  return "research";
 }
 
 interface WorkbenchState {

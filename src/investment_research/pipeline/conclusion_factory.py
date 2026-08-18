@@ -178,7 +178,7 @@ class AnalysisConclusionFactory:
         summary = "Available data supports a stable baseline view."
         if prediction and not prediction.deployment_approved:
             risk_level = RiskLevel.HIGH
-            summary = "The approved deployment model is unavailable, so the run cannot provide a trusted risk classification."
+            summary = "The approved deployment model is unavailable, so the run cannot provide a complete risk classification."
         elif (
             prediction
             and prediction.risk_probability is not None

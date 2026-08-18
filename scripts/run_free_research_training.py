@@ -10,7 +10,6 @@ historical backfills constitute formal PIT data.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -29,7 +28,20 @@ from investment_research.training.formal_risk_runner import FormalRiskTrainingRu
 from investment_research.training.formal_training import FinalHoldoutLedger
 from investment_research.training.models import TrainingSample
 from investment_research.training.numeric_safety import guarded_model_math
+from investment_research.training.tabular_preprocessing import finite_feature_bounds, sample_matrix
 from investment_research.training.parquet_store import PITParquetStore
+from investment_research.training.evaluation_artifacts import write_compact_evaluation
+from investment_research.training.active_snapshot_guard import (
+    ActiveSnapshotInputError,
+    assert_manifest_binding,
+    require_active_snapshot,
+)
+from investment_research.training.feature_v4 import (
+    DIRECTION_LABEL_VERSION,
+    DRAWDOWN_LABEL_VERSION,
+    FEATURE_VERSION as FEATURE_V4_VERSION,
+    RETURN_LABEL_VERSION,
+)
 from investment_research.training.research_evaluation import (
     research_scope_reports,
     select_research_roster_candidates,
@@ -45,10 +57,15 @@ TASKS = ("drawdown_20d", "direction_1d", "direction_5d", "return_20d")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run research-only public-data model comparisons")
     parser.add_argument(
-        "--sample-manifest", type=Path, nargs="+", required=True,
+        "--sample-manifest", type=Path, nargs="+", default=[],
         help="One or more per-symbol sample manifests from the same CN cohort and decision context",
     )
+    parser.add_argument(
+        "--sample-manifest-file", type=Path, action="append", default=[],
+        help="JSON array or newline-delimited file of sample manifests; avoids OS command-line limits for full cohorts.",
+    )
     parser.add_argument("--object-store", type=Path, default=PROJECT / "var/cn-research/parquet")
+    parser.add_argument("--data-root", type=Path, default=PROJECT / "var/cn-research")
     parser.add_argument("--output-root", type=Path, default=PROJECT / "artifacts" / "free_research_models")
     parser.add_argument("--training-run-id", default=None)
     parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
@@ -59,10 +76,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sources = [json.loads(path.read_text(encoding="utf-8")) for path in args.sample_manifest]
+    try:
+        active = require_active_snapshot(args.data_root)
+    except ActiveSnapshotInputError as exc:
+        raise SystemExit(str(exc)) from exc
+    manifest_paths = _sample_manifest_paths(args.sample_manifest, args.sample_manifest_file)
+    sources = [json.loads(path.read_text(encoding="utf-8")) for path in manifest_paths]
     for source in sources:
         if source.get("data_tier") != DataTier.RESEARCH_PIT.value or source.get("formal_pit_eligible"):
             raise SystemExit("free research training requires research_pit, non-formal sample manifests")
+        try:
+            assert_manifest_binding(active, source)
+        except ActiveSnapshotInputError as exc:
+            raise SystemExit(str(exc)) from exc
     market = _single_value(sources, "market")
     context = _single_value(sources, "decision_context")
     cohort = args.cohort or _single_value(sources, "cohort", default="cn_equity_core")
@@ -75,7 +101,10 @@ def main() -> int:
     samples_by_key: dict[tuple[str, str, str], TrainingSample] = {}
     snapshot_refs: set[tuple[str | None, str | None]] = set()
     for source in sources:
-        rows = store.read_partition(source["sample_parquet_ref"])
+        rows = store.read_partition(
+            source["sample_parquet_ref"],
+            expected_payload_hash=source.get("payload_hash"),
+        )
         expected_snapshot = (source.get("market_snapshot_id"), source.get("market_snapshot_hash"))
         if not isinstance(expected_snapshot[0], str) or not expected_snapshot[0]:
             raise SystemExit("sample manifest lacks market_snapshot_id")
@@ -110,15 +139,31 @@ def main() -> int:
         raise SystemExit(f"cn_equity_core training requires at least {args.minimum_cohort_symbols} fixed-cohort symbols")
     if cohort == "cn_etf_benchmark" and symbol_count != 5:
         raise SystemExit("cn_etf_benchmark training requires all five fixed ETFs")
-    dataset_hash = _dataset_hash(args.sample_manifest, sources)
+    dataset_hash = _dataset_hash(manifest_paths, sources)
     run_id = args.training_run_id or f"research-{market}-{context}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     root = args.output_root / market / context / cohort
-    ledger = FinalHoldoutLedger(root / "audits" / f"{run_id}-final_holdout_ledger.json")
+    # One persistent ledger protects the one-shot final holdout across run IDs.
+    ledger = FinalHoldoutLedger(root / "audits" / "final_holdout_ledger.json")
     outcomes: list[dict] = []
     for task in args.tasks:
         scope = root / task
         scope.mkdir(parents=True, exist_ok=True)
+        # 断点续跑: skip a task whose final summary already exists and is valid.
+        task_summary = root / f"{run_id}.json"
+        if task_summary.is_file():
+            try:
+                prior = json.loads(task_summary.read_text(encoding="utf-8"))
+                if isinstance(prior, dict) and prior.get("status") in ("research_only", "approved"):
+                    print(task_summary)  # outer re-reads the record from this file
+                    continue
+            except (OSError, ValueError):
+                pass  # corrupt summary -> retrain rather than trust it
         try:
+            task_label_version = _task_label_version(
+                task,
+                feature_contract_version=feature_contract_version,
+                fallback=label_version,
+            )
             # Public backfills include the newest rows whose future window is
             # not observable yet.  Exclude those rows before the formal
             # walk-forward planner; do not let an unavailable label become a
@@ -136,7 +181,10 @@ def main() -> int:
                 )
             result = _run(task, samples=task_samples, market=market, context=context,
                           dataset_hash=dataset_hash, ledger=ledger)
-            result_payload = _jsonable(result)
+            result_payload, prediction_hash = write_compact_evaluation(
+                task, result, scope / "predictions.parquet",
+                reference=_portable_ref(scope / "predictions.parquet"),
+            )
             primary_candidate, fallback_candidate, challenger_candidates, research_ready = select_research_roster_candidates(
                 task, result, cohort=cohort,
             )
@@ -153,6 +201,7 @@ def main() -> int:
             reports = research_scope_reports(
                 task=task, result=result, samples=task_samples, dataset_hash=dataset_hash,
                 snapshot_hash=snapshot_hash, cohort=cohort,
+                confidence_candidate_name=primary_candidate,
             )
             report_hashes = write_research_reports(scope / "reports", reports)
             manifest = {
@@ -166,12 +215,12 @@ def main() -> int:
                 "cohort_version": cohort_version,
                 "task": task,
                 "model_version": f"{run_id}:{task}:{result_payload['fold_hash'][:12]}",
-                "label_version": f"{label_version}:{task}",
+                "label_version": task_label_version,
                 "feature_contract_version": feature_contract_version,
                 "research_ready": research_ready,
                 "research_status": research_status,
                 "training_run_id": run_id,
-                "dataset_manifest_refs": [_portable_ref(path) for path in args.sample_manifest],
+                "dataset_manifest_refs": [_portable_ref(path) for path in manifest_paths],
                 "dataset_hash": dataset_hash,
                 "sample_count": len(task_samples),
                 "symbol_count": len({sample.symbol for sample in task_samples}),
@@ -194,7 +243,11 @@ def main() -> int:
                 "roster_primary_candidate": primary_candidate,
                 "roster_fallback_candidate": fallback_candidate,
                 "evaluation_ref": _portable_ref(evaluation_path),
-                "artifact_hashes": {"evaluation.json": evaluation_hash, **artifact_hashes},
+                "artifact_hashes": {
+                    "evaluation.json": evaluation_hash,
+                    "predictions.parquet": prediction_hash,
+                    **artifact_hashes,
+                },
                 "report_hashes": report_hashes,
                 "code_hash": _code_hash(),
                 "artifact_state": "frozen_research_only",
@@ -205,6 +258,7 @@ def main() -> int:
                     "stress_sessions": 126,
                     "calibration_source": "time_oof_only",
                 },
+                "confidence_policy": reports["confidence_tiers"],
                 "deep_challenger_policy": {
                     "families": ["mlp", "patchtst", "tcn", "itransformer"],
                     "primary_models": ["lightgbm", "random-forest", "xgboost"],
@@ -251,11 +305,57 @@ def main() -> int:
         "dataset_hash": dataset_hash,
         "feature_contract_version": feature_contract_version,
         "label_version": label_version,
+        "task_label_versions": {
+            task: _task_label_version(
+                task,
+                feature_contract_version=feature_contract_version,
+                fallback=label_version,
+            )
+            for task in args.tasks
+        },
     }
     summary_path = root / f"{run_id}.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(summary_path)
     return 0 if all(item["status"] == "research_only" for item in outcomes) else 2
+
+
+def _task_label_version(task: str, *, feature_contract_version: str, fallback: str) -> str:
+    if feature_contract_version == FEATURE_V4_VERSION:
+        if task in {"direction_1d", "direction_5d"}:
+            return f"{DIRECTION_LABEL_VERSION}:{task}"
+        if task == "return_20d":
+            return RETURN_LABEL_VERSION
+        if task == "drawdown_20d":
+            return DRAWDOWN_LABEL_VERSION
+    return f"{fallback}:{task}"
+
+
+def _sample_manifest_paths(direct: list[Path], list_files: list[Path]) -> list[Path]:
+    """Resolve direct and frozen list-file inputs without trusting shell expansion.
+
+    Full CN rebuilds create thousands of yearly sample partitions.  Passing all
+    their paths as process arguments breaches macOS's ``ARG_MAX`` before the
+    training runner starts, so the immutable list file is part of the training
+    evidence and is expanded only inside this process.
+    """
+    resolved = list(direct)
+    for list_file in list_files:
+        try:
+            payload = json.loads(list_file.read_text(encoding="utf-8"))
+            values = payload if isinstance(payload, list) else payload.get("sample_manifests")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise SystemExit(f"invalid sample manifest file {list_file}: {type(exc).__name__}:{exc}") from exc
+        if not isinstance(values, list) or not all(isinstance(item, str) and item for item in values):
+            raise SystemExit(f"sample manifest file must contain a JSON string array: {list_file}")
+        resolved.extend(Path(item) for item in values)
+    unique = list(dict.fromkeys(path.resolve() for path in resolved))
+    if not unique:
+        raise SystemExit("one or more --sample-manifest or --sample-manifest-file values are required")
+    missing = [str(path) for path in unique if not path.is_file()]
+    if missing:
+        raise SystemExit(f"sample manifest file is missing: {missing[0]}")
+    return unique
 
 
 def _run(task, *, samples, market, context, dataset_hash, ledger):
@@ -356,16 +456,6 @@ def _code_hash() -> str:
     return digest.hexdigest()
 
 
-def _jsonable(value):
-    if is_dataclass(value):
-        return _jsonable(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return value
-
-
 def _freeze_research_artifacts(
     *, task: str, result, samples: list[TrainingSample], scope: Path,
     primary_candidate: str, fallback_candidate: str,
@@ -385,11 +475,13 @@ def _freeze_research_artifacts(
         "status": "research_only", "deployment_ready": False,
         "task": task, "selected_candidate": selected,
         "feature_order": feature_order,
-        "feature_bounds": {
-            name: [float(matrix[name].min()), float(matrix[name].max())]
-            for name in feature_order
-        },
+        "feature_bounds": finite_feature_bounds(matrix),
     }
+    from investment_research.training.research_evaluation import _confidence_tier_report
+    evaluated_selected = next(item for item in result.candidates if item.name == selected)
+    package["confidence_policy"] = _confidence_tier_report(
+        task, result, evaluated_selected
+    )
     if task == "drawdown_20d":
         from investment_research.training.calibration import compare_calibrators
         from investment_research.training.formal_risk_runner import _estimator, _label
@@ -422,7 +514,8 @@ def _freeze_research_artifacts(
         from investment_research.training.calibration import CalibrationMethod, TimeOutOfFoldCalibrator
         from investment_research.training.formal_direction_runner import CLASSES, _class_index, _direction, _estimator
         horizon = int(task.split("_")[1][:-1])
-        labels = [_direction(sample, horizon) for sample in fit_samples]
+        label_multiplier = float(getattr(result, "label_multiplier", 0.5))
+        labels = [_direction(sample, horizon, label_multiplier) for sample in fit_samples]
         frequencies = {label: (labels.count(label) + 1) / (len(labels) + len(CLASSES)) for label in CLASSES}
         candidate = next(item for item in result.candidates if item.name == selected)
         calibrators = {}
@@ -436,12 +529,16 @@ def _freeze_research_artifacts(
                 )
         if selected in {"constant-class", "random", "index-direction", "momentum"}:
             base_probabilities = ({label: 1 / len(CLASSES) for label in CLASSES} if selected == "random" else frequencies)
-            package.update(kind=selected, class_probabilities=base_probabilities, calibrators=calibrators, horizon=horizon)
+            package.update(kind=selected, class_probabilities=base_probabilities, calibrators=calibrators, horizon=horizon, label_multiplier=label_multiplier)
         else:
             estimator = _estimator(selected)
             with guarded_model_math():
-                estimator.fit(fit_matrix, [_class_index(value) for value in labels] if selected == "xgboost" else labels)
-            package.update(kind="direction_classifier", estimator=estimator, calibrators=calibrators, horizon=horizon)
+                estimator.fit(
+                    fit_matrix,
+                    [_class_index(value) for value in labels]
+                    if selected.startswith("xgboost") else labels,
+                )
+            package.update(kind="direction_classifier", estimator=estimator, calibrators=calibrators, horizon=horizon, label_multiplier=label_multiplier)
         alternatives = [item for item in result.candidates if item.name == fallback_candidate]
         if alternatives:
             alternative = fallback_candidate
@@ -453,7 +550,7 @@ def _freeze_research_artifacts(
             if alternative not in {"constant-class", "random", "index-direction", "momentum"}:
                 comparator = _estimator(alternative)
                 with guarded_model_math():
-                    comparator.fit(fit_matrix, [_class_index(value) for value in labels] if alternative == "xgboost" else labels)
+                    comparator.fit(fit_matrix, [_class_index(value) for value in labels] if alternative.startswith("xgboost") else labels)
                 component = {"kind": "direction_classifier", "name": alternative, "estimator": comparator, "horizon": horizon}
             package["comparator"] = component
     else:
@@ -504,16 +601,8 @@ def _freeze_research_artifacts(
 
 
 def _artifact_matrix(samples: list[TrainingSample], feature_order: list[str]):
-    """Create the same finite, named matrix contract used by task runners."""
-    import numpy as np
-    import pandas as pd
-
-    values = np.asarray([
-        [float(sample.features.get(name, 0.0)) for name in feature_order]
-        for sample in samples
-    ], dtype=float)
-    values = np.nan_to_num(values, nan=0.0, posinf=1e6, neginf=-1e6)
-    return pd.DataFrame(np.clip(values, -1e6, 1e6), columns=feature_order)
+    """Create the same missing-aware matrix contract used by task runners."""
+    return sample_matrix(samples, feature_order)
 
 
 def _eligible_samples(task: str, samples: list[TrainingSample]) -> list[TrainingSample]:

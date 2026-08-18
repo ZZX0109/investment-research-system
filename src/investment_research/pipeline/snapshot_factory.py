@@ -108,10 +108,18 @@ class AnalysisSnapshotFactory:
         evidence = [
             item
             for item in raw_evidence
-            if _evidence_available_at(item) <= context.decision_time
+            if _evidence_available_at(item) is not None
+            and _evidence_available_at(item) <= context.decision_time
         ]
+        # Keep unverified-timestamp records visible for audit and user-facing
+        # disclosure, but never let them enter feature construction or model
+        # conclusions. Their absence from ``evidence`` is the PIT boundary.
+        unverified_evidence = [
+            item for item in raw_evidence if _evidence_available_at(item) is None
+        ]
+        display_evidence = [*evidence, *unverified_evidence]
         source_mix = self._source_mix(
-            asset=asset, price_series=price_series, evidence=evidence
+            asset=asset, price_series=price_series, evidence=display_evidence
         )
         data_mode = self.mode_policy.ensure_uniform_mode(
             data_modes=[
@@ -149,7 +157,7 @@ class AnalysisSnapshotFactory:
             "decision_context": context.context_type.value,
             "decision_time": context.decision_time.isoformat(),
             "price_series_ids": [str(item.id) for item in price_series],
-            "evidence_ids": [str(item.id) for item in evidence],
+            "evidence_ids": [str(item.id) for item in display_evidence],
             "providers": provider,
         }
         snapshot_hash = hashlib.sha256(
@@ -203,9 +211,9 @@ class AnalysisSnapshotFactory:
             refresh_recommendation=lifecycle.refresh_recommendation,
             stale_reasons=lifecycle.stale_reasons,
             evidence_citation_ids=lifecycle.evidence_citation_ids,
-            evidence_ids=[str(item.id) for item in evidence],
+            evidence_ids=[str(item.id) for item in display_evidence],
             price_series_snapshot=price_series,
-            evidence_snapshot=evidence,
+            evidence_snapshot=display_evidence,
             synthetic_share=source_mix.synthetic_ratio,
             real_share=source_mix.real_ratio,
             source_meta=source_meta,
@@ -252,7 +260,9 @@ class AnalysisSnapshotFactory:
 
 
 def _evidence_available_at(evidence: Evidence):
-    return evidence.published_at or evidence.collected_at
+    if evidence.publication_time_verified is False:
+        return None
+    return evidence.available_at or evidence.published_at or evidence.collected_at
 
 
 def _asset_calendar_code(asset: Asset) -> str:

@@ -58,8 +58,14 @@ export function SelectedRunDossierCard({
         <li>{l("模型", "Model")}: {dossier.modelName}@{dossier.modelVersion}</li>
         <li>{l("已批准", "Approved")}: {dossier.deploymentApproved ? l("是", "yes") : l("否", "no")}</li>
         <li>
-          {l("风险概率", "Risk probability")}:{" "}
-          {dossier.riskProbability == null ? l("暂无", "n/a") : `${Math.round(dossier.riskProbability * 100)}%`}
+          {l("风险观察", "Risk observation")}:{" "}
+          {dossier.riskProbability == null
+            ? l("暂无", "n/a")
+            : dossier.riskProbability >= 0.65
+              ? l("近期波动偏高", "Higher near-term volatility")
+              : dossier.riskProbability >= 0.4
+                ? l("需要继续观察", "Needs further observation")
+                : l("暂未偏高", "Not elevated in this reading")}
         </li>
         <li>{l("特征覆盖率", "Feature coverage")}: {Math.round(dossier.featureCoverage * 100)}%</li>
         <li>{l("缺失特征", "Missing features")}: {dossier.missingFeatures.join(", ") || l("无", "None")}</li>

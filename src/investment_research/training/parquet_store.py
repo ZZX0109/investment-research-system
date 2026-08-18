@@ -51,10 +51,16 @@ class PITParquetStore:
         )
         return ref, payload_hash, schema_hash, table.num_rows
 
-    def read_partition(self, key: str) -> list[dict]:
+    def read_partition(self, key: str, *, expected_payload_hash: str | None = None) -> list[dict]:
         import pyarrow.parquet as pq
 
         payload = self.object_store.get(_object_key(key))
+        if expected_payload_hash is not None:
+            observed = hashlib.sha256(payload).hexdigest()
+            if observed != expected_payload_hash:
+                raise ValueError(
+                    f"parquet_payload_hash_mismatch:{key}:expected={expected_payload_hash}:observed={observed}"
+                )
         return pq.read_table(io.BytesIO(payload)).to_pylist()
 
 

@@ -9,7 +9,6 @@ never creates synthetic values and never writes a formal-ready manifest.
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -69,6 +68,10 @@ def args() -> argparse.Namespace:
     parser.add_argument("--full-history", action="store_true", help="Backfill all available history; daily runs use a bounded lookback by default.")
     parser.add_argument("--lookback-days", type=int, default=None, help="Calendar-day lookback for incremental daily collection.")
     parser.add_argument("--cross-check-ratio", type=float, default=None, help="Deterministic daily AKShare/Baostock comparison ratio.")
+    parser.add_argument(
+        "--cn-price-primary", choices=("akshare", "baostock"), default="akshare",
+        help="Explicit CN research price source. Use baostock for a controlled repair when AKShare is unreachable; the ledger records the choice.",
+    )
     parser.add_argument("--list-catalog", action="store_true", help="Print the complete supported free-data inventory and exit without network or database access.")
     return parser.parse_args()
 
@@ -97,6 +100,7 @@ def main() -> int:
                         cross_check_ratio=(options.cross_check_ratio if options.cross_check_ratio is not None else float(config["collection"]["cross_check_daily_ratio"])),
                         cursor_store=CursorStore(options.cursor_store),
                         config=config["collection"],
+                        primary_provider=options.cn_price_primary,
                     ))
                 else:
                     for symbol in symbols_by_market[market]:
@@ -151,6 +155,7 @@ def main() -> int:
 def _collect_cn_prices(
     service, symbols: list[str], *, full_history: bool, lookback_days: int,
     cross_check_ratio: float, cursor_store: CursorStore, config: dict,
+    primary_provider: str = "akshare",
 ) -> list[dict]:
     if lookback_days <= 0:
         raise ValueError("lookback_days must be positive")
@@ -173,12 +178,11 @@ def _collect_cn_prices(
     backup_limiter = SerialRateLimiter(backup_policy.requests_per_second)
     primary_failed_modes: set[tuple[str, str]] = set()
     output: list[dict] = []
-    # Baostock's public socket can become unusable after a malformed response.
-    # Reconnect on every retry so one protocol error cannot poison the entire
-    # 150-symbol collection run.
-    backup_context = nullcontext()
+    # Reuse one serial Baostock session for a collection batch.  The adapter
+    # discards and reconnects the session after an error, retaining the old
+    # safety property without paying a login/logout round trip for every
+    # symbol and adjustment mode.
     backup = _PerRequestBaostock()
-    backup_unavailable = None
     try:
         for symbol in symbols:
           for adjustment_mode in ("raw", "qfq"):
@@ -211,6 +215,39 @@ def _collect_cn_prices(
             )
             if configured_start is not None and start < configured_start:
                 start = configured_start
+            if primary_provider == "baostock":
+                try:
+                    fallback, backup_attempts = call_with_retry(
+                        lambda: backup.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
+                        policy=backup_policy, limiter=backup_limiter,
+                    )
+                    batch = _persist(
+                        service, backup.name, f"daily_bars_{adjustment_mode}", symbol,
+                        fallback.payload, coverage_start=start, coverage_end=end,
+                    )
+                    cursor_store.put(CollectionCursor(
+                        provider=backup.name, symbol=symbol, adjustment_mode=adjustment_mode,
+                        last_successful_trade_date=end, updated_at=datetime.now(timezone.utc),
+                        payload_hash=batch.payload_hash,
+                    ))
+                    output.append({
+                        "market": "cn", "dataset": f"daily_bars_{adjustment_mode}",
+                        "symbol": symbol, "adjustment_mode": adjustment_mode,
+                        "provider": backup.name, "provider_chain": [backup.name],
+                        "status": "backfilled", "rows_or_bytes": fallback.row_count,
+                        "payload_hash": batch.payload_hash, "attempts": backup_attempts,
+                        "cache_state": "fresh", "collection_mode": "explicit_baostock_repair",
+                    })
+                except Exception as fallback_exc:
+                    output.append({
+                        "market": "cn", "dataset": f"daily_bars_{adjustment_mode}",
+                        "symbol": symbol, "adjustment_mode": adjustment_mode,
+                        "provider": backup.name, "provider_chain": [backup.name],
+                        "status": "fetch_failed",
+                        "reason": f"baostock={type(fallback_exc).__name__}:{fallback_exc}",
+                        "collection_mode": "explicit_baostock_repair",
+                    })
+                continue
             try:
                 if failure_key in primary_failed_modes:
                     raise RuntimeError(f"akshare_circuit_open:{adjustment_mode}")
@@ -320,7 +357,7 @@ def _collect_cn_prices(
                     "degraded_reason": f"baostock_cross_check_failed:{type(comparison_exc).__name__}",
                 })
     finally:
-        backup_context.__exit__(None, None, None)
+        backup.close()
     return output
 
 
@@ -563,11 +600,28 @@ def _persist(
 
 
 class _PerRequestBaostock:
+    """Recoverable serial Baostock session used by the public research path."""
+
     name = "baostock"
 
     def fetch(self, *args, **kwargs):
-        with BaostockDailyResearchProvider() as provider:
-            return provider.fetch(*args, **kwargs)
+        if not hasattr(self, "_provider"):
+            self._context = BaostockDailyResearchProvider()
+            self._provider = self._context.__enter__()
+        try:
+            return self._provider.fetch(*args, **kwargs)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        context = getattr(self, "_context", None)
+        if context is not None:
+            try:
+                context.__exit__(None, None, None)
+            finally:
+                del self._provider
+                del self._context
 
 
 def _reusable_full_history_batch(service, *, symbol: str, adjustment_mode: str, end: date):
@@ -589,9 +643,27 @@ def _reusable_full_history_batch(service, *, symbol: str, adjustment_mode: str, 
             rows = json.loads(payload)
         except (OSError, ValueError, TypeError):
             continue
+        if not isinstance(rows, list) or len(rows) < 960:
+            continue
+        # Feature V4 needs the extended Baostock daily contract.  Historical
+        # research batches created before that contract only contain OHLCV,
+        # turnover and trade status.  Reusing them would silently make the
+        # valuation and raw-price consistency features 100% missing, so force
+        # a one-time refresh for Baostock equities.  AKShare ETF payloads do
+        # not expose these fields and remain reusable as benchmark series.
+        if batch.provider == "baostock" and not _has_feature_v4_daily_fields(rows):
+            continue
         if isinstance(rows, list) and len(rows) >= 960:
             return batch, len(rows)
     return None
+
+
+def _has_feature_v4_daily_fields(rows: list[object]) -> bool:
+    required = {"昨收", "涨跌幅", "市盈率TTM", "市净率MRQ", "市销率TTM", "市现率TTM"}
+    for row in reversed(rows):
+        if isinstance(row, dict):
+            return required.issubset(row)
+    return False
 
 
 def _overlap_start(latest: date) -> date:
@@ -618,6 +690,12 @@ def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: boo
                 raise ValueError(f"symbols file has invalid {market} universe")
             values[market] = list(dict.fromkeys(supplied))
     elif discover_cn:
+        # ``values`` begins with the small offline fallback list so the
+        # collector remains usable without a network connection.  Discovery
+        # must explicitly clear that list: otherwise a normal full research
+        # run silently keeps its four demo symbols and can never construct
+        # the fixed 100-stock research cohort.
+        values["cn"] = []
         # A capped full-research run needs a liquid candidate buffer, not the
         # first N lexicographic codes from the entire exchange.  Baostock's
         # public CSI 300 membership is deterministic and already contains a

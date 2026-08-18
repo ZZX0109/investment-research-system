@@ -7,7 +7,6 @@ import { AuditPanel } from "./AuditPanel";
 import { ProvenancePanel } from "./ProvenancePanel";
 import { RunLineagePanel } from "./RunLineagePanel";
 import { ResearchOperationsPanel } from "../operations/ResearchOperationsPanel";
-import { ResearchPanel } from "../research/ResearchPanel";
 import { PortfolioRiskPanel } from "../risk/PortfolioRiskPanel";
 
 type TechnicalSection = "data" | "runs" | "audit";
@@ -67,7 +66,6 @@ export function TechnicalAuditHub() {
       <section className={`technical-hub__content technical-hub__content--${section}`} role="tabpanel">
         {section === "data" ? (
           <div className="technical-hub__grid technical-hub__grid--data">
-            <ResearchPanel />
             <PortfolioRiskPanel />
           </div>
         ) : null}

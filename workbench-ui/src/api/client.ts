@@ -9,18 +9,6 @@ import {
   getDemoPriceSeries,
   getDemoReports,
   getDemoSession,
-  getDemoTestOfficerComparison,
-  getDemoTestOfficerEvidenceIndex,
-  getDemoTestOfficerFixtures,
-  getDemoTestOfficerHistory,
-  getDemoTestOfficerJudgeReport,
-  getDemoTestOfficerManifest,
-  getDemoTestOfficerMissionPackage,
-  getDemoTestOfficerOnboardingProtocol,
-  getDemoTestOfficerOracles,
-  getDemoTestOfficerRegistryManifest,
-  getDemoTestOfficerScenarios,
-  getDemoTestOfficerSelectorMaps,
   getDemoWatchlists,
   getSandboxAssets,
   getSandboxAnalysisRuns,
@@ -72,32 +60,23 @@ import type {
   ResearchShadowOutcome,
   ResearchShadowSession,
   ResearchShadowSummary,
+  ResearchLifecycleStatus,
   SessionResponse,
-  TestOfficerComparisonReport,
-  TestOfficerAuditRunDetail,
-  TestOfficerAuditRun,
-  TestOfficerCredentialSummary,
-  TestOfficerCredentialUpsertRequest,
-  TestOfficerEvidenceRegistryResource,
-  TestOfficerFixtureRegistryResource,
-  TestOfficerHistoryIndex,
-  TestOfficerJudgeReportResource,
-  TestOfficerManifest,
-  TestOfficerMissionPackageResource,
-  TestOfficerMissionPreview,
-  TestOfficerOnboardingDraft,
-  TestOfficerOnboardingProtocolResource,
-  TestOfficerOracleRegistryResource,
-  TestOfficerRegistryManifest,
-  TestOfficerScenarioRegistryResource,
-  TestOfficerSelectorMapResource,
   LLMProviderProfile,
   LLMCredentialSummary,
-  TestOfficerRunRequest,
-  TestOfficerRunResponse,
+  WorkBuddyConnection,
+  WorkBuddyConnectionIssued,
+  FinancialKnowledgeCoverage,
+  FinancialKnowledgeDocument,
+  FinancialKnowledgeSearchResult,
   User,
   Watchlist,
-  WorkbenchMode
+  WorkbenchMode,
+  AssetSnapshot,
+  ConversationSession,
+  ConversationMessageResponse,
+  ConversationCreateInput,
+  ConversationMessageInput
 } from "./types";
 
 interface AssetCreateInput {
@@ -243,17 +222,6 @@ function createApiTransport() {
 
     return (await response.json()) as T;
   };
-}
-
-function testOfficerHeaders(): Record<string, string> {
-  const env = (import.meta as unknown as { env?: Record<string, string | boolean | undefined> }).env;
-  const browserToken =
-    (env?.DEV === true || env?.DEV === "true") && typeof window !== "undefined"
-      ? window.localStorage.getItem("testOfficerToken") ?? undefined
-      : undefined;
-  const envToken = typeof env?.VITE_TEST_OFFICER_TOKEN === "string" ? env.VITE_TEST_OFFICER_TOKEN : undefined;
-  const token = browserToken || envToken;
-  return token ? { "x-test-officer-token": token } : {};
 }
 
 export function resolveWorkbenchDataSource(mode: WorkbenchMode): WorkbenchDataSource {
@@ -452,6 +420,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     refreshMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation/refresh`, { method: "POST" }),
     getDirectionalForecast: (runId: string) => apiFetch<import("./types").DirectionalForecastResponse>(`/api/v1/analysis-runs/${runId}/directional-forecast`),
     getResearchForecast: (runId: string) => apiFetch<import("./types").ResearchForecastBundle>(`/api/v1/analysis-runs/${runId}/research-forecast`),
+    getLatestLongTermScorecard: (symbol: string) => apiFetch<import("./types").LongTermScorecardResponse>(`/api/v1/research-scorecards/latest?symbol=${encodeURIComponent(symbol)}`),
     getLatestResearchPrediction: (symbol: string, task: import("./types").LatestResearchPrediction["task"] = "drawdown_20d") =>
       apiFetch<import("./types").LatestResearchPrediction>(
         `/api/v1/research-predictions/latest?symbol=${encodeURIComponent(symbol)}&task=${encodeURIComponent(task)}`
@@ -472,6 +441,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
       if (params.symbol) query.set("symbol", params.symbol);
       return apiFetch<ResearchShadowSummary>(`/api/v1/research-shadow/summary?${query.toString()}`);
     },
+    getResearchLifecycleStatus: () => apiFetch<ResearchLifecycleStatus>("/api/v1/research-lifecycle/status"),
     getIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}`),
     cancelIngestionJob: (jobId: string) => apiFetch<import("./types").IngestionJob>(`/api/v1/ingestion-jobs/${jobId}/cancel`, { method: "POST" }),
     createAgentRun: (payload: { asset_id: string; task_text: string; as_of: string; provider_profile_id?: string; user_preference: AgentRun["user_preference"] }) =>
@@ -502,6 +472,37 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
       apiFetch<LLMProviderProfile>(`/api/v1/llm-provider-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(payload) }),
     getLLMCredentials: () => apiFetch<LLMCredentialSummary[]>("/api/v1/llm-credentials"),
     upsertLLMCredential: (payload: { id: string; label: string; kind: "api-key"; secret: string; metadata?: Record<string, string> }) => apiFetch<LLMCredentialSummary>("/api/v1/llm-credentials", { method: "POST", body: JSON.stringify(payload) }),
+    getWorkBuddyConnections: () => apiFetch<WorkBuddyConnection[]>("/api/v1/workbuddy/connections"),
+    createWorkBuddyConnection: (payload: { name: string; scopes?: import("./types").WorkBuddyScope[] }) => apiFetch<WorkBuddyConnectionIssued>("/api/v1/workbuddy/connections", { method: "POST", body: JSON.stringify(payload) }),
+    revokeWorkBuddyConnection: (connectionId: string) => apiFetch<void>(`/api/v1/workbuddy/connections/${connectionId}`, { method: "DELETE" }),
+    getFinancialKnowledgeCoverage: (symbol?: string | null) =>
+      apiFetch<FinancialKnowledgeCoverage>(`/api/v1/financial-knowledge/coverage?market=CN${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ""}`),
+    searchFinancialKnowledge: (payload: { query: string; symbol?: string | null; documentType?: string; source?: string; limit?: number }) => {
+      const params = new URLSearchParams({
+        q: payload.query,
+        as_of: new Date().toISOString(),
+        market: "CN",
+        limit: String(payload.limit ?? 8),
+      });
+      if (payload.symbol) params.set("symbol", payload.symbol);
+      if (payload.documentType) params.set("document_type", payload.documentType);
+      if (payload.source) params.set("source", payload.source);
+      return apiFetch<FinancialKnowledgeSearchResult[]>(`/api/v1/financial-knowledge/search?${params.toString()}`);
+    },
+    listFinancialKnowledge: (symbol?: string | null) =>
+      apiFetch<FinancialKnowledgeDocument[]>(`/api/v1/financial-knowledge?market=CN${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ""}`),
+    uploadFinancialKnowledge: (file: File, assetId?: string | null) => {
+      const body = new FormData();
+      body.append("file", file);
+      if (assetId) body.append("asset_id", assetId);
+      return apiFetch<FinancialKnowledgeDocument>("/api/v1/financial-knowledge/uploads", { method: "POST", body });
+    },
+    deleteFinancialKnowledgeUpload: (documentId: string) =>
+      apiFetch<void>(`/api/v1/financial-knowledge/uploads/${documentId}`, { method: "DELETE" }),
+    refreshFinancialKnowledge: (mode: "incremental" | "backfill" | "reindex" | "audit" = "incremental") =>
+      apiFetch<Record<string, unknown>>(`/api/v1/financial-knowledge/refresh?mode=${mode}`, { method: "POST" }),
+    requestFinancialKnowledgeFullText: (documentId: string) =>
+      apiFetch<Record<string, unknown>>(`/api/v1/financial-knowledge/${documentId}/request-full-text`, { method: "POST" }),
     getModelResearchFindings: () => apiFetch<Record<string, unknown>>("/api/v1/models/research-findings"),
     getPaperValidationSummary: () => apiFetch<Record<string, unknown>>("/api/v1/paper-validation/summary"),
     getAnalysisRuns: (assetId: string) =>
@@ -573,124 +574,108 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
             bundle: dataSource === "seeded-demo" ? getDemoBundle(assetId, runId) : getSandboxBundle(assetId, runId)
           })
         : apiFetch<GeneratedReportResponse>(`/api/v1/analysis-runs/${runId}/report`, { method: "POST" }),
-    getTestOfficerManifest: () =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerManifest())
-        : apiFetch<TestOfficerManifest>("/api/v1/test-officer/runs/latest/manifest", {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerHistory: (missionId?: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerHistory())
-        : apiFetch<TestOfficerHistoryIndex>(
-            missionId
-              ? `/api/v1/test-officer/history?mission_id=${encodeURIComponent(missionId)}`
-              : "/api/v1/test-officer/history",
-            { headers: testOfficerHeaders() }
+    // ---- Phase 8: single-source snapshot + multi-turn conversation + events ----
+    getAssetSnapshot: (assetId: string, asOf?: string) =>
+      dataSource !== "api"
+        ? Promise.resolve(buildDemoSnapshot(assetId))
+        : apiFetch<AssetSnapshot>(
+            `/api/v1/assets/${assetId}/snapshot${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""}`
           ),
-    getTestOfficerComparison: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerComparison())
-        : apiFetch<TestOfficerComparisonReport>(`/api/v1/test-officer/runs/${runId}/comparison`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerRegistryManifest: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerRegistryManifest())
-        : apiFetch<TestOfficerRegistryManifest>(`/api/v1/test-officer/runs/${runId}/registry`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerOnboardingProtocol: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerOnboardingProtocol())
-        : apiFetch<TestOfficerOnboardingProtocolResource>(`/api/v1/test-officer/runs/${runId}/registry/onboarding`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerMissionPackage: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerMissionPackage())
-        : apiFetch<TestOfficerMissionPackageResource>(`/api/v1/test-officer/runs/${runId}/registry/mission-package`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerSelectorMaps: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerSelectorMaps())
-        : apiFetch<TestOfficerSelectorMapResource[]>(`/api/v1/test-officer/runs/${runId}/registry/selector-maps`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerFixtures: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerFixtures())
-        : apiFetch<TestOfficerFixtureRegistryResource[]>(`/api/v1/test-officer/runs/${runId}/registry/fixtures`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerScenarios: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerScenarios())
-        : apiFetch<TestOfficerScenarioRegistryResource[]>(`/api/v1/test-officer/runs/${runId}/registry/scenarios`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerOracles: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerOracles())
-        : apiFetch<TestOfficerOracleRegistryResource[]>(`/api/v1/test-officer/runs/${runId}/registry/oracles`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerEvidenceIndex: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerEvidenceIndex())
-        : apiFetch<TestOfficerEvidenceRegistryResource[]>(`/api/v1/test-officer/runs/${runId}/registry/evidence`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerJudgeReportResource: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(getDemoTestOfficerJudgeReport())
-        : apiFetch<TestOfficerJudgeReportResource>(`/api/v1/test-officer/runs/${runId}/registry/judge-report`, {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerAuditRuns: () =>
-      usesSeededData
-        ? Promise.resolve(buildSeededAuditRuns())
-        : apiFetch<TestOfficerAuditRun[]>("/api/v1/test-officer/audit/runs?limit=10", {
-            headers: testOfficerHeaders()
-          }),
-    getTestOfficerAuditRunDetail: (runId: string) =>
-      usesSeededData
-        ? Promise.resolve(buildSeededAuditRunDetail(runId))
-        : apiFetch<TestOfficerAuditRunDetail>(`/api/v1/test-officer/audit/runs/${runId}`, {
-            headers: testOfficerHeaders()
-          }),
-    previewTestOfficerMission: (payload: TestOfficerOnboardingDraft) =>
-      usesSeededData
-        ? Promise.resolve(buildSeededMissionPreview(payload))
-        : apiFetch<TestOfficerMissionPreview>("/api/v1/test-officer/mission-preview", {
-          method: "POST",
-          headers: testOfficerHeaders(),
-          body: JSON.stringify(payload)
-        }),
-    createTestOfficerRun: (payload: TestOfficerRunRequest) =>
-      usesSeededData
-        ? Promise.resolve(buildSeededRunResponse(payload))
-        : apiFetch<TestOfficerRunResponse>("/api/v1/test-officer/runs", {
-          method: "POST",
-          headers: testOfficerHeaders(),
-          body: JSON.stringify(payload)
-        }),
-    listTestOfficerCredentials: () =>
-      usesSeededData
-        ? Promise.resolve(buildSeededCredentialSummaries())
-        : apiFetch<TestOfficerCredentialSummary[]>("/api/v1/test-officer/credentials", {
-            headers: testOfficerHeaders()
-          }),
-    upsertTestOfficerCredential: (payload: TestOfficerCredentialUpsertRequest) =>
-      usesSeededData
-        ? Promise.resolve(buildSeededCredentialSummary(payload))
-        : apiFetch<TestOfficerCredentialSummary>("/api/v1/test-officer/credentials", {
+    listConversations: () =>
+      dataSource !== "api"
+        ? Promise.resolve<ConversationSession[]>([])
+        : apiFetch<ConversationSession[]>("/api/v1/conversations"),
+    createConversation: (payload: ConversationCreateInput) =>
+      dataSource !== "api"
+        ? Promise.resolve(buildStubConversation(payload))
+        : apiFetch<ConversationSession>("/api/v1/conversations", {
             method: "POST",
-            headers: testOfficerHeaders(),
             body: JSON.stringify(payload)
-          })
+          }),
+    postConversationMessage: (sessionId: string, payload: ConversationMessageInput) =>
+      dataSource !== "api"
+        ? Promise.resolve(buildStubConversationMessage(sessionId, payload))
+        : apiFetch<ConversationMessageResponse>(`/api/v1/conversations/${sessionId}/messages`, {
+            method: "POST",
+            body: JSON.stringify(payload)
+          }),
+    getConversation: (sessionId: string) =>
+      dataSource !== "api"
+        ? Promise.resolve(buildStubConversation({ asset_id: sessionId, as_of: new Date().toISOString() }))
+        : apiFetch<ConversationSession>(`/api/v1/conversations/${sessionId}`)
   };
+}
+
+// --- Phase 8 seeded-mode stubs (shape-compliant; data_as_of:null flags the
+// dashboard that real data is unavailable in seeded mode). ---
+
+function buildDemoSnapshot(assetId: string): AssetSnapshot {
+  const demoSeries = getDemoPriceSeries(assetId);
+  const points = demoSeries.length > 0 ? demoSeries[0].points : [];
+  const latest = points.length > 0 ? points[points.length - 1] : null;
+  return {
+    schema_version: "asset-snapshot-v1",
+    asset: { asset_id: assetId, symbol: assetId, name: null },
+    as_of: new Date().toISOString(),
+    data_as_of: null,
+    market_observation: {
+      latest_close: latest?.close ?? null,
+      trade_date: latest?.timestamp ?? null,
+      return_20d: null,
+      volatility_20d: null,
+      sessions: points.length,
+      source: "seeded-demo"
+    },
+    long_term_status: "unavailable",
+    long_term_blocking_reasons: ["Seeded mode does not load the long-term model."],
+    scorecard: null,
+    model_readings: null,
+    directional_forecast: null,
+    fact_cards: [],
+    fact_card_coverage_status: "unknown",
+    fact_card_absence_is_evidence: false,
+    fact_card_coverage_reasons: [],
+    line_items: [],
+    line_item_coverage_status: "unknown",
+    line_item_coverage_reasons: [],
+    evidence_merge_result: null,
+    causal_observations: []
+  };
+}
+
+function buildStubConversation(payload: ConversationCreateInput): ConversationSession {
+  const now = new Date().toISOString();
+  return {
+    id: `seeded-conv-${payload.asset_id}`,
+    user_id: "seeded",
+    asset_id: payload.asset_id,
+    as_of: payload.as_of,
+    title: payload.title ?? null,
+    created_at: now,
+    updated_at: now,
+    messages: []
+  };
+}
+
+function buildStubConversationMessage(
+  sessionId: string,
+  payload: ConversationMessageInput
+): ConversationMessageResponse {
+  const now = new Date().toISOString();
+  const session: ConversationSession = {
+    id: sessionId,
+    user_id: "seeded",
+    asset_id: sessionId,
+    as_of: now,
+    title: null,
+    created_at: now,
+    updated_at: now,
+    messages: [
+      { id: "u1", session_id: sessionId, sequence: 1, role: "user", content: payload.content, agent_run_id: null, snapshot_as_of: null, created_at: now },
+      { id: "a1", session_id: sessionId, sequence: 2, role: "assistant", content: "（研究展示模式：需切换至真实数据源以运行完整多轮分析。）", agent_run_id: "seeded-run", snapshot_as_of: now, created_at: now }
+    ]
+  };
+  return { run_id: "seeded-run", run_state: "completed", conversation: session };
 }
 
 function buildSeededMissionPreview(payload: TestOfficerOnboardingDraft): TestOfficerMissionPreview {

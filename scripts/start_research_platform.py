@@ -28,16 +28,9 @@ def main() -> int:
     env.setdefault("NODE_ENV", "development")
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     env["WORKBENCH_API_ORIGIN"] = f"http://127.0.0.1:{args.api_port}"
-    required = [
-        ROOT / "output" / "models" / "model_manifest.json",
-        *[
-            ROOT / "output" / f"bundle_{market}.pkl"
-            for market in ("us", "cn", "hk", "jp")
-        ],
-    ]
-    missing = [str(path.relative_to(ROOT)) for path in required if not path.exists()]
-    if missing:
-        print("Preflight warning: missing " + ", ".join(missing), flush=True)
+    # Research mode never reads legacy bundle_*.pkl or mixed-market model
+    # directories at startup.  A missing new research roster is represented by
+    # an explicit unavailable/abstain state in the API, not a legacy fallback.
 
     subprocess.run(
         [
@@ -75,6 +68,16 @@ def main() -> int:
                 "--port",
                 str(args.web_port),
             ],
+            cwd=ROOT,
+            env=env,
+        ),
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts" / "run_research_worker.py")],
+            cwd=ROOT,
+            env=env,
+        ),
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "scripts" / "run_training_worker.py")],
             cwd=ROOT,
             env=env,
         ),

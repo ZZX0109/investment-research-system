@@ -25,18 +25,3 @@ export {
   getSandboxSession,
   getSandboxWatchlists
 } from "./seeds/sandbox";
-
-export {
-  getDemoTestOfficerComparison,
-  getDemoTestOfficerEvidenceIndex,
-  getDemoTestOfficerFixtures,
-  getDemoTestOfficerHistory,
-  getDemoTestOfficerJudgeReport,
-  getDemoTestOfficerManifest,
-  getDemoTestOfficerMissionPackage,
-  getDemoTestOfficerOnboardingProtocol,
-  getDemoTestOfficerOracles,
-  getDemoTestOfficerRegistryManifest,
-  getDemoTestOfficerScenarios,
-  getDemoTestOfficerSelectorMaps
-} from "./seeds/testOfficer";

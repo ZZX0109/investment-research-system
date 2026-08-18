@@ -355,7 +355,11 @@ class SnapshotFeatureBuilder:
     ) -> list[StructuredEventRecord]:
         events: list[StructuredEventRecord] = []
         for item in evidence:
-            published_at = item.published_at or item.collected_at
+            if item.publication_time_verified is False:
+                continue
+            published_at = item.available_at or item.published_at or item.collected_at
+            if published_at is None:
+                continue
             if published_at > as_of:
                 continue
             text = f"{item.title} {item.summary}".strip()

@@ -1,6 +1,6 @@
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -81,8 +81,10 @@ from investment_research.service.advanced_research import (
 from investment_research.service.documents import DocumentService
 from investment_research.service.scheduling import ReportScheduleService
 from investment_research.service.long_term_domain import LongTermDomainService
+from investment_research.service.long_term_research import load_long_term_scorecard
 from investment_research.service.market_observation import MarketObservation, MarketObservationService
 from investment_research.service.directional_forecast import DirectionalForecastResponse, DirectionalForecastService
+from investment_research.service.asset_snapshot import AssetSnapshot, AssetSnapshotService
 from investment_research.domain.trusted_market import IngestionJob
 from investment_research.service.ingestion_jobs import IngestionJobService
 from investment_research.domain.forecasts import ResearchForecastBundle, ResearchModelRoster
@@ -95,6 +97,7 @@ from investment_research.service.research_shadow import (
     ResearchShadowSession,
     ResearchShadowSummary,
 )
+from investment_research.service.research_lifecycle import ResearchPromotionStore
 
 router = APIRouter()
 
@@ -281,6 +284,89 @@ def cancel_ingestion_job(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/api/v1/research-lifecycle/status")
+def research_lifecycle_status(
+    uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
+    user: User = Depends(get_authenticated_user),
+) -> dict:
+    """Return the persisted daily/weekly/monthly research lifecycle state.
+
+    The endpoint is intentionally read-only.  It reports the JSON-backed
+    ingestion job ledger rather than scanning model directories, so the UI can
+    explain pending, degraded, and failed automation without inferring state
+    from missing files.
+    """
+    del user
+    jobs = [
+        item for item in uow.ingestion_jobs.list_recent(limit=250)
+        if str(item.job_type).startswith("research_")
+    ]
+    latest: dict[str, IngestionJob] = {}
+    for item in jobs:
+        current = latest.get(str(item.job_type))
+        if current is None or item.scheduled_for > current.scheduled_for:
+            latest[str(item.job_type)] = item
+    daily = latest.get("research_daily_close")
+    training = latest.get("research_monthly_training")
+    monitor = latest.get("research_weekly_monitor")
+    promotion = latest.get("research_model_promotion")
+    primary_versions: list[str] = []
+    fallback_versions: list[str] = []
+    promotion_root = Path(__file__).resolve().parents[3] / "artifacts" / "research_promotions"
+    if promotion_root.is_dir():
+        for pointer in sorted(promotion_root.glob("*/current.json")):
+            try:
+                payload = ResearchPromotionStore(promotion_root).read_current(scope=pointer.parent.name)
+            except ValueError:
+                continue
+            if not payload:
+                continue
+            candidate = payload.get("candidate") or {}
+            version = candidate.get("model_version") or candidate.get("candidate_version")
+            if version:
+                primary_versions.append(f"{pointer.parent.name}:{version}")
+            previous = payload.get("previous") or {}
+            previous_version = previous.get("model_version") or previous.get("candidate_version")
+            if previous_version:
+                fallback_versions.append(f"{pointer.parent.name}:{previous_version}")
+    return {
+        "data_tier": "research_pit",
+        "status": "research_only",
+        "deployment_ready": False,
+        "latest_data_update": None if daily is None else daily.completed_at,
+        "latest_trade_date": None if daily is None else daily.trade_date,
+        "next_training": None if training is None else training.scheduled_for,
+        "last_training": None if training is None else training.completed_at,
+        "last_monitor": None if monitor is None else monitor.completed_at,
+        "current_primary": ", ".join(primary_versions) if primary_versions else None,
+        "current_fallback": ", ".join(fallback_versions) if fallback_versions else None,
+        "candidate": None if training is None else training.candidate_version,
+        "promotion": None if promotion is None else promotion.state,
+        "rollback": None,
+        "jobs": [item.model_dump(mode="json") for item in jobs[:50]],
+        "blocking_reasons": sorted({reason for item in jobs for reason in item.quality_issues}),
+    }
+
+
+@router.get("/api/v1/research-scorecards/latest")
+def latest_long_term_scorecard(
+    symbol: str = Query(..., min_length=1),
+    user: User = Depends(get_authenticated_user),
+) -> dict:
+    """Return the latest immutable long-term scorecard for one symbol.
+
+    The scorecard is evidence-only output from the guarded long-term runner.
+    A blocked or missing report is surfaced as unavailable; this endpoint
+    never synthesizes a score from missing features.
+    """
+    del user
+    return _load_latest_long_term_scorecard(project_root=Path.cwd(), symbol=symbol)
+
+
+def _load_latest_long_term_scorecard(*, project_root: Path, symbol: str) -> dict:
+    return load_long_term_scorecard(project_root=project_root, symbol=symbol)
+
+
 @router.get("/api/v1/assets/{asset_id}/market-observation", response_model=MarketObservation)
 def market_observation(asset_id: str, uow: SQLiteUnitOfWork = Depends(get_unit_of_work), user: User = Depends(get_authenticated_user)) -> MarketObservation:
     del user
@@ -418,13 +504,27 @@ def latest_research_prediction(
 @router.get("/api/v1/research-universe/latest")
 def latest_research_universe(
     user: User = Depends(get_authenticated_user),
+    uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
     """List every symbol with traceable history in the latest CN research rebuild."""
-    del user
-    return _load_latest_research_universe(project_root=Path.cwd())
+    symbol_names: dict[str, str] = {}
+    for asset in uow.assets.list():
+        if asset.ticker and asset.name and asset.name != asset.ticker:
+            symbol_names.setdefault(asset.ticker, asset.name)
+    for document in uow.financial_knowledge.list(market="CN", owner_user_id=user.id):
+        if (
+            document.source_kind == "official_public"
+            and document.symbol
+            and document.issuer_name
+            and document.issuer_name != document.symbol
+        ):
+            symbol_names.setdefault(document.symbol, document.issuer_name)
+    return _load_latest_research_universe(project_root=Path.cwd(), symbol_names=symbol_names)
 
 
-def _load_latest_research_universe(*, project_root: Path) -> dict:
+def _load_latest_research_universe(
+    *, project_root: Path, symbol_names: dict[str, str] | None = None,
+) -> dict:
     unavailable = {
         "status": "unavailable",
         "data_tier": "research_pit",
@@ -497,7 +597,12 @@ def _load_latest_research_universe(*, project_root: Path) -> dict:
             if isinstance(item, dict) and item.get("symbol")
         )
 
-    etfs = {"510050", "510300", "510500", "159915", "512100"}
+    etf_names = {
+        "510050": "上证50ETF", "510300": "沪深300ETF", "510500": "中证500ETF",
+        "159915": "创业板ETF", "512100": "中证1000ETF",
+    }
+    etfs = set(etf_names)
+    resolved_names = {**etf_names, **(symbol_names or {})}
     symbols: list[dict] = []
     for ref in rebuild.get("standard_manifest_refs", []):
         if not isinstance(ref, str):
@@ -515,7 +620,7 @@ def _load_latest_research_universe(*, project_root: Path) -> dict:
         symbols.append(
             {
                 "symbol": symbol,
-                "name": symbol,
+                "name": resolved_names.get(symbol, "名称待补充"),
                 "exchange": "XSHG" if symbol.startswith(("5", "6")) else "XSHE",
                 "asset_type": "etf" if symbol in etfs else "equity",
                 "provider": manifest.get("provider"),
@@ -634,6 +739,8 @@ def _load_latest_research_prediction(*, project_root: Path, symbol: str, task: s
         },
         "output": None if abstained else match.get("prediction"),
         "diagnostic_output": match.get("diagnostic_prediction") if abstained else None,
+        "confidence_tier": match.get("confidence_tier", "unavailable"),
+        "confidence_policy": match.get("confidence_policy", {}),
         "model": {
             "candidate": match.get("model_candidate"),
             "role": match.get("model_role"),
@@ -689,6 +796,39 @@ def research_card(
         raise HTTPException(
             status_code=_http_status_for_value_error(exc), detail=str(exc)
         ) from exc
+
+
+@router.get("/api/v1/assets/{asset_id}/snapshot", response_model=AssetSnapshot)
+def asset_snapshot(
+    asset_id: str,
+    as_of: str | None = Query(default=None, description="ISO 8601 as-of timestamp; defaults to now UTC"),
+    uow: SQLiteUnitOfWork = Depends(get_unit_of_work),
+    user: User = Depends(get_authenticated_user),
+) -> AssetSnapshot:
+    """Single source of truth for the dashboard tiles and the AI answer.
+
+    Read-only and as_of-pinned: composes frozen price facts, the immutable
+    long-term scorecard + model readings, PIT-visible fact cards and line
+    items, the latest research forecast, plus a baseline evidence merge and
+    causal-observation pass.  No AgentRun, no abstain gate.
+    """
+    from investment_research.domain.base import utc_now
+
+    if as_of:
+        try:
+            parsed = datetime.fromisoformat(as_of)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid as_of: {exc}"
+            ) from exc
+        if parsed.utcoffset() is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = utc_now()
+    try:
+        return AssetSnapshotService(uow).snapshot(asset_id, as_of=parsed, user=user)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/api/v1/analysis-runs/{run_id}/audit", response_model=ResearchAudit)
@@ -870,6 +1010,11 @@ def research_acceptance(user: User = Depends(get_authenticated_user)) -> dict:
             "status": "blocked",
             "data_tier": "research_pit",
             "research_only": True,
+            "research_status": "research_only",
+            "artifact_available": False,
+            "prediction_status": "unavailable",
+            "model_status": "unavailable",
+            "evidence_status": "blocked",
             "deployment_ready": False,
             "blocking_reasons": ["acceptance_report_missing"],
             "run_report_ref": None,
@@ -881,6 +1026,11 @@ def research_acceptance(user: User = Depends(get_authenticated_user)) -> dict:
             "status": "blocked",
             "data_tier": "research_pit",
             "research_only": True,
+            "research_status": "research_only",
+            "artifact_available": False,
+            "prediction_status": "unavailable",
+            "model_status": "unavailable",
+            "evidence_status": "blocked",
             "deployment_ready": False,
             "blocking_reasons": ["acceptance_report_invalid"],
             "run_report_ref": "artifacts/cn_research_demo/latest-backend-acceptance.json",
@@ -888,6 +1038,11 @@ def research_acceptance(user: User = Depends(get_authenticated_user)) -> dict:
     payload["deployment_ready"] = False
     payload["data_tier"] = "research_pit"
     payload["research_only"] = True
+    payload.setdefault("research_status", "research_only")
+    payload.setdefault("artifact_available", False)
+    payload.setdefault("prediction_status", "unavailable")
+    payload.setdefault("model_status", "unavailable")
+    payload.setdefault("evidence_status", "partial")
     return payload
 
 

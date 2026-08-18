@@ -60,21 +60,42 @@ def normalize_free_daily_payload(
             volume = _optional_number(_value(row, "volume", "成交量")) or 0.0
             amount = _optional_number(_value(row, "amount", "成交额"))
             turnover = _optional_number(_value(row, "turn", "turnover", "换手率"))
+            previous_close = _optional_number(_value(row, "preclose", "previous_close", "昨收"))
+            percentage_change = _optional_number(_value(row, "pctChg", "percentage_change", "涨跌幅"))
+            pe_ttm = _optional_number(_value(row, "peTTM", "市盈率TTM"))
+            pb_mrq = _optional_number(_value(row, "pbMRQ", "市净率MRQ"))
+            ps_ttm = _optional_number(_value(row, "psTTM", "市销率TTM"))
+            pcf_ncf_ttm = _optional_number(_value(row, "pcfNcfTTM", "市现率TTM"))
             trade_status = str(_value(row, "tradestatus", "交易状态") or "1")
+            is_st = str(_value(row, "isST", "是否ST") or "0") == "1"
             if close <= 0 or volume < 0:
                 raise ValueError("invalid OHLCV")
         except (TypeError, ValueError):
             skipped += 1
             continue
         published_at = datetime.combine(trade_date, datetime.min.time(), timezone.utc)
+        limit = _daily_limit_ratio(symbol, trade_date, is_st=is_st)
+        change_ratio = None if percentage_change is None else percentage_change / 100.0
+        is_limit_up = change_ratio is not None and change_ratio >= limit - 0.002
+        is_limit_down = change_ratio is not None and change_ratio <= -limit + 0.002
+        one_price = (
+            open_ is not None and high is not None and low is not None
+            and abs(open_ - high) < 1e-10 and abs(high - low) < 1e-10
+        )
         bars.append(PreparedPriceBar(
             symbol=symbol, trade_date=trade_date, close_native=close, close_normalized=close,
             open_native=open_, high_native=high, low_native=low,
             open_normalized=open_, high_normalized=high, low_normalized=low,
             volume=volume, amount=amount, turnover_rate=turnover,
+            previous_close=previous_close, percentage_change=percentage_change,
+            pe_ttm=pe_ttm, pb_mrq=pb_mrq, ps_ttm=ps_ttm,
+            pcf_ncf_ttm=pcf_ncf_ttm, is_st=is_st,
             currency=_currency(market), target_currency=_currency(market),
             is_halted=trade_status == "0", is_suspended=trade_status == "0",
-            is_tradeable=trade_status != "0", published_at=published_at,
+            is_tradeable=trade_status != "0",
+            is_limit_up=is_limit_up, is_limit_down=is_limit_down,
+            is_one_price_limit=one_price and (is_limit_up or is_limit_down),
+            published_at=published_at,
             received_at=received, persisted_at=received, available_at=received,
             calendar_code=_calendar(market), provider=provider, raw_hash=digest,
             normalized_hash=sha256(
@@ -108,7 +129,19 @@ def _number(value: Any) -> float:
 
 
 def _optional_number(value: Any) -> float | None:
-    return None if value is None else float(value)
+    return None if value in {None, "", "None", "nan", "NaN"} else float(value)
+
+
+def _daily_limit_ratio(symbol: str, trade_date: date, *, is_st: bool) -> float:
+    if is_st:
+        return 0.05
+    if symbol.startswith(("300", "301")) and trade_date >= date(2020, 8, 24):
+        return 0.20
+    if symbol.startswith(("688", "689")):
+        return 0.20
+    if symbol.startswith(("8", "9")):
+        return 0.30
+    return 0.10
 
 
 def _utc(value: datetime) -> datetime:

@@ -133,7 +133,7 @@ class BaostockDailyResearchProvider:
         code = _baostock_code(symbol)
         result = self._bs.query_history_k_data_plus(
             code,
-            "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
+            "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST",
             start_date=(start or date(1990, 1, 1)).isoformat(),
             end_date=end.isoformat(),
             frequency="d",
@@ -153,6 +153,12 @@ class BaostockDailyResearchProvider:
                 "成交量": _float(source.get("volume"), 0.0),
                 "成交额": _float(source.get("amount"), 0.0),
                 "换手率": _float(source.get("turn")),
+                "昨收": _float(source.get("preclose")),
+                "涨跌幅": _float(source.get("pctChg")),
+                "市盈率TTM": _float(source.get("peTTM")),
+                "市净率MRQ": _float(source.get("pbMRQ")),
+                "市销率TTM": _float(source.get("psTTM")),
+                "市现率TTM": _float(source.get("pcfNcfTTM")),
                 "交易状态": source.get("tradestatus"), "是否ST": source.get("isST"),
             })
         if not rows:

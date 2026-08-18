@@ -2009,11 +2009,46 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("INVESTMENT_RESEARCH_TRAINING_PROFILE", "quick"),
         help="quick trains table/baseline models; full also trains deep time-series models.",
     )
+    parser.add_argument(
+        "--snapshot-data-root",
+        type=Path,
+        default=PROJECT / "var" / "cn-research",
+        help="Active immutable snapshot root required for real-data retraining.",
+    )
+    parser.add_argument(
+        "--allow-legacy-multi-market",
+        action="store_true",
+        help=(
+            "Explicitly opt in to the retired four-market retraining path. "
+            "The current A-share long-term workflow uses run_long_term_training.py."
+        ),
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.data_source in {"real", "auto"} and not args.allow_legacy_multi_market:
+        raise SystemExit(
+            "legacy multi-market retraining is disabled; use "
+            "scripts/run_long_term_training.py for the current A-share workflow "
+            "or pass --allow-legacy-multi-market only for a deliberate historical replay"
+        )
+    # ``auto`` may select real bundles after probing the local filesystem.  It
+    # therefore needs the same immutable active-snapshot proof as ``real``;
+    # otherwise a scheduler restart could begin training from a mutable or
+    # stale bundle while the downloader is still writing.  Synthetic is kept
+    # as an explicit fixture-only path for CI and local contract tests.
+    if args.data_source in {"real", "auto"}:
+        gate_command = [
+            sys.executable,
+            str(PROJECT / "scripts" / "check_research_snapshot.py"),
+            "--data-root",
+            str(args.snapshot_data_root),
+        ]
+        gate = subprocess.run(gate_command, cwd=PROJECT, check=False)
+        if gate.returncode != 0:
+            raise SystemExit("real-data retraining blocked by the immutable snapshot gate")
     random.seed(RANDOM_SEED)
     for d in [OUTPUT, TEMP, AUDITS, RUNS]:
         d.mkdir(parents=True, exist_ok=True)

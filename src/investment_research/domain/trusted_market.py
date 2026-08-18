@@ -24,6 +24,21 @@ JobType = Literal[
     "model_training",
     "model_evaluation",
     "model_approval",
+    # Research-only lifecycle jobs.  These are deliberately separate from
+    # formal training/approval jobs and are always persisted as evidence for
+    # the public-data research path.
+    "research_daily_close",
+    "research_weekly_monitor",
+    "research_monthly_training",
+    "research_quarterly_challenger",
+    "research_label_backfill",
+    "research_model_promotion",
+    "research_model_rollback",
+    "knowledge_daily_incremental",
+    "knowledge_weekly_audit",
+    "knowledge_monthly_reindex",
+    "knowledge_historical_backfill",
+    "knowledge_document_fetch",
 ]
 
 
@@ -240,6 +255,21 @@ class IngestionJob(BaseModel):
     latest_source_time: datetime | None = None
     error_code: str | None = None
     error_message: str | None = None
+    # Optional research lifecycle scope.  Keeping these fields in the
+    # immutable JSON payload preserves compatibility with existing SQLite and
+    # PostgreSQL ingestion tables without a destructive migration.
+    market: str | None = None
+    decision_context: str | None = None
+    trade_date: date | None = None
+    cutoff_time: datetime | None = None
+    market_snapshot_id: str | None = None
+    market_snapshot_hash: str | None = None
+    dataset_hash: str | None = None
+    training_run_id: str | None = None
+    candidate_version: str | None = None
+    report_hash: str | None = None
+    rollback_version: str | None = None
+    data_tier: DataTier | None = None
 
 
 class SecurityMasterProvider(Protocol):

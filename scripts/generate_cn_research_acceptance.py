@@ -52,6 +52,7 @@ def main() -> int:
         for task in TASKS
     }
     artifact_evidence = _artifact_evidence(run)
+    _apply_task_contract(task_statuses, artifact_evidence)
     shadow = _shadow_summary(_resolve(args.shadow_root), run.get("shadow", {}))
     formal_blocking = [
         "licensed_provider_missing",
@@ -69,6 +70,16 @@ def main() -> int:
         reasons.append("one_or_more_tasks_not_available")
     if artifact_evidence["missing_tasks"]:
         reasons.append("task_artifact_missing")
+    artifact_available = not artifact_evidence["missing_tasks"] and all(
+        entry.get("status") == "complete"
+        for entry in artifact_evidence["entries"]
+    ) and bool(artifact_evidence["entries"])
+    inference_count = sum(
+        int(value.get("count", 0))
+        for value in (run.get("inference") or {}).values()
+        if isinstance(value, dict)
+    )
+    quality_degraded = bool(quality_counts.get("degraded", 0))
     payload: dict[str, Any] = {
         "schema_version": "cn-research-backend-acceptance-v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -76,6 +87,11 @@ def main() -> int:
         "status": "blocked" if run.get("status") == "blocked" else "partial" if reasons else "complete",
         "data_tier": "research_pit",
         "research_only": True,
+        "research_status": "research_only",
+        "artifact_available": artifact_available,
+        "prediction_status": "available" if inference_count else "unavailable",
+        "model_status": "research_only" if artifact_available else "unavailable",
+        "evidence_status": "partial" if quality_degraded or event_states else "valid",
         "deployment_ready": False,
         "environment": _environment(),
         "data": {
@@ -140,13 +156,62 @@ def _task_status(tasks: dict[str, Any], task: str) -> dict[str, Any]:
             "status": "passed" if research_ready else "failed",
             "reasons": [] if research_ready else ["task_metric_gate_not_met"],
         })
+        # Populate the explicit contract even when this helper is used in
+        # isolation (for example by contract tests).  The final artifact
+        # verification pass may tighten these values further.
+        record.setdefault("artifact_available", bool(record.get("manifest")))
+        record.setdefault("prediction_status", "available" if record["artifact_available"] else "unavailable")
+        record.setdefault("model_status", "research_only" if record["artifact_available"] else "unavailable")
+        record.setdefault("evidence_status", "valid" if record["artifact_available"] else "blocked")
         scopes[key] = record
         scopes[key]["research_status"] = research_status
     return {
+        # ``status=available`` is retained as a compatibility alias for older
+        # consumers.  New consumers must use the explicit fields on each
+        # scope: artifact_available, research_status and prediction_status.
         "status": "available" if any(value.get("status") == "research_only" for _, value in matches) else str(matches[0][1].get("status", "unavailable")),
         "research_status_counts": dict(Counter(str(value.get("research_status", "unavailable")) for value in scopes.values())),
         "scopes": scopes,
     }
+
+
+def _apply_task_contract(task_statuses: dict[str, Any], artifact_evidence: dict[str, Any]) -> None:
+    """Add explicit availability/status fields without breaking old readers."""
+    evidence_by_scope = {
+        str(entry.get("scope")): entry
+        for entry in artifact_evidence.get("entries", [])
+        if isinstance(entry, dict)
+    }
+    for task_payload in task_statuses.values():
+        for scope, record in (task_payload.get("scopes") or {}).items():
+            evidence = evidence_by_scope.get(scope)
+            artifact_available = bool(evidence and evidence.get("status") == "complete")
+            research_status = str(record.get("research_status", "exploratory"))
+            record["artifact_available"] = artifact_available
+            record["model_status"] = "research_only" if artifact_available else "unavailable"
+            record["prediction_status"] = "available" if artifact_available else "unavailable"
+            record["evidence_status"] = "valid" if artifact_available else "blocked"
+            if evidence and evidence.get("reasons"):
+                record["gating_reasons"] = list(dict.fromkeys([
+                    *record.get("gating_reasons", []),
+                    *evidence["reasons"],
+                ]))
+            record["research_status"] = research_status
+        scope_records = list((task_payload.get("scopes") or {}).values())
+        all_artifacts = bool(scope_records) and all(
+            bool(record.get("artifact_available")) for record in scope_records
+        )
+        task_payload["artifact_available"] = all_artifacts
+        task_payload["research_status"] = (
+            "research_ready"
+            if all(str(record.get("research_status")) == "research_ready" for record in scope_records)
+            else "exploratory"
+            if all_artifacts
+            else "unavailable"
+        )
+        task_payload["prediction_status"] = "available" if all_artifacts else "unavailable"
+        task_payload["model_status"] = "research_only" if all_artifacts else "unavailable"
+        task_payload["evidence_status"] = "valid" if all_artifacts else "blocked"
 
 
 def _artifact_evidence(run: dict[str, Any]) -> dict[str, Any]:

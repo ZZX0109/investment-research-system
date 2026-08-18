@@ -1,0 +1,23 @@
+{
+  "schema_version": "competition-kb-eval-v1",
+  "data_tier": "research_demo",
+  "validation_status": "research_demonstration_not_validated",
+  "note": "比赛演示知识库 golden eval；衡量 recall@k 与 citation-validity，不衡量预测准确性。",
+  "questions": [
+    {"symbol": "600519", "question": "经营变化 营业收入 同比", "expected_terms": ["营业收入", "1743"]},
+    {"symbol": "600519", "question": "净利润 经营", "expected_terms": ["净利润", "892"]},
+    {"symbol": "600519", "question": "毛利率", "expected_terms": ["毛利率"]},
+    {"symbol": "600519", "question": "股东回报 分红", "expected_terms": ["分红"]},
+    {"symbol": "600519", "question": "风险因素", "expected_terms": ["风险"]},
+    {"symbol": "600519", "question": "行业景气度 估值", "expected_terms": ["估值"]},
+    {"symbol": "300750", "question": "经营变化 营业收入", "expected_terms": ["3654"]},
+    {"symbol": "300750", "question": "毛利率 下滑 产能", "expected_terms": ["毛利率"]},
+    {"symbol": "300750", "question": "风险 海外 贸易", "expected_terms": ["风险"]},
+    {"symbol": "300750", "question": "海外产能 扩张 定增", "expected_terms": ["产能"]},
+    {"symbol": "000858", "question": "营业总收入 经营", "expected_terms": ["920"]},
+    {"symbol": "000858", "question": "净利润 增速放缓", "expected_terms": ["净利润"]},
+    {"symbol": "000858", "question": "行业竞争 风险", "expected_terms": ["竞争"]},
+    {"symbol": "000858", "question": "240 日 相对表现 偏弱", "expected_terms": ["240", "偏弱"]},
+    {"symbol": "000858", "question": "渠道 动销 高端化", "expected_terms": ["渠道"]}
+  ]
+}

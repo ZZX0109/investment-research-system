@@ -24,6 +24,78 @@ export function useAssetsQuery() {
   });
 }
 
+export function useFinancialKnowledgeCoverageQuery(symbol?: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["financial-knowledge-coverage", client.mode, symbol ?? null],
+    queryFn: () => client.getFinancialKnowledgeCoverage(symbol),
+    enabled: ["research", "real"].includes(client.mode),
+    retry: false,
+  });
+}
+
+export function useFinancialKnowledgeSearchQuery(query: string, symbol?: string | null, documentType?: string) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["financial-knowledge-search", client.mode, query, symbol ?? null, documentType ?? ""],
+    queryFn: () => client.searchFinancialKnowledge({ query, symbol, documentType, limit: 8 }),
+    enabled: ["research", "real"].includes(client.mode) && query.trim().length >= 2,
+    retry: false,
+  });
+}
+
+export function useFinancialKnowledgeDocumentsQuery(symbol?: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["financial-knowledge-documents", client.mode, symbol ?? null],
+    queryFn: () => client.listFinancialKnowledge(symbol),
+    enabled: ["research", "real"].includes(client.mode),
+    retry: false,
+  });
+}
+
+export function useUploadFinancialKnowledgeMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, assetId }: { file: File; assetId?: string | null }) => client.uploadFinancialKnowledge(file, assetId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-search"] });
+    },
+  });
+}
+
+export function useDeleteFinancialKnowledgeMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: string) => client.deleteFinancialKnowledgeUpload(documentId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-documents"] });
+      void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-search"] });
+    },
+  });
+}
+
+export function useRefreshFinancialKnowledgeMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: "incremental" | "backfill" | "reindex" | "audit") => client.refreshFinancialKnowledge(mode),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-coverage"] }),
+  });
+}
+
+export function useRequestFinancialKnowledgeFullTextMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (documentId: string) => client.requestFinancialKnowledgeFullText(documentId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["financial-knowledge-coverage"] }),
+  });
+}
+
 export function useLLMProviderProfilesQuery() {
   const client = useWorkbenchClient();
   return useQuery({
@@ -63,6 +135,34 @@ export function useConfigureLLMProviderMutation() {
       void queryClient.invalidateQueries({ queryKey: ["llm-provider-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ["llm-credentials"] });
     }
+  });
+}
+
+export function useWorkBuddyConnectionsQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["workbuddy-connections", client.mode],
+    queryFn: () => client.getWorkBuddyConnections(),
+    enabled: client.mode === "research",
+    retry: false,
+  });
+}
+
+export function useCreateWorkBuddyConnectionMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: client.createWorkBuddyConnection,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["workbuddy-connections"] }),
+  });
+}
+
+export function useRevokeWorkBuddyConnectionMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: client.revokeWorkBuddyConnection,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["workbuddy-connections"] }),
   });
 }
 
@@ -230,6 +330,16 @@ export function useResearchForecastQuery(runId: string | null) {
   });
 }
 
+export function useLatestLongTermScorecardQuery(symbol?: string | null) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["latest-long-term-scorecard", client.mode, symbol],
+    queryFn: () => client.getLatestLongTermScorecard(symbol ?? ""),
+    enabled: ["research", "real"].includes(client.mode) && Boolean(symbol),
+    retry: false,
+  });
+}
+
 export function useLatestResearchPredictionQuery(
   symbol?: string | null,
   task: import("../api/types").LatestResearchPrediction["task"] = "drawdown_20d"
@@ -280,6 +390,17 @@ export function useResearchShadowSummaryQuery(symbol?: string | null) {
     queryFn: () => client.getResearchShadowSummary({ symbol: symbol ?? undefined }),
     enabled: ["research", "real"].includes(client.mode),
     retry: false
+  });
+}
+
+export function useResearchLifecycleStatusQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-lifecycle-status", client.mode],
+    queryFn: () => client.getResearchLifecycleStatus(),
+    enabled: client.mode === "research",
+    refetchInterval: 30_000,
+    retry: false,
   });
 }
 
@@ -750,5 +871,59 @@ export function useUpsertTestOfficerCredentialMutation() {
       );
       void queryClient.invalidateQueries({ queryKey: ["test-officer-credentials"] });
     }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — single-source dashboard snapshot + multi-turn conversation + SSE.
+// ---------------------------------------------------------------------------
+
+export function useAssetSnapshotQuery(assetId: string | null | undefined, asOf?: string) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["asset-snapshot", client.mode, assetId ?? null, asOf ?? null],
+    queryFn: () => client.getAssetSnapshot(assetId as string, asOf),
+    enabled: Boolean(assetId)
+  });
+}
+
+export function useConversationsQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["conversations", client.mode],
+    queryFn: () => client.listConversations()
+  });
+}
+
+export function useCreateConversationMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: import("../api/types").ConversationCreateInput) =>
+      client.createConversation(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    }
+  });
+}
+
+export function usePostConversationMessageMutation(sessionId: string | null | undefined) {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: import("../api/types").ConversationMessageInput) =>
+      client.postConversationMessage(sessionId as string, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    }
+  });
+}
+
+export function useConversationQuery(sessionId: string | null | undefined) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["conversation", client.mode, sessionId ?? null],
+    queryFn: () => client.getConversation(sessionId as string),
+    enabled: Boolean(sessionId)
   });
 }
