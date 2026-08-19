@@ -3,6 +3,7 @@ import { Check, Plus, Search, X } from "lucide-react";
 import type { Asset } from "../../api/types";
 import { useCreateAssetMutation, useLatestResearchUniverseQuery } from "../../hooks/useWorkbenchQueries";
 import { useI18n } from "../../i18n";
+import { ModalPortal } from "../../components/ModalPortal";
 import { useWorkbenchStore } from "../../state/workbenchStore";
 import { CN_RESEARCH_UNIVERSE, type CNResearchCandidate } from "./cnResearchUniverse";
 
@@ -105,15 +106,16 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="asset-composer-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="asset-composer-title"
-        data-testid="asset-composer-modal"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
+    <ModalPortal>
+      <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+        <section
+          className="asset-composer-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="asset-composer-title"
+          data-testid="asset-composer-modal"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
         <header className="asset-composer-modal__header">
           <div>
             <div className="eyebrow">{l("固定研究池", "Fixed research pool")}</div>
@@ -214,7 +216,8 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
         {mutation.error instanceof Error ? (
           <p className="asset-composer-modal__error">{mutation.error.message}</p>
         ) : null}
-      </section>
-    </div>
+        </section>
+      </div>
+    </ModalPortal>
   );
 }

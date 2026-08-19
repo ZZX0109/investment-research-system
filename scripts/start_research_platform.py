@@ -26,6 +26,12 @@ def main() -> int:
     args = parse_args()
     env = os.environ.copy()
     env.setdefault("NODE_ENV", "development")
+    env.setdefault("INVESTMENT_RESEARCH_COMPETITION_MODE", "true")
+    # The local workbench mounts many independent research panels. Keep the
+    # shared loopback limiter high enough that opening the dashboard cannot
+    # consume the entire minute's allowance before a user can sign in.
+    # Deployments can still provide a stricter explicit value.
+    env.setdefault("API_RATE_LIMIT_PER_MINUTE", "5000")
     env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     env["WORKBENCH_API_ORIGIN"] = f"http://127.0.0.1:{args.api_port}"
     # Research mode never reads legacy bundle_*.pkl or mixed-market model

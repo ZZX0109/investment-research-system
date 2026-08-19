@@ -72,7 +72,7 @@ export function FinancialKnowledgePanel() {
 
       {query ? <div className="knowledge-results" aria-live="polite">
         <div className="knowledge-results__header"><strong>{l(`“${query}” 的检索结果`, `Results for “${query}”`)}</strong><span>{search.isFetching ? l("检索中…", "Searching...") : l(`${search.data?.length ?? 0} 条可追溯资料`, `${search.data?.length ?? 0} traceable sources`)}</span></div>
-        {search.isError ? <div className="knowledge-empty">{l("当前无法读取知识库。请确认已登录，或稍后重试。", "The knowledge base is unavailable. Sign in or try again later.")}</div> : null}
+        {search.isError ? <div className="knowledge-empty">{l("当前无法读取知识库，请稍后重试。", "The knowledge base is unavailable. Try again later.")}</div> : null}
         {!search.isFetching && !search.isError && !search.data?.length ? <div className="knowledge-empty">{l("没有找到匹配资料。系统不会把通用说明伪装成公司级证据。", "No matching source was found. Generic guidance is never presented as company evidence.")}</div> : null}
         {search.data?.map((item) => <article className="knowledge-result" key={item.citation_id ?? item.chunk_id ?? item.document.id}>
           <div className="knowledge-result__top"><span className={`knowledge-source-kind knowledge-source-kind--${item.document.source_kind}`}>{item.document.source_kind === "user_upload" ? l("我的资料", "Private") : item.document.source_name}</span><span>{new Date(item.document.published_at).toLocaleDateString()}</span></div>
