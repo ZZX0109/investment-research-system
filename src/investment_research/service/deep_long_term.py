@@ -898,12 +898,17 @@ class DeepLongTermInferenceService:
             spec = self.specs.get(task)
             if spec is None:
                 raise DeepLongTermArtifactError(f"long_term_task_missing_from_registry:{task}")
+            # Use the model's canonical feature contract so examples match the
+            # trained width; the runner validates this same order at predict().
+            _, runner = self._runner(task)
             examples = build_sequence_examples(
                 samples,
                 target_name=task,
                 window_sessions=spec.window_sessions,
                 require_research_pit=True,
                 allow_quality_degraded=True,
+                require_label=False,
+                feature_order=runner.feature_order,
             )
             if as_of is not None:
                 examples = [
@@ -922,7 +927,16 @@ class DeepLongTermInferenceService:
         common_keys = set.intersection(*(set(by_task[task]) for task in LONG_TERM_TASKS))
         if not common_keys:
             raise DeepLongTermArtifactError("long_term_sequence_tasks_have_no_aligned_window")
-        ordered_keys = sorted(common_keys, key=lambda item: (item[0], item[1]))
+        # Each persisted reading must be a single (symbol, decision_time)
+        # observation shared by all four tasks; keeping every common session
+        # would emit one reading per session and trip the per-symbol context
+        # check in write_long_term_model_readings.  Retain only the latest
+        # aligned session per symbol.
+        latest_per_symbol: dict[str, tuple[str, str]] = {}
+        for sym, dt in common_keys:
+            if sym not in latest_per_symbol or dt > latest_per_symbol[sym][1]:
+                latest_per_symbol[sym] = (sym, dt)
+        ordered_keys = sorted(latest_per_symbol.values(), key=lambda item: (item[0], item[1]))
         return {
             task: [by_task[task][key] for key in ordered_keys]
             for task in LONG_TERM_TASKS

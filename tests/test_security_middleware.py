@@ -78,6 +78,14 @@ def test_basic_rate_limiter_ignores_invalid_env_limit(monkeypatch) -> None:
     assert second.status_code == 429
 
 
+def test_competition_mode_uses_dashboard_safe_default(monkeypatch) -> None:
+    monkeypatch.delenv("API_RATE_LIMIT_PER_MINUTE", raising=False)
+    monkeypatch.setenv("INVESTMENT_RESEARCH_COMPETITION_MODE", "true")
+    limiter = BasicRateLimiter(limit=2, window_seconds=60)
+
+    assert limiter.limit == 5000
+
+
 async def _ok_response(_: Request) -> Response:
     return JSONResponse({"ok": True}, status_code=200)
 

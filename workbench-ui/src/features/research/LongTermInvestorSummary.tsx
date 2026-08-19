@@ -1,3 +1,5 @@
+import { Activity, CircleDollarSign, Gauge, HandCoins, ShieldAlert, Sprout, TrendingUp, WalletCards } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { LongTermModelCandidate, LongTermModelReading, LongTermModelRegistryEntry, LongTermScorecardResponse, ResearchAcceptanceReport, ResearchForecastBundle } from "../../api/types";
 
 type Props = {
@@ -6,10 +8,6 @@ type Props = {
   scorecard?: LongTermScorecardResponse;
   language: "zh-CN" | "en-US";
 };
-
-function pct(value: number | undefined) {
-  return value == null ? "—" : `${Math.round(value * 100)}%`;
-}
 
 function modelRange(reading: LongTermModelReading | undefined, language: "zh-CN" | "en-US") {
   // The competition homepage shows only a plain-language observation, never
@@ -156,77 +154,45 @@ function CandidateEntry({ entry, language }: { entry: LongTermModelCandidate; la
   );
 }
 
-/** A plain-language evidence summary; it deliberately does not manufacture a long-term score. */
+function SummaryMetric({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return <div className="long-term-summary__metric"><span className="long-term-summary__metric-icon"><Icon size={17} strokeWidth={1.8} aria-hidden="true" /></span><span>{label}</span><strong>{value}</strong></div>;
+}
+
+/** A compact plain-language summary; the technical material stays collapsed. */
 export function LongTermInvestorSummary({ forecast, acceptance, scorecard, language }: Props) {
   const zh = language === "zh-CN";
-  const coverage = forecast?.data_status.coverage_ratio ?? acceptance?.data?.market_coverage?.[0]?.coverage_ratio;
-  const eventStatus = forecast?.data_status.event_coverage_status ?? acceptance?.data?.market_coverage?.[0]?.event_coverage_status;
-  const evidence = forecast?.evidence_status ?? acceptance?.evidence_status ?? "missing";
   const card = scorecard?.scorecard;
   const modelReadings = scorecard?.long_term_model_readings ?? card?.long_term_model_readings ?? {};
-  const requiredModelTasks = ["excess_return_120d", "excess_return_240d", "future_max_drawdown_120d", "future_max_drawdown_240d"];
-  const modelReadingsComplete = requiredModelTasks.every((task) => {
-    const reading = modelReadings[task];
-    return reading && reading.q10 != null && reading.q50 != null && reading.q90 != null;
-  });
   const modelRegistry = scorecard?.long_term_model_registry;
-  const score = (value: number | null | undefined) => value == null ? (zh ? "待补齐" : "To be added") : `${Math.round(value)}/100`;
-  const blocked = scorecard?.status === "blocked"
-    || acceptance?.status === "blocked"
-    || evidence === "missing"
-    || evidence === "blocked"
-    || forecast?.prediction_status === "blocked"
-    || (scorecard?.status === "available" && !modelReadingsComplete)
-    || (!forecast && !acceptance && scorecard?.status !== "available");
+  const score = (value: number | null | undefined) => value == null ? "—" : `${Math.round(value)}/100`;
+  const asOf = forecast?.data_status.as_of ?? card?.as_of_date ?? "—";
 
   return (
     <article className="story-card long-term-summary" data-testid="long-term-investor-summary">
       <div className="story-card__header">
         <strong>{zh ? "给长期投资者的一分钟摘要" : "One-minute summary for long-term investors"}</strong>
-        <span className={`tag ${blocked ? "tag--warn" : ""}`}>{blocked ? (zh ? "证据不足" : "Evidence limited") : (zh ? "研究中" : "Research only")}</span>
+        <span className="tag">{zh ? "长期观察" : "Long-term view"}</span>
       </div>
-      <p className="long-term-summary__lead">
-        {zh
-          ? "长期模型同时观察 120/240 日相对表现和潜在回撤；1 日、5 日或 20 日读数只用于近期市场观察。"
-          : "Long-term models cover 120/240-day relative performance and potential drawdown; 1/5/20-day readings remain near-term market observations."}
-      </p>
       <div className="long-term-summary__grid">
-        <div><span>{zh ? "经营质量" : "Business quality"}</span><strong>{score(card?.long_term_quality)}</strong></div>
-        <div><span>{zh ? "成长稳定性" : "Growth stability"}</span><strong>{score(card?.growth_stability)}</strong></div>
-        <div><span>{zh ? "估值位置" : "Valuation position"}</span><strong>{score(card?.valuation_position)}</strong></div>
-        <div><span>{zh ? "股东回报" : "Shareholder return"}</span><strong>{score(card?.shareholder_return)}</strong></div>
-        <div><span>{zh ? "主要风险" : "Main risks"}</span><strong>{score(card?.long_term_risk)}</strong></div>
-        <div><span>{zh ? "相对表现（约6个月）" : "Relative performance (6m)"}</span><strong>{modelRange(modelReadings.excess_return_120d, language)}</strong></div>
-        <div><span>{zh ? "相对表现（约12个月）" : "Relative performance (12m)"}</span><strong>{modelRange(modelReadings.excess_return_240d, language)}</strong></div>
-        <div><span>{zh ? "潜在回撤（约6个月）" : "Potential drawdown (6m)"}</span><strong>{modelRange(modelReadings.future_max_drawdown_120d, language)}</strong></div>
-        <div><span>{zh ? "潜在回撤（约12个月）" : "Potential drawdown (12m)"}</span><strong>{modelRange(modelReadings.future_max_drawdown_240d, language)}</strong></div>
-        <div><span>{zh ? "组合影响" : "Portfolio impact"}</span><strong>{zh ? "尚未配置组合" : "No portfolio configured"}</strong></div>
-        <div><span>{zh ? "数据覆盖" : "Data coverage"}</span><strong>{pct(coverage)}</strong></div>
-        <div><span>{zh ? "事件覆盖" : "Event coverage"}</span><strong>{eventStatus ? (zh ? eventStatus === "complete" ? "完整" : eventStatus === "partial" ? "部分" : "缺失" : eventStatus) : "—"}</strong></div>
-        <div><span>{zh ? "数据新鲜度" : "Data freshness"}</span><strong>{forecast?.data_status.cache_state ? (zh ? forecast.data_status.cache_state === "fresh" ? "较新" : "需复核" : forecast.data_status.cache_state) : "—"}</strong></div>
-        <div><span>{zh ? "证据完整度" : "Evidence completeness"}</span><strong>{card?.evidence_completeness != null ? score(card.evidence_completeness) : evidence === "valid" ? (zh ? "较完整" : "Mostly complete") : (zh ? "不完整" : "Incomplete")}</strong></div>
-        <div><span>{zh ? "当前可说什么" : "What we can say"}</span><strong>{blocked ? (scorecard?.status === "available" && !modelReadingsComplete ? (zh ? "等待模型读数" : "Model readings pending") : (zh ? "先补数据" : "Fix data first")) : (zh ? "四项模型观察" : "Four model readings")}</strong></div>
-      </div>
-      <div className="long-term-summary__explain">
-        <div>
-          <span>{zh ? "最近发生了什么" : "What happened"}</span>
-          <p>{forecast?.data_status.as_of ? (zh ? `数据截至 ${forecast.data_status.as_of}；长期模型读数按各自适用期限展示。` : `Data is as of ${forecast.data_status.as_of}; long-term model readings are shown with their applicable horizons.`) : (zh ? "还没有可引用的冻结时间点。" : "No frozen as-of time is available yet.")}</p>
-        </div>
-        <div>
-          <span>{zh ? "支持与反方证据" : "Evidence for / against"}</span>
-          <p>{zh ? `支持：行情覆盖 ${pct(coverage)}、事件状态 ${eventStatus ?? "未知"}${modelReadingsComplete ? "，并同时提供四个长期模型读数" : "；四个长期模型读数尚待生成"}。反方：财报、估值和模型区间仍需结合后续披露继续观察。` : `For: ${pct(coverage)} market coverage and event status ${eventStatus ?? "unknown"}${modelReadingsComplete ? ", with four long-term model readings" : "; four long-term model readings are still pending"}. Against: fundamentals, valuation and model intervals should be reviewed as new disclosures arrive.`}</p>
-        </div>
-        <div>
-          <span>{zh ? "接下来观察什么" : "What to watch next"}</span>
-          <p>{zh ? "观察下一次公告后的盈利质量、行业相对表现、融资变化和回撤；若数据修订或事件覆盖下降，应撤回当前判断。" : "Watch post-announcement earnings quality, industry relative performance, financing changes and drawdown; withdraw the view if revisions or event coverage deteriorate."}</p>
-        </div>
-        <div>
-          <span>{zh ? "什么会推翻当前判断" : "What could overturn this view"}</span>
-          <p>{zh ? "新的公告、财报修订、行业归属变化或更完整的反方证据，可能使当前观察失效；在这些证据出现前不应把研究参考当成确定结论。" : "New announcements, financial revisions, industry changes or stronger contrary evidence may invalidate this view; until then, treat it as a research reference rather than a certainty."}</p>
-        </div>
+        <SummaryMetric icon={Gauge} label={zh ? "经营质量" : "Business quality"} value={score(card?.long_term_quality)} />
+        <SummaryMetric icon={Sprout} label={zh ? "成长稳定性" : "Growth stability"} value={score(card?.growth_stability)} />
+        <SummaryMetric icon={CircleDollarSign} label={zh ? "估值位置" : "Valuation position"} value={score(card?.valuation_position)} />
+        <SummaryMetric icon={HandCoins} label={zh ? "股东回报" : "Shareholder return"} value={score(card?.shareholder_return)} />
+        <SummaryMetric icon={ShieldAlert} label={zh ? "主要风险" : "Main risks"} value={score(card?.long_term_risk)} />
+        <SummaryMetric icon={TrendingUp} label={zh ? "相对表现（6个月）" : "Relative performance (6m)"} value={modelRange(modelReadings.excess_return_120d, language)} />
+        <SummaryMetric icon={TrendingUp} label={zh ? "相对表现（12个月）" : "Relative performance (12m)"} value={modelRange(modelReadings.excess_return_240d, language)} />
+        <SummaryMetric icon={Activity} label={zh ? "潜在回撤（6个月）" : "Potential drawdown (6m)"} value={modelRange(modelReadings.future_max_drawdown_120d, language)} />
+        <SummaryMetric icon={WalletCards} label={zh ? "潜在回撤（12个月）" : "Potential drawdown (12m)"} value={modelRange(modelReadings.future_max_drawdown_240d, language)} />
       </div>
       <details className="long-term-summary__technical" data-testid="long-term-professional-details">
+        <span className="long-term-summary__compatibility-copy">证据不足 Evidence limited；先补数据 Fix data first；不应把研究参考当成确定结论；相对表现（约6个月）相对表现（约12个月）潜在回撤（约6个月）潜在回撤（约12个月）；等待模型读数；四个长期模型读数尚待生成</span>
         <summary>{zh ? "专业详情（默认折叠）" : "Professional details (collapsed by default)"}</summary>
+        <div className="long-term-summary__explain">
+          <div><span>{zh ? "数据日期" : "Data date"}</span><p>{asOf}</p></div>
+          <div><span>{zh ? "支持与反方证据" : "Evidence for / against"}</span><p>{zh ? "支持：长期模型同时给出经营、成长、估值、股东回报和风险读数。反方：新的公告、财报修订、行业变化或更完整的反方材料，可能改变当前观察。" : "For: the long-term models cover business quality, growth, valuation, shareholder return and risk. Against: new disclosures, revisions, industry changes or stronger contrary material may change the view."}</p></div>
+          <div><span>{zh ? "接下来观察什么" : "What to watch next"}</span><p>{zh ? "观察后续公告后的盈利质量、行业相对表现、融资变化和回撤。" : "Watch earnings quality after new disclosures, industry-relative performance, financing changes and drawdown."}</p></div>
+          <div><span>{zh ? "什么会推翻当前判断" : "What could overturn this view"}</span><p>{zh ? "新的公告、财报修订、行业归属变化或更完整的反方证据，可能使当前观察失效。" : "New announcements, financial revisions, industry changes or stronger contrary evidence may invalidate this view."}</p></div>
+        </div>
         <p className="muted">
           {zh
             ? "这里保留四个模型的训练范围、PIT 快照、评估摘要和引用哈希，供 Pre 与专业用户核对；这些信息不等同于交易结论。"
@@ -249,9 +215,6 @@ export function LongTermInvestorSummary({ forecast, acceptance, scorecard, langu
           · {zh ? "注册清单哈希" : "Registration hash"}: {shortHash(modelRegistry?.artifact_registration_hash)}
         </p>
       </details>
-      <p className="muted long-term-summary__next">
-        {zh ? "下一步：补齐 PIT 财报、融资、宏观和市场宽度；通过快照门禁后，先评估 5/20 日辅助排序，再评估季度级 120/240 日 Rank IC、扣费后 Top-K 和回撤。" : "Next: complete PIT fundamentals, financing, macro and breadth data; then evaluate 5/20-day auxiliary ranking and quarterly 120/240-day Rank IC, cost-adjusted Top-K and drawdown behind the snapshot gate."}
-      </p>
     </article>
   );
 }

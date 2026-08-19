@@ -3,12 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { InlineNotice } from "../components/InlineNotice";
 import { Panel } from "../components/Panel";
 import { LanguageSwitch } from "../components/LanguageSwitch";
-import { AuthCard } from "../features/auth/AuthCard";
-import { useAssetsQuery, useAgentExplanationQuery, useCreateAgentRunMutation, useLLMProviderProfilesQuery, useAgentToolCallsQuery } from "../hooks/useWorkbenchQueries";
+import { useAssetsQuery, useAgentExplanationQuery, useCreateAgentRunMutation, useAgentToolCallsQuery } from "../hooks/useWorkbenchQueries";
 import { useI18n } from "../i18n";
 import { useWorkbenchStore } from "../state/workbenchStore";
 import { CN_RESEARCH_UNIVERSE } from "../features/overview/cnResearchUniverse";
 import type { AgentExplanation, PlainAnswer, PlainSource } from "../api/types";
+import { LLMApiKeyButton } from "./WorkbenchPage";
 
 const DEMO_TICKERS = ["600519", "300750", "000858"];
 
@@ -18,8 +18,6 @@ export function CompetitionHome() {
   const selectedAssetId = useWorkbenchStore((state) => state.selectedAssetId);
   const setSelectedAssetId = useWorkbenchStore((state) => state.setSelectedAssetId);
   const assets = useAssetsQuery();
-  const profiles = useLLMProviderProfilesQuery();
-  const activeProfile = profiles.data?.find((profile) => profile.enabled);
   const assistant = useCreateAgentRunMutation();
   const [question, setQuestion] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
@@ -68,7 +66,6 @@ export function CompetitionHome() {
       asset_id: selectedAsset.id,
       task_text: `${value}\n\n请使用平台只读研究工具（知识库、联网搜索、行情财务计算、长期模型、组合风险）回答，说明数据来源、日期和限制，不提供买卖或仓位指令。`.slice(0, 4000),
       as_of: new Date().toISOString(),
-      provider_profile_id: activeProfile?.id,
       user_preference: "conservative",
     });
   };
@@ -86,14 +83,13 @@ export function CompetitionHome() {
         <div className="app-header__status">
           <span className="system-status"><Database size={14} aria-hidden="true" /> {l("研究观察 · 非投资建议", "Research observation · not investment advice")}</span>
           <LanguageSwitch />
+          <LLMApiKeyButton />
         </div>
       </header>
 
       <div className="research-mode-banner" role="status">
         {l("基于免费公开数据，结果仅作研究观察，不输出买卖、加仓、减仓、目标价或收益承诺。", "Built on free public data; results are research observations only — no buy/sell/position/target-price/return promises.")}
       </div>
-
-      <div className="competition-home__auth"><AuthCard /></div>
 
       <main className="competition-home__main">
         <section className="competition-home__hero">
@@ -137,7 +133,7 @@ export function CompetitionHome() {
                 <Send size={15} aria-hidden="true" /> {assistant.isPending ? l("研究中…", "Researching…") : l("提问", "Ask")}
               </button>
             </div>
-            {!activeProfile ? <p className="muted">{l("未配置大模型 Key 时，助手使用平台确定性模式整理证据；配置后会由大模型组织通俗回答。两种模式都不会输出交易指令。", "Without an LLM key the assistant uses the deterministic mode; with one the LLM organizes the plain answer. Neither emits trading instructions.")}</p> : null}
+            <p className="muted">{l("研究助手使用平台预置的研究能力整理证据和通俗说明，不提供买卖或仓位指令。", "The research assistant uses the platform's configured research capability to organize evidence and plain explanations; it never provides trading or position instructions.")}</p>
             {notice ? <p className="ai-assistant-card__setup" role="status">{notice}</p> : null}
             {assistant.error ? <InlineNotice tone="error" title={l("提问失败", "Question failed")} body={assistant.error.message} /> : null}
           </Panel>

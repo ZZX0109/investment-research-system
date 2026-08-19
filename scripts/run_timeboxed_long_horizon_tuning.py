@@ -81,7 +81,18 @@ def _env():
 
 def main():
     a = _args(); a.output_root.mkdir(parents=True, exist_ok=True); status_path = a.output_root / "timebox-status.json"
-    status = {"schema_version": "timeboxed-tuning-v1", "status": "waiting_for_prior_queue", "started_at": _now(), "budget_hours": a.hours, "trials": [], "policy": {"gpu": "GPU0 only", "epoch_resume": True, "disk_minimum_gib": a.minimum_free_gib, "no_sequence_cache": True, "sequential": True}}
+    existing = None
+    try: existing = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError): pass
+    status = existing or {"schema_version": "timeboxed-tuning-v1", "status": "waiting_for_prior_queue", "started_at": _now(), "budget_hours": a.hours, "trials": [], "policy": {"gpu": "GPU0 only", "epoch_resume": True, "disk_minimum_gib": a.minimum_free_gib, "no_sequence_cache": True, "sequential": True}}
+    # A prior controller can disappear during data preparation or a host
+    # restart.  Reclassify only the orphaned in-memory state; artifacts and
+    # epoch checkpoints remain untouched and can be resumed by the next run.
+    for item in status.get("trials", []):
+        if item.get("status") == "running":
+            item.update({"status": "interrupted_recovered", "recovery_note": "controller restarted; report absent, checkpoint retained if present"})
+    if status.get("status") == "running" and status.get("training_started_epoch"):
+        status["status"] = "interrupted_recovered"
     _write(status_path, status)
     wait_deadline = time.monotonic() + a.max_wait_minutes * 60
     while not _ready(a.wait_status_file):
@@ -89,22 +100,27 @@ def main():
             status.update({"status": "blocked_prior_queue_timeout", "finished_at": _now()}); _write(status_path, status); return
         _write(status_path, status)
         time.sleep(60)
-    deadline = time.monotonic() + a.hours * 3600; status["status"] = "running"; status["training_started_at"] = _now()
+    if not status.get("training_started_epoch"):
+        status["training_started_epoch"] = time.time(); status["training_started_at"] = _now()
+    deadline = float(status["training_started_epoch"]) + a.hours * 3600
+    if time.time() >= deadline:
+        status.update({"status": "timebox_finished", "finished_at": _now(), "finish_reason": "budget_already_consumed"}); _write(status_path, status); return
+    status["status"] = "running"
     for trial in _trials():
         report = _report(a.output_root, trial)
         if report.is_file():
             status["trials"].append({**trial, "status": "completed", "resumed": True, "report": str(report)}); _write(status_path, status); continue
-        if time.monotonic() >= deadline or shutil.disk_usage(a.output_root).free < int(a.minimum_free_gib * 1024**3): break
+        if time.time() >= deadline or shutil.disk_usage(a.output_root).free < int(a.minimum_free_gib * 1024**3): break
         item = {**trial, "status": "running", "started_at": _now()}; status["trials"].append(item); _write(status_path, status)
         log = a.output_root / "logs" / f"{trial['id']}.log"; log.parent.mkdir(parents=True, exist_ok=True)
         with log.open("a", encoding="utf-8") as out:
             proc = subprocess.Popen(_command(a, trial), cwd=PROJECT, env=_env(), stdout=out, stderr=subprocess.STDOUT)
             monitor = ResourceMonitor(a.output_root / "monitoring" / f"{trial['id']}.jsonl", interval_seconds=5, pid=proc.pid); monitor.start()
-            while proc.poll() is None and time.monotonic() < deadline: time.sleep(10)
+            while proc.poll() is None and time.time() < deadline: time.sleep(10)
             if proc.poll() is None: proc.terminate(); proc.wait(timeout=60)
             monitor.stop(); item.update({"status": "completed" if proc.returncode == 0 else "checkpointed", "exit_code": proc.returncode, "finished_at": _now(), "report": str(report)})
         _write(status_path, status)
-    status.update({"status": "timebox_finished", "finished_at": _now()}); _write(status_path, status)
+    status.update({"status": "timebox_finished", "finished_at": _now(), "finish_reason": "budget_or_trial_queue_exhausted"}); _write(status_path, status)
 
 
 if __name__ == "__main__": main()

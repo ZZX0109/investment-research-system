@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from investment_research.config import env_csv
 from investment_research.config import env_int
+from investment_research.public_demo import competition_mode_enabled
 
 
 def allowed_origins() -> list[str]:
@@ -33,7 +34,12 @@ def request_size_limit_for_path(path: str) -> int:
 
 class BasicRateLimiter:
     def __init__(self, *, limit: int = 600, window_seconds: int = 60) -> None:
-        self.limit = env_int("API_RATE_LIMIT_PER_MINUTE", limit)
+        # The competition workspace mounts many read-only panels at once and
+        # intentionally has no per-user session boundary. Keep an explicit
+        # environment override available, but make a direct competition-mode
+        # launch safe without relying on a wrapper script to set it.
+        default_limit = 5000 if competition_mode_enabled() else limit
+        self.limit = env_int("API_RATE_LIMIT_PER_MINUTE", default_limit)
         self.window_seconds = max(1, window_seconds)
         self._requests: dict[str, deque[float]] = defaultdict(deque)
 

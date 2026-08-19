@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { Plus, Search, Trash2 } from "lucide-react";
 import { Panel } from "../../components/Panel";
 import { SourceBadge } from "../../components/SourceBadge";
@@ -31,13 +31,22 @@ export function PortfolioPanel() {
   const [composerOpen, setComposerOpen] = useState(false);
   const closeComposer = useCallback(() => setComposerOpen(false), []);
 
-  const assets = (assetsQuery.data ?? []).filter((asset) => {
+  const uniqueAssets = useMemo(() => {
+    const seen = new Set<string>();
+    return (assetsQuery.data ?? []).filter((asset) => {
+      const key = `${asset.exchange ?? "CN"}:${asset.ticker}:${asset.asset_type}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [assetsQuery.data]);
+  const assets = uniqueAssets.filter((asset) => {
     const needle = deferredSearch.trim().toLowerCase();
     return needle ? `${asset.ticker} ${asset.name}`.toLowerCase().includes(needle) : true;
   });
 
   return (
-    <Panel eyebrow={l("研究范围", "Research universe")} title={l("研究对象", "Research assets")}>
+    <Panel eyebrow={l("选股", "Pick")} title={l("研究对象", "Research assets")}>
       <label className="asset-search" htmlFor="asset-search-input">
         <Search size={15} aria-hidden="true" />
         <input
@@ -80,9 +89,25 @@ export function PortfolioPanel() {
               title={l("仅从当前工作区移除；其他用户和历史研究证据不受影响", "Remove only from this workspace; other users and historical evidence are unaffected")}
               disabled={deleteAsset.isPending}
               onClick={() => {
-                void deleteAsset.mutateAsync(asset.id).then(() => {
-                  if (selectedAssetId === asset.id) setSelectedAssetId(null);
-                });
+                const sameResearchObject = (assetsQuery.data ?? []).filter(
+                  (candidate) => candidate.ticker === asset.ticker && (candidate.exchange ?? "CN") === (asset.exchange ?? "CN")
+                );
+                const removedIds = new Set(sameResearchObject.map((candidate) => candidate.id));
+                void (async () => {
+                  try {
+                    // A ticker/exchange is one user-facing research object;
+                    // remove stale duplicate access records sequentially.
+                    for (const candidate of sameResearchObject) {
+                      await deleteAsset.mutateAsync(candidate.id);
+                    }
+                    if (selectedAssetId && removedIds.has(selectedAssetId)) {
+                      const next = uniqueAssets.find((candidate) => !removedIds.has(candidate.id));
+                      setSelectedAssetId(next?.id ?? null);
+                    }
+                  } catch {
+                    // The mutation exposes the actionable API error below.
+                  }
+                })();
               }}
             >
               <Trash2 size={14} aria-hidden="true" />

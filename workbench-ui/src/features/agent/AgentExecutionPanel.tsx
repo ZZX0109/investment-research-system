@@ -4,7 +4,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { InlineNotice } from "../../components/InlineNotice";
 import { Panel } from "../../components/Panel";
-import { useAssetsQuery, useCreateAgentRunMutation, useLatestResearchPredictionQuery, useLLMProviderProfilesQuery, usePriceSeriesQuery } from "../../hooks/useWorkbenchQueries";
+import { useAssetsQuery, useCreateAgentRunMutation, useLatestResearchPredictionQuery, usePriceSeriesQuery } from "../../hooks/useWorkbenchQueries";
 import { useI18n } from "../../i18n";
 import { useWorkbenchStore } from "../../state/workbenchStore";
 import type { AgentRun, LatestResearchPrediction, LLMProviderProfile, LLMCredentialSummary, PriceSeries } from "../../api/types";
@@ -23,7 +23,6 @@ export function AgentExecutionPanel() {
   const run = useCreateAgentRunMutation();
   const selectedAsset = assets.data?.find((asset) => asset.id === assetId);
   const priceSeries = usePriceSeriesQuery(assetId);
-  const llmProfiles = useLLMProviderProfilesQuery();
   const latestResearch = useLatestResearchPredictionQuery(selectedAsset?.ticker, "drawdown_20d");
   const taskResults = {
     direction_1d: useLatestResearchPredictionQuery(selectedAsset?.ticker, "direction_1d"),
@@ -63,7 +62,7 @@ export function AgentExecutionPanel() {
           type="button"
           disabled={!assetId}
           onClick={() => document.getElementById("research-assistant")?.scrollIntoView({ behavior: "smooth", block: "start" })}
-        ><Sparkles size={15} aria-hidden="true" /> {llmProfiles.data?.some((profile) => profile.enabled) ? l("AI 解读当前结果", "Explain with AI") : l("了解 AI 解读", "About AI explanation")}</button>
+        ><Sparkles size={15} aria-hidden="true" /> {l("AI 解读当前结果", "Explain with AI")}</button>
         </div>
       )}
     >

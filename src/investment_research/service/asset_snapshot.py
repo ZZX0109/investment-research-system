@@ -50,6 +50,7 @@ from investment_research.service.long_term_research import (
     load_long_term_scorecard,
     load_long_term_scorecard_demo,
 )
+from investment_research.service.portfolio_research import PortfolioResearchService
 
 
 class AssetRef(BaseModel):
@@ -234,11 +235,24 @@ class AssetSnapshotService:
     def _market_observation_facts(
         self, asset_id: str, as_of: datetime
     ) -> MarketObservationFacts:
+        series = [
+            series
+            for series in self.uow.price_series.list_for_asset(asset_id)
+            if series.interval == "1d" and series.series_role in {None, "asset"}
+        ]
+        if not series:
+            # The downloaded PIT parquet is intentionally not copied into the
+            # SQLite UI table. Reuse the read-only bridge used by the chart API
+            # so the dashboard snapshot can still display local market data.
+            asset = self.uow.assets.get(asset_id)
+            if asset is not None:
+                fallback = PortfolioResearchService(self.uow)._load_cn_research_price_series(asset)
+                if fallback is not None:
+                    series = [fallback]
         points = sorted(
             [
                 point
-                for series in self.uow.price_series.list_for_asset(asset_id)
-                if series.interval == "1d" and series.series_role in {None, "asset"}
+                for series in series
                 for point in series.points
                 if point.timestamp <= as_of
             ],

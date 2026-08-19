@@ -13,6 +13,7 @@ from investment_research.api.routes import router
 from investment_research.api.agent_routes import router as agent_router
 from investment_research.api.workbuddy_routes import router as workbuddy_router
 from investment_research.api.security_middleware import BasicRateLimiter, allowed_origins, security_headers
+from investment_research.public_demo import competition_mode_enabled
 from investment_research.auth.security import validate_auth_settings
 from investment_research.bootstrap.settings import validate_runtime_storage
 from investment_research.service.scheduling import LocalResearchScheduler
@@ -46,6 +47,11 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins(),
+        # Permit any localhost frontend port so the workbench runs whether the
+        # vite dev server lands on :5173, :5174 (after a conflict), a preview
+        # server, or any local static origin. Explicit origins above still
+        # apply for non-localhost production deployments.
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=[
@@ -55,9 +61,11 @@ def create_app() -> FastAPI:
     app.middleware("http")(BasicRateLimiter())
     app.middleware("http")(security_headers)
     app.include_router(router)
-    app.include_router(auth_router)
+    if not competition_mode_enabled():
+        app.include_router(auth_router)
     app.include_router(agent_router)
-    app.include_router(workbuddy_router)
+    if not competition_mode_enabled():
+        app.include_router(workbuddy_router)
     _attach_static_workbench(app)
     return app
 

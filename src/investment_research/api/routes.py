@@ -816,7 +816,11 @@ def asset_snapshot(
 
     if as_of:
         try:
-            parsed = datetime.fromisoformat(as_of)
+            # Browsers send `new Date().toISOString()` which ends in a `Z` UTC
+            # designator; Python 3.10's fromisoformat rejects that suffix
+            # (fixed only in 3.11+).  Normalize to the numeric offset form used
+            # everywhere else in the codebase.
+            parsed = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
         except ValueError as exc:
             raise HTTPException(
                 status_code=422, detail=f"Invalid as_of: {exc}"

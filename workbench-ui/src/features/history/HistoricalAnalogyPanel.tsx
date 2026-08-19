@@ -19,12 +19,6 @@ export function HistoricalAnalogyPanel() {
     regime: item.regime
   }));
 
-  // Historical analogies are supporting evidence, not a required dashboard
-  // section. Do not occupy a full panel when no leakage-safe matches exist.
-  if (!query.isLoading && !query.isError && chart.length === 0) {
-    return null;
-  }
-
   return (
     <Panel eyebrow={l("历史情境", "Historical Context")} title={l("相似风险状态", "Similar Risk States")}>
       {chart.length ? (
@@ -55,8 +49,10 @@ export function HistoricalAnalogyPanel() {
         </>
       ) : query.isError ? (
         <p className="muted">{l("历史情境暂时无法读取，本次研究不依赖该项继续展示。", "Historical context is temporarily unavailable; the main research result remains visible without it.")}</p>
-      ) : (
+      ) : query.isLoading ? (
         <p className="muted">{l("正在查找可用的历史相似情境…", "Finding usable historical analogies...")}</p>
+      ) : (
+        <p className="muted">{l("当前还没有找到可比较的历史风险状态；有匹配情境后会显示在这里。", "No comparable historical risk state is available yet; matching situations will appear here when found.")}</p>
       )}
     </Panel>
   );

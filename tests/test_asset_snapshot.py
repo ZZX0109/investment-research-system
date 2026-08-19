@@ -31,6 +31,7 @@ from investment_research.domain.enums import AssetType, DataMode, DataSourceType
 from investment_research.domain.models import Asset, PricePoint, PriceSeries, User
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.asset_snapshot import AssetSnapshotService
+from investment_research.service.portfolio_research import PortfolioResearchService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AS_OF = datetime(2026, 8, 16, tzinfo=timezone.utc)
@@ -190,6 +191,48 @@ def test_snapshot_degrades_without_fabrication_on_missing_data(tmp_path: Path) -
     assert snap.directional_forecast is None
     # No fabricated evidence: only "missing" items, no confirmed facts.
     assert all(item.classification == "missing" for item in snap.evidence_merge_result.evidence)
+
+
+def test_snapshot_uses_local_research_bridge_when_ui_price_table_is_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Downloaded local bars must feed the dashboard snapshot even when the
+    compatibility SQLite price-series table has not been populated."""
+    uow, user, asset, _ = _make_context(
+        tmp_path, ticker="600519", name="示例白酒", with_prices=False
+    )
+    now = datetime.now(timezone.utc)
+    points = [
+        PricePoint(
+            asset_id=asset.id,
+            timestamp=AS_OF - timedelta(days=24 - index),
+            open=100.0 + index,
+            high=101.0 + index,
+            low=99.0 + index,
+            close=100.0 + index,
+            volume=1000.0,
+            provenance=_provenance(now),
+        )
+        for index in range(25)
+    ]
+    bridge_series = PriceSeries(
+        asset_id=asset.id,
+        interval="1d",
+        points=points,
+        provenance=_provenance(now),
+    )
+    monkeypatch.setattr(
+        PortfolioResearchService,
+        "_load_cn_research_price_series",
+        lambda _service, _asset: bridge_series,
+    )
+
+    snap = AssetSnapshotService(uow, project_root=REPO_ROOT).snapshot(
+        str(asset.id), as_of=AS_OF, user=user
+    )
+
+    assert snap.market_observation.sessions == 25
+    assert snap.market_observation.latest_close == 124.0
 
 
 def test_build_plain_answer_consumes_snapshot_and_reuses_causal_chain(tmp_path: Path) -> None:

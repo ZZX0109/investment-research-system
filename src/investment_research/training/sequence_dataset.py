@@ -131,6 +131,8 @@ def build_sequence_examples(
     window_sessions: int,
     require_research_pit: bool = True,
     allow_quality_degraded: bool = True,
+    require_label: bool = True,
+    feature_order: list[str] | None = None,
 ) -> list[SequenceExample]:
     """Build non-leaking same-symbol windows from a frozen snapshot.
 
@@ -168,12 +170,17 @@ def build_sequence_examples(
     global_feature_order = sorted(
         {name for group in groups.values() for row in group for name in row.features}
     )
-    if not global_feature_order:
+    # When a caller supplies the model's canonical feature_order (inference),
+    # honour it exactly: rows simply mark any absent names as missing via the
+    # existing missing_mask path instead of widening every example to a
+    # sample-union contract the model was never trained against.
+    if feature_order is None:
+        feature_order = global_feature_order
+    if not feature_order:
         return []
     output: list[SequenceExample] = []
     for (symbol, market, context, snapshot_id, snapshot_hash), group in groups.items():
         ordered = sorted(group, key=lambda item: (item.as_of_time, item.as_of_date))
-        feature_order = global_feature_order
         group_values = np.asarray(
             [[_finite_feature(row, name) for name in feature_order] for row in ordered],
             dtype=np.float32,
@@ -209,8 +216,13 @@ def build_sequence_examples(
             # legacy 20-session execution flag and must not discard a valid
             # 1d/5d target merely because a 20-session future window is not
             # present. A non-null task target is the authoritative gate.
-            if target is None:
+            if require_label and target is None:
                 continue
+            # Inference (require_label=False) builds the latest feature window
+            # without a mature future label; predict() never reads the target,
+            # so a deterministic placeholder keeps the model + hash valid.
+            if target is None:
+                target = "none"
             # ``as_of_time`` is the provider/source timestamp and may precede
             # the close-confirmed decision cutoff by design.  The PIT
             # availability timestamp is ``as_of`` when present; falling back
@@ -266,7 +278,7 @@ def build_sequence_examples(
                 industry_key=final.industry_key,
                 market=market,
                 decision_context=context,
-                decision_time=final.as_of_time.isoformat(),
+                decision_time=(final.as_of or final.as_of_time).isoformat(),
                 feature_cutoff=final.feature_cutoff.isoformat(),
                 window_sessions=window_sessions,
                 feature_order=feature_order,

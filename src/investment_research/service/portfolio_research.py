@@ -391,6 +391,54 @@ class PortfolioResearchService:
         ticker = asset.ticker.replace(".", "").upper()
         if len(ticker) != 6 or not ticker.isdigit():
             return None
+        # The normalized PIT layer is the fast local source for the dashboard.
+        # A raw-directory scan over tens of thousands of JSON objects is kept
+        # only as a compatibility fallback for older local snapshots.
+        parquet_root = (
+            Path(__file__).resolve().parents[3]
+            / "var"
+            / "cn-research"
+            / "parquet"
+            / "pit"
+            / "cn"
+            / "standard_daily_bars_research"
+            / "free-research-standard-v1"
+        )
+        parquet_paths = sorted(parquet_root.glob(f"trade_year=*/part-{ticker}-*.parquet"))
+        if parquet_paths:
+            try:
+                import pyarrow.parquet as parquet
+
+                by_date: dict[str, dict[str, object]] = {}
+                columns = [
+                    "trade_date", "close_native", "open_native", "high_native",
+                    "low_native", "volume", "amount", "turnover_rate", "is_suspended",
+                ]
+                for path in parquet_paths:
+                    table = parquet.read_table(path, columns=columns)
+                    for row in table.to_pylist():
+                        date_value = str(row.get("trade_date") or "")
+                        if date_value:
+                            by_date.setdefault(date_value, row)
+                parquet_rows = [
+                    {
+                        "日期": date_value,
+                        "开盘": row.get("open_native"),
+                        "最高": row.get("high_native"),
+                        "最低": row.get("low_native"),
+                        "收盘": row.get("close_native"),
+                        "成交量": row.get("volume"),
+                        "成交额": row.get("amount"),
+                        "换手率": row.get("turnover_rate"),
+                        "交易状态": "0" if row.get("is_suspended") else "1",
+                    }
+                    for date_value, row in sorted(by_date.items())
+                ]
+                if parquet_rows:
+                    return self._price_series_from_rows(asset, parquet_rows, source_name="CN research PIT parquet")
+            except (ImportError, OSError, ValueError):
+                # Fall through to the raw compatibility path below.
+                pass
         root = Path(__file__).resolve().parents[3] / "var" / "cn-research" / "raw" / "raw-market" / "sha256"
         candidates: list[list[dict[str, object]]] = []
         if not root.is_dir():
@@ -410,6 +458,17 @@ class PortfolioResearchService:
         if not candidates:
             return None
         rows = max(candidates, key=len)
+        return self._price_series_from_rows(asset, rows, source_name="AKShare Research PIT raw bars")
+
+    def _price_series_from_rows(
+        self,
+        asset: Asset,
+        rows: list[dict[str, object]],
+        *,
+        source_name: str,
+    ) -> PriceSeries | None:
+        if not rows:
+            return None
         try:
             observed_at = datetime.fromisoformat(str(rows[-1]["日期"])).replace(tzinfo=timezone.utc)
         except (KeyError, TypeError, ValueError):
@@ -417,7 +476,7 @@ class PortfolioResearchService:
         provenance = self.mode_policy.build_provenance(
             data_mode=DataMode.REAL,
             source_type=DataSourceType.BACKFILLED,
-            source_name="AKShare Research PIT raw bars",
+            source_name=source_name,
             observed_at=observed_at,
             confidence=0.9,
         )

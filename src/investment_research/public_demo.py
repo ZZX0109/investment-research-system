@@ -14,6 +14,11 @@ def public_demo_enabled() -> bool:
     return env_flag("INVESTMENT_RESEARCH_PUBLIC_DEMO", False)
 
 
+def competition_mode_enabled() -> bool:
+    """Whether the UI is the account-free competition experience."""
+    return env_flag("INVESTMENT_RESEARCH_COMPETITION_MODE", False)
+
+
 def require_private_research_workspace() -> None:
     """Reject stateful LLM/key operations in a shared public deployment."""
     if public_demo_enabled():

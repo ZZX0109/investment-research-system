@@ -173,12 +173,20 @@ function buildHeaders(method: string, init?: RequestInit): HeadersInit {
   };
 }
 
+// Keep development calls same-origin so a forwarded/remote :5173 page reaches
+// the backend through Vite's /api proxy on the same server. Set
+// VITE_API_ORIGIN only when the frontend intentionally needs to call an API on
+// another origin. Production remains same-origin as well.
+const API_BASE: string = import.meta.env.DEV
+  ? String(import.meta.env.VITE_API_ORIGIN ?? "")
+  : "";
+
 function createApiTransport() {
   let refreshInFlight: Promise<void> | null = null;
 
   async function rawFetch(path: string, init?: RequestInit): Promise<Response> {
     const method = (init?.method ?? "GET").toUpperCase();
-    return fetch(path, {
+    return fetch(`${API_BASE}${path}`, {
       ...init,
       method,
       credentials: "include",
@@ -203,11 +211,24 @@ function createApiTransport() {
   }
 
   return async function apiFetch<T>(path: string, init?: RequestInit, allowRefresh = true): Promise<T> {
-    const response = await rawFetch(path, init);
+    let response: Response;
+    try {
+      response = await rawFetch(path, init);
+    } catch (error) {
+      // Keep browser's opaque "Failed to fetch" from reaching the UI. It is
+      // usually a stopped backend, a wrong API origin, or a blocked preflight.
+      const detail = error instanceof Error ? error.message : undefined;
+      throw new ApiError(0, "无法连接研究服务，请确认本地 8000 后端已启动", detail, "network");
+    }
 
     if (response.status === 401 && allowRefresh && path !== "/api/v1/auth/refresh") {
-      await refreshSession();
-      return apiFetch<T>(path, init, false);
+      // A missing access token is a normal anonymous state. Do not launch a
+      // refresh request for every protected query mounted on the landing page.
+      const payload = await response.clone().json().catch(() => undefined) as ApiErrorPayload | undefined;
+      if (payload?.detail !== "Missing access token") {
+        await refreshSession();
+        return apiFetch<T>(path, init, false);
+      }
     }
 
     if (!response.ok) {
@@ -251,7 +272,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
       } catch (error) {
         // An anonymous browser has no refresh cookie. That is a valid session
         // state, not an authentication error to surface in the workbench.
-        if (error instanceof ApiError && error.status === 401 && error.detail === "Missing refresh token") {
+        if (error instanceof ApiError && error.status === 401 && ["Missing access token", "Missing refresh token"].includes(error.detail ?? "")) {
           return { user: null, access_expires_at: "", refresh_expires_at: "" };
         }
         throw error;
