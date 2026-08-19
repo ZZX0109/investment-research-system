@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import sqlite3
 from uuid import uuid4
 
 import jwt
@@ -62,6 +63,67 @@ class AuthService:
             return self._build_response(user, tokens), tokens
         finally:
             self.uow.close()
+
+    def competition_user(self) -> User:
+        """Return the single non-personal workspace used by the competition UI."""
+        try:
+            email = "competition@local.invalid"
+            existing = self.uow.users.get_by_email(email)
+            if existing is not None:
+                self._claim_project_llm_profile(existing.user)
+                return existing.user
+            user = User(
+                email=email,
+                display_name="比赛演示工作区",
+                auth_subject="competition:shared-workspace",
+                provenance=Provenance(
+                    data_mode=DataMode.DEMO,
+                    source_type=DataSourceType.MANUAL_OVERRIDE,
+                    source_name="competition-mode",
+                    observed_at=utc_now(),
+                    confidence=1.0,
+                ),
+            )
+            # A random, unreachable password satisfies the existing storage
+            # contract while this mode exposes no authentication routes.
+            try:
+                self.uow.users.add(user, password_hash=hash_password(str(uuid4())))
+                self._claim_project_llm_profile(user)
+                return user
+            except sqlite3.IntegrityError:
+                # Concurrent first requests may both attempt to bootstrap the
+                # shared competition workspace; return the winner instead.
+                winner = self.uow.users.get_by_email(email)
+                if winner is None:
+                    raise
+                self._claim_project_llm_profile(winner.user)
+                return winner.user
+        finally:
+            self.uow.close()
+
+    def _claim_project_llm_profile(self, user: User) -> None:
+        """Adopt the local presenter's enabled provider once for competition mode.
+
+        Provider secrets live separately in the encrypted local credential vault;
+        this only moves the non-secret profile reference into the shared workspace.
+        If the competition workspace already has a profile, it is left untouched.
+        """
+        already_configured = self.uow.connection.execute(
+            "SELECT 1 FROM llm_provider_profiles WHERE owner_user_id=? LIMIT 1",
+            (str(user.id),),
+        ).fetchone()
+        if already_configured is not None:
+            return
+        profile = self.uow.connection.execute(
+            "SELECT id FROM llm_provider_profiles WHERE enabled=1 ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        if profile is None:
+            return
+        self.uow.connection.execute(
+            "UPDATE llm_provider_profiles SET owner_user_id=? WHERE id=?",
+            (str(user.id), str(profile[0])),
+        )
+        self.uow.connection.commit()
 
     def login(self, payload: LoginRequest) -> tuple[AuthResponse, TokenBundle]:
         try:

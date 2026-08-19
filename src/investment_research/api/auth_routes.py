@@ -6,6 +6,7 @@ from investment_research.auth.schemas import AuthResponse, LoginRequest, Registe
 from investment_research.auth.security import AuthSettings
 from investment_research.auth.service import AuthenticationError, AuthService, CsrfValidationError
 from investment_research.domain.models import User
+from investment_research.public_demo import competition_mode_enabled
 from investment_research.repository.sqlite import SQLiteUnitOfWork, create_unit_of_work
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -25,6 +26,8 @@ def get_authenticated_user(
     service: AuthService = Depends(get_auth_service),
     settings: AuthSettings = Depends(get_auth_settings),
 ) -> User:
+    if competition_mode_enabled():
+        return service.competition_user()
     access_token = request.cookies.get(settings.access_cookie_name)
     if not access_token:
         raise HTTPException(status_code=401, detail="Missing access token")

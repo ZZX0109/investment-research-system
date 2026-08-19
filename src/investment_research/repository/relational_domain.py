@@ -19,6 +19,7 @@ from investment_research.domain.long_term_models import Claim, GateEvaluation, G
 from investment_research.domain.models import AnalysisRun, Evidence, User
 from investment_research.domain.models import ModelPrediction
 from investment_research.domain.models import PortfolioRiskSnapshot
+from investment_research.public_demo import competition_mode_enabled
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -53,6 +54,12 @@ class RelationalDomainRepository:
         self._commit()
 
     def assert_access(self, *, resource_type: str, resource_id: str, user_id: UUID, write: bool = False) -> None:
+        # Competition mode deliberately uses one shared, account-free workspace.
+        # There is no personal data boundary in that deployment, so existing
+        # research records must remain reachable without manufacturing a new
+        # owner/share row for every historical artifact.
+        if competition_mode_enabled():
+            return
         row = self.connection.execute(
             "SELECT owner_user_id FROM resource_owners WHERE resource_type=? AND resource_id=?",
             (resource_type, resource_id),
@@ -69,6 +76,14 @@ class RelationalDomainRepository:
         raise ValueError("Resource not found")
 
     def accessible_resource_ids(self, *, resource_type: str, user_id: UUID) -> set[str]:
+        if competition_mode_enabled():
+            return {
+                str(row[0])
+                for row in self.connection.execute(
+                    "SELECT resource_id FROM resource_owners WHERE resource_type=?",
+                    (resource_type,),
+                ).fetchall()
+            }
         owned = self.connection.execute(
             "SELECT resource_id FROM resource_owners WHERE resource_type=? AND owner_user_id=?",
             (resource_type, str(user_id)),

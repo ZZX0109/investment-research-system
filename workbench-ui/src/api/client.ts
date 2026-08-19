@@ -206,8 +206,13 @@ function createApiTransport() {
     const response = await rawFetch(path, init);
 
     if (response.status === 401 && allowRefresh && path !== "/api/v1/auth/refresh") {
-      await refreshSession();
-      return apiFetch<T>(path, init, false);
+      // A missing access token is a normal anonymous state. Do not launch a
+      // refresh request for every protected query mounted on the landing page.
+      const payload = await response.clone().json().catch(() => undefined) as ApiErrorPayload | undefined;
+      if (payload?.detail !== "Missing access token") {
+        await refreshSession();
+        return apiFetch<T>(path, init, false);
+      }
     }
 
     if (!response.ok) {
@@ -251,7 +256,7 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
       } catch (error) {
         // An anonymous browser has no refresh cookie. That is a valid session
         // state, not an authentication error to surface in the workbench.
-        if (error instanceof ApiError && error.status === 401 && error.detail === "Missing refresh token") {
+        if (error instanceof ApiError && error.status === 401 && ["Missing access token", "Missing refresh token"].includes(error.detail ?? "")) {
           return { user: null, access_expires_at: "", refresh_expires_at: "" };
         }
         throw error;

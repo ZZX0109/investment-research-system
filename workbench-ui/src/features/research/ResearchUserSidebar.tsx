@@ -8,7 +8,6 @@ import {
   useAgentToolCallsQuery,
   useCreateAgentRunMutation,
   useLatestResearchPredictionQuery,
-  useLLMProviderProfilesQuery,
 } from "../../hooks/useWorkbenchQueries";
 import { useI18n } from "../../i18n";
 import { useWorkbenchStore } from "../../state/workbenchStore";
@@ -34,7 +33,6 @@ export function ResearchUserSidebar({ section = "summary" }: { section?: "summar
   const direction1d = useLatestResearchPredictionQuery(asset?.ticker, "direction_1d");
   const direction5d = useLatestResearchPredictionQuery(asset?.ticker, "direction_5d");
   const returns = useLatestResearchPredictionQuery(asset?.ticker, "return_20d");
-  const profiles = useLLMProviderProfilesQuery();
   const assistant = useCreateAgentRunMutation();
   const [question, setQuestion] = useState("");
   const [assistantNotice, setAssistantNotice] = useState<string | null>(null);
@@ -43,7 +41,6 @@ export function ResearchUserSidebar({ section = "summary" }: { section?: "summar
   const chatLogRef = useRef<HTMLDivElement>(null);
   const explanation = useAgentExplanationQuery(assistant.data?.id ?? null);
   const toolCalls = useAgentToolCallsQuery(assistant.data?.id ?? null);
-  const activeProfile = profiles.data?.find((profile) => profile.enabled);
   const prediction = drawdown.data;
   const candidate = prediction?.diagnostic_output ?? prediction?.output;
   const probability = typeof candidate?.calibrated_probability === "number"
@@ -131,11 +128,6 @@ export function ResearchUserSidebar({ section = "summary" }: { section?: "summar
   const submitQuestion = () => {
     const value = question.trim();
     if (!value || !asset || assistant.isPending) return;
-    if (!activeProfile) {
-      setAssistantNotice(l("还没有读取到已启用的模型配置，请先打开顶部“API Key”配置。", "No enabled model profile is available. Open the “API Key” configuration first."));
-      window.dispatchEvent(new Event("open-llm-config"));
-      return;
-    }
     const recentContext = messages.slice(-6).map((message) =>
       `${message.role === "user" ? "用户" : "助手"}: ${message.content.slice(0, 600)}`
     ).join("\n");
@@ -149,7 +141,6 @@ export function ResearchUserSidebar({ section = "summary" }: { section?: "summar
       asset_id: asset.id,
       task_text: `${value}\n\n${recentContext ? `最近对话上下文：\n${recentContext}\n\n` : ""}请使用平台提供的只读研究工具回答，说明数据来源、日期和限制，不提供买卖指令。`.slice(0, 4000),
       as_of: new Date().toISOString(),
-      provider_profile_id: activeProfile.id,
       user_preference: "conservative",
     });
   };
@@ -273,10 +264,7 @@ export function ResearchUserSidebar({ section = "summary" }: { section?: "summar
                 <Send size={15} aria-hidden="true" />
               </button>
             </div>
-            {!activeProfile ? (
-              <p className="ai-assistant-card__setup">{l("需要先点击页面顶部“API Key”配置你自己的模型。配置后，助手仍只能调用本平台的只读研究工具。", "First configure your own model via “API Key” at the top. After that, the assistant can still call only this platform's read-only research tools.")}</p>
-            ) : null}
-            {profiles.isError ? <p className="ai-assistant-card__error">{l("当前登录会话无法读取模型配置，请重新登录后再试。", "The current session could not read the model configuration. Sign in again and retry.")}</p> : null}
+            <p className="ai-assistant-card__setup">{l("研究助手使用平台预置能力整理证据与通俗说明，不提供买卖或仓位指令。", "The research assistant uses the platform's configured capability to organize evidence and plain explanations; it never provides trading or position instructions.")}</p>
             {assistantNotice ? <p className="ai-assistant-card__setup" role="status">{assistantNotice}</p> : null}
             {assistant.error ? <p className="ai-assistant-card__error">{assistant.error.message}</p> : null}
           </div>
