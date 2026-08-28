@@ -24,14 +24,17 @@ markets:
 collection:
   timezone: Asia/Shanghai
   raw_retention: append_only
-  provider_timeout_seconds: 20
+  # Each source is a best-effort public endpoint.  Fail fast and use the
+  # fallback rather than letting one socket consume the whole daily window.
+  provider_timeout_seconds: 8
+  hard_timeout: true
   incremental_overlap_trading_days: 5
   incremental_lookback_calendar_days: 730
   cross_check_daily_ratio: 0.20
   primary_requests_per_second: 2
   backup_requests_per_second: 1
-  max_attempts: 4
-  retry_backoff_seconds: [1, 2, 4, 8]
+  max_attempts: 2
+  retry_backoff_seconds: [1, 2]
   cache_expiry_trading_days: 3
   close_confirmed_time: "15:10"
   pre_open_time: "09:10"

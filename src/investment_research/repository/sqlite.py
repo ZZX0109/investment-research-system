@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from alembic import command
@@ -49,6 +50,7 @@ from investment_research.repository.workbuddy import WorkBuddyConnectionReposito
 from investment_research.repository.conversations import ConversationRepository
 
 _MIGRATED_DATABASES: set[str] = set()
+_MIGRATION_LOCK = threading.Lock()
 
 
 def get_default_database_path() -> Path:
@@ -66,12 +68,13 @@ class SQLiteMigrator:
 
     def apply(self) -> None:
         cache_key = str(self.database_path.resolve())
-        if cache_key in _MIGRATED_DATABASES:
-            return
-        config = Config(str(self.alembic_ini_path))
-        config.set_main_option("sqlalchemy.url", f"sqlite:///{self.database_path}")
-        command.upgrade(config, "head")
-        _MIGRATED_DATABASES.add(cache_key)
+        with _MIGRATION_LOCK:
+            if cache_key in _MIGRATED_DATABASES:
+                return
+            config = Config(str(self.alembic_ini_path))
+            config.set_main_option("sqlalchemy.url", f"sqlite:///{self.database_path}")
+            command.upgrade(config, "head")
+            _MIGRATED_DATABASES.add(cache_key)
 
 
 class PostgresMigrator:
@@ -81,12 +84,13 @@ class PostgresMigrator:
 
     def apply(self) -> None:
         cache_key = self.database_url
-        if cache_key in _MIGRATED_DATABASES:
-            return
-        config = Config(str(self.alembic_ini_path))
-        config.set_main_option("sqlalchemy.url", self.database_url)
-        command.upgrade(config, "head")
-        _MIGRATED_DATABASES.add(cache_key)
+        with _MIGRATION_LOCK:
+            if cache_key in _MIGRATED_DATABASES:
+                return
+            config = Config(str(self.alembic_ini_path))
+            config.set_main_option("sqlalchemy.url", self.database_url)
+            command.upgrade(config, "head")
+            _MIGRATED_DATABASES.add(cache_key)
 
 
 class SQLiteUnitOfWork:

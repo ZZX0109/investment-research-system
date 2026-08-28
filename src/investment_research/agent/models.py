@@ -130,7 +130,9 @@ class ProviderProfile(BaseModel):
     endpoint: str | None = None
     model: str
     credential_ref: str | None = None
-    timeout_seconds: float = 20.0
+    # Zero is the product default: research answers may take as long as the
+    # configured provider needs, rather than being replaced by a template.
+    timeout_seconds: float = 0.0
     context_limit: int = 4096
     fallback_profile_id: UUID | None = None
     enabled: bool = True

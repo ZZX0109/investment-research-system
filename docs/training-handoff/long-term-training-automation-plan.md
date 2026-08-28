@@ -1,6 +1,6 @@
 # 长期研究评分卡主模型：训练自动化执行计划
 
-> 状态基线：2026-08-17 本地只读审计。本文是执行计划，不代表已经通过 PIT 门禁，也不授权切换 `active.json`、发布模型或启动下载。
+> 状态基线：2026-08-25 本地只读审计。本文是执行计划，不代表已经通过 PIT 门禁，也不授权切换 `active.json`、发布模型或启动下载。2026-08-21 的 Research-only 样本层已经完成合并，但正式快照仍未激活。
 
 ## 1. 结论与执行边界
 
@@ -12,7 +12,7 @@
 - 质量持续性和未来波动任务仅保留为独立评分卡或候选实验，不是当前主任务；
 - `direction_1d`、`direction_5d`、`return_20d`、`drawdown_20d` 只能进入默认折叠的“短期市场观察”，不得参与长期主模型选优、综合分或替换决策。
 
-当前不能正式训练。`artifacts/long_term_readiness/latest.json` 的状态是 `blocked`，`var/cn-research/active.json` 不存在；已记录的正式阻塞还包括财务 PIT 未证明、历史证券/交易状态不完整、宏观 `published_at` 覆盖不足、历史成员关系未证明。现阶段只允许运行只读审计和不拟合模型的 dry-run。即使 `scripts/run_long_term_training.py --allow-research-only` 能在研究重建上拟合模型，也不能把它称为 dry-run，更不能作为正式训练或发布依据。
+当前不能正式训练。`artifacts/long_term_readiness/latest.json` 的状态是 `blocked`，`var/cn-research/active.json` 不存在；已记录的正式阻塞还包括财务 PIT 未证明、历史证券/交易状态不完整、宏观 `published_at` 覆盖不足、历史成员关系未证明。正式队列仍只允许运行只读审计和不拟合模型的 dry-run。研究人员如需验证基线，可在隔离目录显式运行 `scripts/run_long_term_training.py --allow-research-only`；若降低样本覆盖率门槛，还必须传入 `--minimum-feature-coverage`，报告会记录实际门槛与正式门槛的差异。该结果始终是 research-only，不得作为正式训练或发布依据。
 
 硬规则：
 
@@ -41,9 +41,11 @@
 ### 2.2 审计中发现的缺口
 
 1. 长期合同只有 120 日波动标签字段，`LabelSet` 没有 `future_volatility_240d`，长期配置和队列也没有 120/240 日波动任务；“长期波动”尚未成为一等目标。
-2. `run_research_optimization_queue.py` 只有等待、单次执行和遇错即停，没有 `--dry-run`、队列锁、按 stage 断点续跑、重试分类、退避或严格幂等键。
+2. 旧的 `run_research_optimization_queue.py` 仍保留为历史研究队列；统一入口
+   `scripts/run_long_term_automation.py` 已提供 `dry-run|formal`、队列/GPU 双锁、阶段状态、
+   resume、重试、超时和内容寻址 run manifest。旧队列不得作为正式入口。
 3. 队列当前允许 `--allow-research-only` 训练；这适合历史研究，但不满足“PIT 未过只 dry-run”的正式自动化要求。
-4. `run_long_term_training.py` 每个 target 都重复加载、解析和季度聚合所有分区；没有列裁剪缓存、共享内存映射或一次预载多头复用。
+4. `run_long_term_training.py` 已增加哈希校验下的 Parquet 列投影、分区流式读取和“先季度筛选、后 Pydantic 校验”；多 target 共享缓存和一次预载仍是后续性能优化项。
 5. 基线训练没有模型 checkpoint；序列/面板 runner 只在全部结束后保存最终 `model.pt`，中途中断会丢失 fold/epoch 进度。
 6. 现有深度 runner 的 task contract 不含长期 120/240 日多任务；不能直接把短周期模型改名为长期候选。
 7. GPU batch 目前是固定值，没有 OOM 探测和自动回退；温度、主机内存、磁盘、水位和数据加载吞吐没有统一监控/保护。
@@ -255,13 +257,41 @@ python3 -c 'from pathlib import Path; from investment_research.training.long_ter
 
 ### 7.2 当前研究数据覆盖审计（只读数据、写审计报告）
 
-先从已选 rebuild index 的 `contexts.close_confirmed.sample_manifests` 生成冻结 manifest list；现有可引用的研究重建之一是：
+当前 broad 标准层
+`artifacts/free_research_rebuild_all_raw_standard/latest.json` 已在同一 immutable snapshot 下合并
+191 个股票标的和 5 个 ETF，共 4,390 个 sample manifest；因此可以作为 Research-only baseline 的输入，
+但仍不能绕过 PIT/active gate。样本生成和合并由可断点的批处理器与显式合并器负责：
+
+```bash
+python3 scripts/run_cn_research_sample_batches.py \
+  --base-index artifacts/free_research_rebuild_all_raw_standard/latest.json \
+  --batch-size 20 --batch-id 0
+
+# 所有批次完成后，才执行 promotion；混合快照、缺文件或标的不完整会拒绝。
+python3 scripts/merge_cn_research_sample_batches.py \
+  --base-index artifacts/free_research_rebuild_all_raw_standard/latest.json \
+  --batch-indexes artifacts/free_research_sample_batches/<snapshot>/batch-*/rebuild-*.json
+```
+
+合并前的批次索引只能作为 staging，不能用于训练或更新 `latest.json`。当前 canonical 样本清单可由
+以下命令导出并绑定快照 hash：
+
+```bash
+python3 scripts/export_research_manifest_list.py \
+  --rebuild-index artifacts/free_research_rebuild_all_raw_standard/latest.json \
+  --output artifacts/long_term_training/current-research/manifest-lists/cn_research_only.json
+```
+
+当前审计结果为 4,390 个分区、1,024,803 行、无结构错误；四个长期标签覆盖分别为
+56.55%、54.32%、93.92%、91.68%。这些指标只证明研究样本结构和标签覆盖，不等于正式 PIT 门禁通过。
+
+如需回溯旧实验，历史研究重建之一是：
 
 ```text
 artifacts/free_research_rebuild/aligned-20260817-final-v2/rebuild-2026-08-14-1563c6f013cb.json
 ```
 
-生成 list 必须由待实现 orchestrator 完成并记录 rebuild index 的 SHA-256；不要手工改 index。随后执行现有审计：
+生成 list 必须由 `export_research_manifest_list.py` 完成并记录 rebuild index 的 SHA-256；不要手工改 index。随后执行现有审计：
 
 ```bash
 python3 scripts/audit_research_optimization_data.py \
@@ -430,7 +460,7 @@ T_total = 1.3 * (T_cache + T_tree + T_deep + T_eval)
 
 按优先级实施，避免重写现有训练栈：
 
-1. 新增 `scripts/run_long_term_automation.py`：`--mode dry-run|formal`、PIT fail-closed、DAG、双锁、状态机、重试、resume、资源保护；复用现有 audit、baseline、promotion 和 artifact index。
+1. `scripts/run_long_term_automation.py` 已落地：`--mode dry-run|formal`、PIT fail-closed、DAG、双锁、状态机、重试、resume、资源保护；复用现有 audit、baseline、promotion 和 artifact index。当前 active 缺失时 dry-run 返回专用码 20 并只写计划报告。
 2. 修改 `scripts/run_research_optimization_queue.py`：默认不再通过 `--allow-research-only` 进入正式路径；若保留历史研究模式，明确命名 `--mode research-experiment` 并输出到隔离目录。
 3. 修改 `src/investment_research/training/models.py`、标签生成代码、`config/long_term_training.yaml` 和 `long_term_config.py`：补 `future_volatility_240d`，把 120/240 波动加入长期主任务并校验方向/成熟度。
 4. 新增共享季度 mmap cache builder；修改 `run_long_term_training.py` 支持 `--cache-manifest`，一次加载多 target，避免重复 Python 行对象。

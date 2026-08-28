@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, timedelta
 from math import sqrt
@@ -21,6 +22,7 @@ class LabelGenerationContext:
     benchmark_lookup: dict[date, PreparedPriceBar]
     industry_lookup: dict[date, PreparedPriceBar]
     events: list[PointInTimeEvent]
+    event_window_cache: dict[tuple[str, tuple[str, ...], int], dict[date, float | None]]
 
 
 @dataclass(frozen=True)
@@ -232,6 +234,7 @@ def build_label_generation_context(
         benchmark_lookup={bar.trade_date: bar for bar in benchmark_bars or []},
         industry_lookup={bar.trade_date: bar for bar in industry_reference_bars or []},
         events=sorted(events or [], key=lambda item: item.published_at),
+        event_window_cache={},
     )
 
 
@@ -326,37 +329,78 @@ def generate_multitask_labels(
     future_volatility_10d = _realized_volatility(base_close, horizon_10_closes)
     if current_trailing_vol_60d is not None and future_volatility_10d is not None:
         labels.volatility_spike_10d = future_volatility_10d - current_trailing_vol_60d
-    labels.event_drawdown_5d = _event_window_drawdown(
-        as_of_date=as_of_date,
-        bars=price_lookup,
-        events=event_list,
+    labels.event_drawdown_5d = _cached_event_window(
+        context=resolved, kind="drawdown", bars=price_lookup, events=event_list,
         event_types={
-            EventType.EARNINGS,
-            EventType.FILING,
-            EventType.ANNOUNCEMENT,
-            EventType.POLICY,
-            EventType.LITIGATION,
-            EventType.MNA,
-            EventType.REGULATION,
-        },
-        window_days=5,
-    )
+            EventType.EARNINGS, EventType.FILING, EventType.ANNOUNCEMENT,
+            EventType.POLICY, EventType.LITIGATION, EventType.MNA, EventType.REGULATION,
+        }, window_days=5,
+    ).get(as_of_date)
 
-    labels.post_earnings_abnormal_move_5d = _event_window_move(
-        as_of_date=as_of_date,
-        bars=price_lookup,
-        events=event_list,
+    labels.post_earnings_abnormal_move_5d = _cached_event_window(
+        context=resolved, kind="move", bars=price_lookup, events=event_list,
         event_types={EventType.EARNINGS, EventType.FILING, EventType.ANNOUNCEMENT},
         window_days=5,
-    )
-    labels.news_event_shock_3d = _event_window_move(
-        as_of_date=as_of_date,
-        bars=price_lookup,
-        events=event_list,
-        event_types={EventType.NEWS},
-        window_days=3,
-    )
+    ).get(as_of_date)
+    labels.news_event_shock_3d = _cached_event_window(
+        context=resolved, kind="move", bars=price_lookup, events=event_list,
+        event_types={EventType.NEWS}, window_days=3,
+    ).get(as_of_date)
     return labels
+
+
+def _cached_event_window(
+    *, context: LabelGenerationContext, kind: str,
+    bars: dict[date, PreparedPriceBar], events: list[PointInTimeEvent],
+    event_types: set[EventType], window_days: int,
+) -> dict[date, float | None]:
+    """Cache event-window labels once per instrument instead of per bar.
+
+    The previous implementation filtered and sorted the complete event list
+    for every decision date.  On long histories with dense announcements this
+    dominated sample generation.  The precomputed result is mathematically
+    equivalent and remains strictly forward-looking.
+    """
+    key = (kind, tuple(sorted(item.value for item in event_types)), window_days)
+    cached = context.event_window_cache.get(key)
+    if cached is None:
+        cached = _precompute_event_window(
+            kind=kind, bars=bars, ordered_dates=context.ordered_dates,
+            events=events, event_types=event_types, window_days=window_days,
+        )
+        context.event_window_cache[key] = cached
+    return cached
+
+
+def _precompute_event_window(
+    *, kind: str, bars: dict[date, PreparedPriceBar], ordered_dates: list[date],
+    events: list[PointInTimeEvent], event_types: set[EventType], window_days: int,
+) -> dict[date, float | None]:
+    event_dates = sorted({
+        event.published_at.date()
+        for event in events
+        if event.event_type in event_types and event.published_at.date() in bars
+    })
+    output: dict[date, float | None] = {}
+    for as_of_date in ordered_dates:
+        position = bisect_right(event_dates, as_of_date)
+        if position >= len(event_dates):
+            output[as_of_date] = None
+            continue
+        start_date = event_dates[position]
+        base = bars[start_date].close_normalized
+        moves: list[float] = []
+        for offset in range(1, window_days + 1):
+            next_date = start_date + timedelta(days=offset)
+            if next_date in bars:
+                moves.append(bars[next_date].close_normalized)
+        if not moves or base <= 0:
+            output[as_of_date] = None
+        elif kind == "move":
+            output[as_of_date] = max(abs((value / base) - 1.0) for value in moves)
+        else:
+            output[as_of_date] = _max_drawdown(base, moves)
+    return output
 
 
 def _max_drawdown(base_close: float, closes: list[float]) -> float | None:

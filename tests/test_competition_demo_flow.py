@@ -73,8 +73,9 @@ def test_operation_changes_question_produces_five_section_plain_answer(tmp_path:
     assert plain["missing_evidence"]
     assert "数据截至" in plain["sources_summary"]
     assert plain["result_status"] in {"research_observation", "insufficient_evidence", "conflict_present"}
-    # The web-search tool was called and returned sourced results.
-    assert "search_latest_news" in payload["tools_used"]
+    # The server-owned aggregate context now carries the same snapshot-scoped
+    # news and sources without a second independent news tool call.
+    assert "get_stock_analysis_context" in payload["tools_used"]
     assert plain["sources"], "plain answer must cite sources"
     assert all(item["url"] for item in plain["sources"])
 

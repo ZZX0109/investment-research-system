@@ -2,11 +2,17 @@
 """Join CNINFO financial-report announcement dates to report-period keys."""
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
 import sqlite3
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from investment_research.service.cn_universe import load_cn_symbols
 
 PROJECT = Path(__file__).resolve().parents[1]
 ETF = {"159915", "510050", "510300", "510500", "512100"}
@@ -14,20 +20,29 @@ YEAR = re.compile(r"(19|20)\d{2}")
 
 
 def main() -> int:
-    target = {
-        str(x).zfill(6)
-        for x in json.loads((PROJECT / "config/cn_research_target_167_symbols.json").read_text())["cn"]
-        if str(x).zfill(6) not in ETF
-    }
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--target-symbols",
+        type=Path,
+        default=PROJECT / "artifacts/cn_security_master_universe/security_master_current.json",
+        help="Current-universe JSON by default; accepts the legacy {cn: [...]} target format.",
+    )
+    args = parser.parse_args()
+    target_path = args.target_symbols
+    if not target_path.is_file():
+        target_path = PROJECT / "config/cn_research_target_167_symbols.json"
+    target = set(load_cn_symbols(target_path, exclude_etf=True))
     con = sqlite3.connect(PROJECT / "var/cn-research/catalog.db")
     rows = con.execute(
         "SELECT dataset,payload_json FROM raw_data_batches "
-        "WHERE dataset IN ('cn_fundamentals_research','cn_financial_ratios_akshare_research','cn_financial_disclosures_cninfo_research')"
+        "WHERE dataset IN ('cn_fundamentals_research','cn_financial_ratios_akshare_research',"
+        "'cn_financial_eastmoney_research','cn_financial_disclosures_cninfo_research')"
     ).fetchall()
     con.close()
     raw_root = PROJECT / "var/cn-research/raw"
     expected: set[tuple[str, str]] = set()
     primary_expected: set[tuple[str, str]] = set()
+    eastmoney_expected: set[tuple[str, str]] = set()
     candidates: dict[tuple[str, str], list[dict]] = {}
     for dataset, metadata_json in rows:
         metadata = json.loads(metadata_json)
@@ -36,7 +51,11 @@ def main() -> int:
         records = payload if isinstance(payload, list) else payload.get("rows", payload.get("data", []))
         if not isinstance(records, list):
             continue
-        if dataset in {"cn_fundamentals_research", "cn_financial_ratios_akshare_research"}:
+        if dataset in {
+            "cn_fundamentals_research",
+            "cn_financial_ratios_akshare_research",
+            "cn_financial_eastmoney_research",
+        }:
             for record in records:
                 symbol = _symbol(record.get("code") or metadata.get("symbol"))
                 period = str(record.get("statDate") or "")[:10]
@@ -44,6 +63,8 @@ def main() -> int:
                     expected.add((symbol, period))
                     if dataset == "cn_fundamentals_research":
                         primary_expected.add((symbol, period))
+                    elif dataset == "cn_financial_eastmoney_research":
+                        eastmoney_expected.add((symbol, period))
         else:
             for record in records:
                 symbol = _symbol(record.get("symbol"))
@@ -74,11 +95,12 @@ def main() -> int:
         }
     matched_keys = {(item["symbol"], item["report_period"]) for item in matched.values()}
     report = {
-        "schema_version": "cn-financial-publication-map-v1",
+        "schema_version": "cn-financial-publication-map-v2",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "target_symbol_count": len(target),
         "expected_symbol_period_count": len(expected),
         "primary_expected_symbol_period_count": len(primary_expected),
+        "eastmoney_expected_symbol_period_count": len(eastmoney_expected),
         "mapped_symbol_period_count": len(matched_keys),
         "matched_expected_count": len(expected & matched_keys),
         "expected_join_coverage": len(expected & matched_keys) / len(expected) if expected else 0.0,
@@ -86,6 +108,12 @@ def main() -> int:
         "primary_mapped_symbol_period_count": len(primary_expected & matched_keys),
         "primary_expected_join_coverage": len(primary_expected & matched_keys) / len(primary_expected) if primary_expected else 0.0,
         "primary_unmatched_expected_count": len(primary_expected - matched_keys),
+        "eastmoney_mapped_symbol_period_count": len(eastmoney_expected & matched_keys),
+        "eastmoney_expected_join_coverage": (
+            len(eastmoney_expected & matched_keys) / len(eastmoney_expected)
+            if eastmoney_expected else 0.0
+        ),
+        "eastmoney_unmatched_expected_count": len(eastmoney_expected - matched_keys),
         "status": "evidence_only",
         "pit_verified": False,
         "missing_reason": "announcement date is mapped by title/category; statement-level available_at and revision reconciliation remains unverified",

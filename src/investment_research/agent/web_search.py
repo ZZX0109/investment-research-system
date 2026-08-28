@@ -11,10 +11,9 @@ Two modes are supported:
   real-shaped results (title, source, published date, URL) but is explicitly
   marked ``research_demonstration`` so it is never mistaken for live news.
   This is the default for the competition demo, which may run offline.
-* ``http`` — an optional pluggable provider (e.g. an OpenAI-compatible
-  answers/search endpoint) configured via environment variables.  When the
-  provider is absent or fails, the adapter degrades to demo mode and labels
-  every result accordingly, rather than fabricating live news.
+* ``http`` — either an operator-configured provider or the built-in public
+  web search adapter.  When live search fails, the adapter degrades to demo
+  mode and labels every result accordingly, rather than fabricating news.
 
 Product rules enforced here:
 
@@ -29,11 +28,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import hashlib
+import html
 import json
 import os
 from pathlib import Path
+import re
+import ssl
 from typing import Iterable, Mapping, Protocol
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 
 from pydantic import BaseModel, Field
 
@@ -193,12 +199,173 @@ class HttpWebSearchProvider:
         return None
 
 
+@dataclass
+class BingRssSearchProvider:
+    """Keyless live public-web search through Bing's RSS search output."""
+
+    timeout_seconds: float = 10.0
+    name: str = "bing_rss"
+
+    def search(self, query: str, *, limit: int) -> list[WebSearchResult]:
+        url = (
+            "https://www.bing.com/search?q="
+            f"{quote_plus(query)}&format=rss&setlang=zh-cn"
+        )
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0 ResearchAssistant/1.0"})
+        with urlopen(request, timeout=self.timeout_seconds, context=self._ssl_context()) as response:  # noqa: S310 - fixed HTTPS search endpoint
+            payload = response.read()
+        root = ET.fromstring(payload)
+        results: list[WebSearchResult] = []
+        for item in root.findall("./channel/item")[:limit]:
+            title = self._text(item, "title")
+            link = self._text(item, "link")
+            if not title or not HttpWebSearchProvider._safe_url(link):
+                continue
+            description = self._clean_snippet(self._text(item, "description"))
+            published = self._published_at(self._text(item, "pubDate"))
+            host = (urlparse(link).hostname or "公开网页").removeprefix("www.")
+            results.append(WebSearchResult(
+                title=title[:200],
+                source=host[:120],
+                url=link[:500],
+                published_at=published,
+                snippet=description[:400],
+                verified=False,
+                kind="web",
+                citation_id=f"web:{hashlib.sha256(link.encode('utf-8')).hexdigest()[:16]}",
+                mode="http",
+            ))
+        return results
+
+    @staticmethod
+    def _text(item: ET.Element, key: str) -> str:
+        node = item.find(key)
+        return "" if node is None or node.text is None else node.text.strip()
+
+    @staticmethod
+    def _clean_snippet(value: str) -> str:
+        return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", value)).split())
+
+    @staticmethod
+    def _published_at(value: str) -> str | None:
+        if not value:
+            return None
+        try:
+            return parsedate_to_datetime(value).date().isoformat()
+        except (TypeError, ValueError, OverflowError):
+            return value[:10] or None
+
+    @staticmethod
+    def _ssl_context() -> ssl.SSLContext:
+        for candidate in (os.environ.get("SSL_CERT_FILE"), "/etc/ssl/cert.pem"):
+            if candidate and Path(candidate).is_file():
+                return ssl.create_default_context(cafile=candidate)
+        return ssl.create_default_context()
+
+
+@dataclass
+class DuckDuckGoLiteSearchProvider:
+    """Keyless public-web search with result URLs and question snippets.
+
+    The lite endpoint is intentionally used instead of scraping a dynamic
+    results page.  It returns compact server-rendered HTML and exposes the
+    original destination URL in the ``uddg`` query parameter.
+    """
+
+    timeout_seconds: float = 10.0
+    name: str = "duckduckgo_lite"
+
+    _RESULT_RE = re.compile(
+        r"<a\b(?P<attrs>[^>]*\bclass=['\"]result-link['\"][^>]*)>(?P<title>.*?)</a>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _HREF_RE = re.compile(r"\bhref=['\"](?P<href>[^'\"]+)['\"]", re.IGNORECASE)
+    _SNIPPET_RE = re.compile(
+        r"class=['\"]result-snippet['\"][^>]*>(?P<snippet>.*?)</td>",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def search(self, query: str, *, limit: int) -> list[WebSearchResult]:
+        endpoint = f"https://lite.duckduckgo.com/lite/?q={quote_plus(query)}"
+        request = Request(endpoint, headers={"User-Agent": "Mozilla/5.0 ResearchAssistant/1.0"})
+        with urlopen(request, timeout=self.timeout_seconds, context=BingRssSearchProvider._ssl_context()) as response:  # noqa: S310 - fixed HTTPS search endpoint
+            page = response.read().decode("utf-8", errors="replace")
+        matches = list(self._RESULT_RE.finditer(page))
+        results: list[WebSearchResult] = []
+        for index, match in enumerate(matches):
+            href_match = self._HREF_RE.search(match.group("attrs"))
+            if href_match is None:
+                continue
+            link = self._destination_url(html.unescape(href_match.group("href")))
+            if not HttpWebSearchProvider._safe_url(link):
+                continue
+            next_start = matches[index + 1].start() if index + 1 < len(matches) else len(page)
+            snippet_match = self._SNIPPET_RE.search(page, match.end(), next_start)
+            title = BingRssSearchProvider._clean_snippet(match.group("title"))
+            snippet = BingRssSearchProvider._clean_snippet(
+                snippet_match.group("snippet") if snippet_match else ""
+            )
+            if not title:
+                continue
+            host = (urlparse(link).hostname or "公开网页").removeprefix("www.")
+            results.append(WebSearchResult(
+                title=title[:200],
+                source=host[:120],
+                url=link[:500],
+                published_at=self._date_from_text(f"{title} {snippet} {link}"),
+                snippet=snippet[:400],
+                verified=False,
+                kind="web",
+                citation_id=f"web:{hashlib.sha256(link.encode('utf-8')).hexdigest()[:16]}",
+                mode="http",
+            ))
+            if len(results) >= limit:
+                break
+        if not results:
+            raise RuntimeError("public_web_search_returned_no_results")
+        return results
+
+    @staticmethod
+    def _destination_url(value: str) -> str:
+        candidate = f"https:{value}" if value.startswith("//") else value
+        parsed = urlparse(candidate)
+        if parsed.hostname and parsed.hostname.endswith("duckduckgo.com"):
+            destination = parse_qs(parsed.query).get("uddg", [""])[0]
+            # ``parse_qs`` already decodes the outer redirect value once.
+            # Keep inner URL escapes (for example ``%20`` in a PDF path)
+            # intact so the source link remains browser-safe.
+            return destination
+        return candidate
+
+    @staticmethod
+    def _date_from_text(value: str) -> str | None:
+        iso = re.search(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", value)
+        if iso:
+            year, month, day = (int(part) for part in iso.groups())
+            try:
+                return datetime(year, month, day).date().isoformat()
+            except ValueError:
+                return None
+        cn = re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", value)
+        if cn:
+            year, month, day = (int(part) for part in cn.groups())
+            try:
+                return datetime(year, month, day).date().isoformat()
+            except ValueError:
+                return None
+        return None
+
+
 class WebSearchService:
     """Facade selecting the configured provider and degrading safely."""
 
     def __init__(self, *, demo_index: Path | None = None) -> None:
         self.demo = DemoWebSearchProvider(index_path=demo_index)
         self.http = self._build_http_provider()
+        public_enabled = os.getenv("INVESTMENT_RESEARCH_PUBLIC_WEB_SEARCH", "1").strip().lower() not in {"0", "false", "no", "off"}
+        self.public = DuckDuckGoLiteSearchProvider(
+            timeout_seconds=float(os.getenv("INVESTMENT_RESEARCH_PUBLIC_WEB_SEARCH_TIMEOUT", "10"))
+        ) if public_enabled else None
 
     def search(self, query: str, *, limit: int = 6) -> WebSearchResponse:
         if not query or not query.strip():
@@ -207,7 +374,7 @@ class WebSearchService:
         provider = self._select_provider()
         try:
             results = provider.search(query.strip(), limit=bounded)
-            mode = "http" if isinstance(provider, HttpWebSearchProvider) else "demo"
+            mode = "demo" if isinstance(provider, DemoWebSearchProvider) else "http"
             degraded = mode == "demo" and self.http is not None and self.http.endpoint
             return WebSearchResponse(
                 results=results,
@@ -226,6 +393,8 @@ class WebSearchService:
     def _select_provider(self) -> WebSearchProvider:
         if self.http is not None and self.http.endpoint:
             return self.http
+        if self.public is not None:
+            return self.public
         return self.demo
 
     @staticmethod

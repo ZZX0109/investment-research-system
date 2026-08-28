@@ -35,8 +35,11 @@ def test_catalog_can_switch_to_stub_provider_configuration() -> None:
 
     assert payload.analysis_provider_config.market_data_provider == "stub_realtime"
     assert payload.analysis_provider_config.evidence_provider == "stub"
-    assert payload.analysis_providers[0].provider_name == "stub-realtime-market-data-provider"
-    assert payload.analysis_providers[1].provider_name == "stub-realtime-evidence-provider"
+    # §6⑤: the stub filter is replaced by the xystock/fortune live fetchers;
+    # the "stub*" env keys still select them (alias) but the provider_name
+    # now honestly reflects real fetching, not a stub.
+    assert payload.analysis_providers[0].provider_name == "xystock-realtime-market-data-provider"
+    assert payload.analysis_providers[1].provider_name == "fortune-realtime-evidence-provider"
 
 
 def test_catalog_can_switch_to_authoritative_bundle_provider_configuration() -> None:

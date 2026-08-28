@@ -6,6 +6,7 @@ import pytest
 from investment_research.training.snapshot_landing import (
     ResearchSnapshotManifest,
     activate_snapshot,
+    audit_file_contents,
     build_file_record,
     create_landing_run,
     sha256_file,
@@ -91,6 +92,59 @@ def test_build_file_record_defaults_raw_lineage_to_landed_hash(tmp_path: Path) -
         metadata={"quality_status": "complete", "published_at_coverage": 1.0, "available_at_coverage": 1.0, "revision_coverage": 1.0, "revision_id": "rev-1"},
     )
     assert record.raw_hash == record.sha256
+
+
+def test_content_audit_accepts_chinese_baostock_security_code(tmp_path: Path) -> None:
+    payload = tmp_path / "bars.json"
+    payload.write_text(
+        json.dumps([{
+            "日期": "2026-08-17",
+            "代码": "sz.000001",
+            "开盘": 10.0,
+            "最高": 10.5,
+            "最低": 9.8,
+            "收盘": 10.2,
+            "发布时间": "2026-08-17T08:00:00Z",
+            "可用时间": "2026-08-17T08:01:00Z",
+        }], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    result = audit_file_contents(payload, dataset="daily_bars_raw")
+    assert result["schema_valid"] is True
+    assert result["security_code_error_count"] == 0
+
+
+def test_content_audit_uses_manifest_symbol_for_provider_rows(tmp_path: Path) -> None:
+    payload = tmp_path / "bars.json"
+    payload.write_text(
+        json.dumps([{
+            "date": "2026-08-17T00:00:00.000",
+            "open": 10.0,
+            "high": 10.5,
+            "low": 9.8,
+            "close": 10.2,
+            "published_at": "2026-08-17T08:00:00Z",
+            "available_at": "2026-08-17T08:01:00Z",
+        }]),
+        encoding="utf-8",
+    )
+    result = audit_file_contents(payload, dataset="daily_bars_raw", symbol_hint="159915")
+    assert result["security_code_error_count"] == 0
+
+
+def test_content_audit_does_not_require_symbol_for_market_level_financing(tmp_path: Path) -> None:
+    payload = tmp_path / "financing.json"
+    payload.write_text(
+        json.dumps([{
+            "date": "2026-08-17",
+            "余额": 100,
+            "published_at": "2026-08-17T08:00:00Z",
+            "available_at": "2026-08-17T08:01:00Z",
+        }], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    result = audit_file_contents(payload, dataset="cn_margin_financing_sh")
+    assert result["security_code_error_count"] == 0
 
 
 def test_validation_rejects_tampered_or_missing_file(tmp_path: Path) -> None:

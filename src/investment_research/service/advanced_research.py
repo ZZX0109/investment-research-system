@@ -289,11 +289,17 @@ class HistoricalAnalogyService:
         *,
         as_of: datetime | None = None,
         analysis_run_id: UUID | None = None,
-        limit: int = 5,
+        limit: int = 3,
     ) -> list[HistoricalScenario]:
         asset = self.uow.assets.get(asset_id)
         if asset is None:
             raise ValueError("Asset not found")
+        # Round 35 fix: primary source is per-asset price_series; when that
+        # table has no rows for this asset (common — bars often live only in
+        # versioned_market_bars), fall back to the trusted-market bars so the
+        # analogy still computes.  Previously returned [] whenever
+        # price_series was empty, leaving the "Similar Risk States" card
+        # permanently empty even though the asset had 1000+ bars elsewhere.
         series = next(
             (
                 s
@@ -302,9 +308,12 @@ class HistoricalAnalogyService:
             ),
             None,
         )
-        if series is None or len(series.points) < 100:
+        if series is not None and len(series.points) >= 100:
+            points = sorted(series.points, key=lambda p: p.timestamp)
+        else:
+            points = self._load_versioned_bars(asset)
+        if not points or len(points) < 100:
             return []
-        points = sorted(series.points, key=lambda p: p.timestamp)
         cutoff = as_of or points[-1].timestamp
         points = [p for p in points if p.timestamp <= cutoff]
         if len(points) < 100:
@@ -342,6 +351,42 @@ class HistoricalAnalogyService:
             self.uow.historical_scenarios.add(item)
             output.append(item)
         return output
+
+    def _load_versioned_bars(self, asset) -> list:
+        """Round 35 — fall-back bar loader for ``find``.  Reads the per-symbol
+        daily bars from ``versioned_market_bars`` (where ingest lands them)
+        and returns lightweight point objects with ``close`` / ``volume`` /
+        ``timestamp`` — the three attributes ``_state`` and the outcome
+        window need.  Returns [] on any error so ``find`` degrades to []."""
+        import json
+        from types import SimpleNamespace
+
+        symbol = getattr(asset, "ticker", None) or getattr(asset, "symbol", None)
+        if not symbol:
+            return []
+        try:
+            rows = self.uow.connection.execute(
+                "SELECT trade_date, payload_json FROM versioned_market_bars "
+                "WHERE symbol = ? AND active = 1 AND quality_status = 'passed' "
+                "ORDER BY trade_date ASC",
+                (symbol,),
+            ).fetchall()
+        except Exception:
+            return []
+        points: list = []
+        for trade_date, payload in rows:
+            try:
+                p = json.loads(payload) if isinstance(payload, str) else payload
+                close = p.get("close")
+                if close is None or close <= 0:
+                    continue
+                points.append(SimpleNamespace(
+                    timestamp=trade_date, close=float(close),
+                    volume=float(p.get("volume") or 0),
+                ))
+            except (ValueError, TypeError):
+                continue
+        return points
 
     def _state(self, points, index):
         closes = [p.close for p in points]

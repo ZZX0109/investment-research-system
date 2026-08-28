@@ -80,9 +80,9 @@ export interface AgentExplanation {
 export interface PlainSource {
   title: string;
   source: string;
-  url: string;
+  url?: string | null;
   published_at?: string | null;
-  kind: "announcement" | "knowledge" | "news" | "calculation" | "model";
+  kind: "announcement" | "knowledge" | "news" | "calculation" | "model" | "market";
   citation_id?: string | null;
   note?: string | null;
 }
@@ -113,6 +113,7 @@ export interface PlainAnswer {
   schema_version: string;
   business_condition: string;
   long_term_changes: string;
+  recent_market_observation?: string;
   possible_risks: string;
   missing_evidence: string;
   sources_summary: string;
@@ -580,6 +581,18 @@ export interface LongTermScorecardResponse {
   source_ref?: string;
 }
 
+export interface ResearchCompareResponse {
+  schema_version: string;
+  data_tier: "research_pit";
+  status: "research_only";
+  deployment_ready: false;
+  requested_symbols: string[];
+  as_of?: string | null;
+  cohort_status: "comparable" | "incomplete";
+  blocking_reasons: string[];
+  symbols: LongTermScorecardResponse[];
+}
+
 export interface LongTermModelRegistrySummary {
   schema_version?: string;
   status?: "available" | "partial" | "unavailable" | string;
@@ -808,6 +821,151 @@ export interface ResearchAcceptanceReport {
   };
 }
 
+export interface ResearchCompletionRequirement {
+  id: string;
+  name?: string;
+  status: "passed" | "missing" | string;
+  observed?: unknown;
+  target?: unknown;
+  gap?: string | null;
+  remediation?: string;
+  source_options?: string[];
+  evidence_ref?: string | null;
+}
+
+export interface ResearchCompletionReport {
+  schema_version: string;
+  status: "complete" | "blocked" | string;
+  data_tier: "research_pit";
+  deployment_ready: false;
+  summary: { total: number; passed: number; missing: number };
+  requirements: ResearchCompletionRequirement[];
+  missing_data: ResearchCompletionRequirement[];
+  canonical_long_term_tasks?: string[];
+  data_completion_plan?: {
+    status: string;
+    completed_step_count: number;
+    missing_step_count: number;
+    p0_missing_steps: string[];
+    ref?: string;
+    steps: Array<{
+      id: string;
+      dataset?: string;
+      status: string;
+      blocking_reasons?: string[];
+      command?: string[];
+      artifact_ref?: string;
+    }>;
+  };
+}
+
+export type ResearchDataAvailability = "available" | "complete" | "partial" | "degraded" | "blocked" | "unavailable";
+
+export interface ResearchDataDatasetStatus {
+  id: "raw_prices" | "hushen_qfq_prices" | "outside_scope_adjusted_prices" | "financial_fields" | "corporate_actions" | "security_lifecycle" | "events_and_disclosures" | "macro_release_times" | string;
+  status: ResearchDataAvailability;
+  target_count: number;
+  available_count: number;
+  coverage_ratio?: number | null;
+  as_of?: string | null;
+  purpose: string;
+  detail: string;
+  published_at_coverage?: number | null;
+  pit_verified?: boolean;
+  dimensions?: Record<string, number | string | null | Record<string, number>>;
+  missing_symbol_count?: number;
+  sample_missing_symbols?: string[];
+  blocking_reasons?: string[];
+}
+
+export interface ResearchDataQualityReport {
+  schema_version: string;
+  status: "research_only";
+  data_tier: "research_pit";
+  research_only: true;
+  deployment_ready: false;
+  generated_from: string;
+  model_backtest_scope: {
+    name: string;
+    eligible_symbol_count: number;
+    raw_symbol_count: number;
+    coverage_ratio?: number | null;
+    policy: string;
+  };
+  quote_only_scope: {
+    name: string;
+    raw_symbol_count: number;
+    adjusted_symbol_count: number;
+    qfq_missing_symbol_count: number;
+    sample_qfq_missing_symbols: string[];
+    policy: string;
+  };
+  capabilities: Array<{
+    id: "quote_research" | "return_backtest" | "model_cohort" | "full_market_historical_claim" | string;
+    status: ResearchDataAvailability;
+    scope: string;
+    requirement: string;
+  }>;
+  datasets: ResearchDataDatasetStatus[];
+  blocking_reasons: string[];
+}
+
+export interface ResearchDiscoverySymbol {
+  symbol: string;
+  name: string;
+  exchange: "XSHG" | "XSHE" | "XBSE";
+  asset_type: "equity" | "etf";
+  provider: string;
+  quote_research_eligible: boolean;
+  return_backtest_eligible: boolean;
+  model_eligible: boolean;
+  scope: "hushen_a_share_or_benchmark_etf" | "raw_quote_only";
+  blocking_reasons: string[];
+}
+
+export interface ResearchDiscoveryResult {
+  schema_version: string;
+  status: "research_only" | "unavailable";
+  data_tier: "research_pit";
+  research_only: true;
+  deployment_ready: false;
+  as_of?: string | null;
+  source: {
+    provider: string;
+    kind: "current_public_enumeration";
+    source_uri?: string | null;
+    historical_membership_proven: false;
+  };
+  filters: {
+    query: string;
+    asset_type: "all" | "equity" | "etf";
+    eligibility: "all" | "model" | "quote_only" | "unavailable";
+  };
+  symbols: ResearchDiscoverySymbol[];
+  counts: {
+    current_universe: number;
+    quote_research_eligible: number;
+    return_backtest_eligible: number;
+    model_eligible: number;
+    quote_only: number;
+    matched: number;
+    displayed: number;
+  };
+  blocking_reasons: string[];
+}
+
+export interface ResearchDeliveryManifest {
+  schema_version: string;
+  status: "complete" | "blocked" | string;
+  release_channel: "research_only" | "professional" | string;
+  formal_pit_eligible: boolean;
+  deployment_ready: false;
+  gates: Record<string, boolean>;
+  missing_gates: string[];
+  next_actions?: string[];
+  deliverables?: Array<{ id: string; path: string; exists: boolean; status: string; evidence?: Record<string, unknown> }>;
+}
+
 export interface HistoricalScenario {
   id: string;
   asset_id: string;
@@ -957,6 +1115,14 @@ export interface ResearchShadowSummary {
   valid_session_count: number;
   forward_report_20_status: "pending" | "ready";
   primary_change_60_status: "blocked" | "eligible_for_review";
+  real_prediction_count?: number;
+  empty_prediction_count?: number;
+  real_prediction_trade_date_count?: number;
+  empty_prediction_trade_date_count?: number;
+  prediction_trade_date_coverage?: number;
+  outcome_backfill_count?: number;
+  abstain_reason_counts?: Record<string, number>;
+  prediction_state_counts?: Record<string, number>;
 }
 
 export interface ResearchRosterEntry {
@@ -2445,6 +2611,16 @@ export interface MarketObservationFacts {
   source: string;
 }
 
+export interface MarketNewsItem {
+  kind?: "news" | "notice" | string;
+  title?: string | null;
+  published_at?: string | null;
+  date?: string | null;
+  notice_type?: string | null;
+  source?: string | null;
+  url?: string | null;
+}
+
 export interface DirectionalForecastObservation {
   available: boolean;
   research_run_id: string | null;
@@ -2455,6 +2631,86 @@ export interface DirectionalForecastObservation {
   return_20d: Record<string, unknown> | null;
   drawdown_20d: Record<string, unknown> | null;
   gating_reasons: string[];
+}
+
+export interface ModelHistoryPoint {
+  decision_date: string;
+  predicted_return: number;
+  actual_return: number;
+  model_count: number;
+}
+
+export interface PricePathPoint {
+  date: string; // YYYY-MM-DD
+  actual?: number | null; // realized close (history); null in the future
+  predicted?: number | null; // p50 path forecast (present + future)
+  q10?: number | null; // 10th-percentile path
+  q90?: number | null; // 90th-percentile path
+}
+
+export interface PricePathForecast {
+  status: "ok" | "unavailable";
+  model?: string | null;
+  horizon_days?: number | null;
+  mean_abs_error_pct?: number | null; // mean |actual - predicted| / actual over the realized window
+  generated_at?: string | null;
+  path_mode?: string | null;
+  metrics?: Record<string, Record<string, Record<string, number>>> | null;
+  points: PricePathPoint[];
+  historical_points?: PricePathPoint[];
+  // §1 row-5 (训练说清楚): the kittenCN temporal prereq state when the path
+  // degrades to the quantile projection — surfaces the honest degrade reason
+  // (vendored_source / torch / trained_weights / ready / blocking).
+  temporal_model_status?: TemporalModelStatus | null;
+}
+
+export interface TemporalModelStatus {
+  vendored_source: boolean;
+  torch: boolean;
+  trained_weights: boolean;
+  ready: boolean;
+  blocking: string[];
+}
+
+// §1 row-2 / §2 three-piece: the CatBoost research-model readout surfaced on
+// the dashboard alongside the LLM plain-answer (同源: dashboard + LLM sync).
+export interface CatboostReadout {
+  direction?: { direction: number; probability: number; features?: Record<string, unknown> } | null;
+  accuracy?: {
+    status: string;
+    directional_accuracy?: number;
+    majority_base_rate?: number;
+    edge_over_base?: number;
+    by_regime?: Record<string, { n: number; directional_accuracy: number }>;
+  } | null;
+  feature_importance?: { status: string; features: { feature: string; importance_pct: number }[] } | null;
+}
+
+export interface WalkForwardDailyPoint {
+  date: string;
+  predicted: number;
+  actual: number;
+  correct: boolean;
+  abs_error: number;
+}
+
+export interface WalkForwardDaily {
+  status: "ok" | "unavailable";
+  reason?: string | null;
+  decision_count: number;
+  directional_accuracy?: number | null; // 0..1
+  mean_abs_error?: number | null;
+  mean_signed_error?: number | null; // bias: positive = over-predict
+  dates: WalkForwardDailyPoint[];
+}
+
+export interface FundamentalCoverage {
+  status: "ok" | "unavailable";
+  reason?: string | null;
+  expected_count: number;
+  present: string[];
+  missing: string[];
+  coverage_pct: number;
 }
 
 export interface EvidenceMergeResultView {
@@ -2473,7 +2729,14 @@ export interface AssetSnapshot {
   long_term_blocking_reasons: string[];
   scorecard: Record<string, unknown> | null;
   model_readings: Record<string, Record<string, unknown>> | null;
+  model_history?: ModelHistoryPoint[];
   directional_forecast: DirectionalForecastObservation | null;
+  price_path_forecast?: PricePathForecast | null;
+  walk_forward_daily?: WalkForwardDaily | null;
+  fundamental_coverage?: FundamentalCoverage | null;
+  // §1 row-2 / §2 three-piece (snapshot field): the CatBoost research-model
+  // readout (direction + OOF accuracy + feature importance).
+  catboost_readout?: CatboostReadout | null;
   fact_cards: Record<string, unknown>[];
   fact_card_coverage_status: string;
   fact_card_absence_is_evidence: boolean;
@@ -2483,6 +2746,100 @@ export interface AssetSnapshot {
   line_item_coverage_reasons: string[];
   evidence_merge_result: EvidenceMergeResultView | null;
   causal_observations: Record<string, unknown>[];
+  intraday_quote?: {
+    symbol?: string | null;
+    name?: string | null;
+    latest_price?: number | null;
+    change_pct?: number | null;
+    volume?: number | null;
+    amount?: number | null;
+    captured_at?: string | null;
+  } | null;
+  market_news?: MarketNewsItem[];
+}
+
+export type PaperOrderStatus = "pending" | "open" | "filled" | "partially_filled" | "rejected" | "cancelled";
+
+export interface PaperGameAsset {
+  symbol: string;
+  alias: string;
+  display_name: string;
+  category: "股票" | "基金" | "黄金";
+  sector: string;
+  lot_size: number;
+  t_plus_one: boolean;
+  latest_price: number | null;
+  change_pct: number | null;
+  volume: number | null;
+  captured_at: string | null;
+  price_history: Array<{ captured_at: string; price: number }>;
+  tradable: boolean;
+  unavailable_reason: string | null;
+}
+
+export interface PaperGameToday {
+  trade_date: string;
+  status: string;
+  market_open: boolean;
+  quote_policy: string;
+  bulletins: Array<{ title: string; detail: string; source: string; published_at: string }>;
+  assets: PaperGameAsset[];
+  disclaimer: string;
+}
+
+export interface PaperGameOrder {
+  id: string;
+  symbol: string;
+  alias: string;
+  side: "buy" | "sell";
+  quantity: number;
+  status: PaperOrderStatus;
+  rejection_reason: string | null;
+  submitted_at: string;
+  filled_at: string | null;
+  fill_price: number | null;
+  fee: number | null;
+}
+
+export interface PaperGameAccount {
+  id: string;
+  persona_code: string | null;
+  nickname: string;
+  initial_cash: number;
+  cash: number;
+  market_value: number;
+  total_equity: number;
+  total_return_pct: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  fees: number;
+  version: number;
+  setup_status: "setup_required" | "active";
+  setup_trade_date: string | null;
+  setup_confirmed_at: string | null;
+  positions: Array<{ symbol: string; alias: string; quantity: number; available_quantity: number; average_cost: number; latest_price: number; market_value: number; unrealized_pnl: number; last_buy_date: string | null }>;
+  orders: PaperGameOrder[];
+  trades: Array<{ id: string; symbol: string; alias: string; side: "buy" | "sell"; quantity: number; price: number; fee: number; executed_at: string }>;
+}
+
+export interface PaperGameOnboarding {
+  setup_status: "setup_required" | "active";
+  setup_trade_date: string | null;
+  setup_confirmed_at: string | null;
+  snapshot_date: string | null;
+  ready: boolean;
+  reason: string | null;
+  initial_cash: number;
+  assets: Array<{ symbol: string; display_name: string; close: number; sector: string; source: string; captured_at: string; lot_size: number }>;
+}
+
+export interface PaperGameLeaderboard {
+  metric: string;
+  entries: Array<{ rank: number; code: string; name: string; emoji: string; return_pct: number; max_drawdown_pct: number; risk_adjusted_score: number; is_user: boolean; strategy_source: string }>;
+}
+
+export interface PaperGameEquityCurve {
+  points: Array<{ captured_at: string; cash: number; market_value: number; total_equity: number }>;
 }
 
 export type ConversationMessageRole = "user" | "assistant" | "system";

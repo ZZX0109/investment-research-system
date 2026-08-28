@@ -54,3 +54,58 @@ def test_security_master_preserves_source_lifecycle_fields(tmp_path: Path) -> No
     assert rows[0]["listed_on"] == "1991-04-03"
     assert rows[0]["security_name"] == "测试银行"
     assert rows[0]["source_industry"] == "J66"
+
+
+def test_security_master_includes_current_source_symbols_without_bars(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    pq.write_table(pa.Table.from_pylist([
+        {"symbol": "000001", "trade_date": "2020-01-02", "available_at": "2026-01-01T00:00:00Z", "provider": "x"},
+    ]), source / "part.parquet")
+    industry = tmp_path / "industry.json"
+    industry.write_text('{"symbols":{}}', encoding="utf-8")
+    raw_root = tmp_path / "raw"
+    payload = raw_root / "raw-market" / "master.json"
+    payload.parent.mkdir(parents=True)
+    payload.write_text(json.dumps([
+        {"code": "sz.000001", "code_name": "测试银行", "ipoDate": "1991-04-03"},
+        {"code": "sh.600000", "code_name": "测试银行2", "ipoDate": "1999-11-10"},
+    ]), encoding="utf-8")
+    database = tmp_path / "catalog.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE raw_data_batches (dataset TEXT, payload_json TEXT)")
+    connection.execute("INSERT INTO raw_data_batches VALUES (?, ?)", (
+        "cn_security_master_research",
+        json.dumps({"symbol": "CN-MASTER", "payload_ref": "file-object://raw-market/master.json"}),
+    ))
+    connection.commit()
+    connection.close()
+
+    rows = build_security_rows(source, industry, database, raw_root)
+
+    assert {row["symbol"] for row in rows} == {"000001", "600000"}
+    assert next(row for row in rows if row["symbol"] == "600000")["security_name"] == "测试银行2"
+
+
+def test_security_master_merges_versioned_lifecycle_layer(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    pq.write_table(pa.Table.from_pylist([
+        {"symbol": "000001", "trade_date": "2020-01-02", "available_at": None, "provider": "x"},
+    ]), source / "part.parquet")
+    industry = tmp_path / "industry.json"
+    industry.write_text('{"symbols":{}}', encoding="utf-8")
+    lifecycle = tmp_path / "security_lifecycle.json"
+    lifecycle.write_text(json.dumps([{
+        "symbol": "000001", "listed_on": "1991-04-03", "delisted_on": None,
+        "security_name": "平安银行", "industry_current": "J66",
+        "industry_history": [], "name_changes": [{"变更前全称": "深圳发展银行"}],
+        "available_at": "2026-01-01T00:00:00+00:00",
+    }]), encoding="utf-8")
+
+    rows = build_security_rows(source, industry, lifecycle_path=lifecycle)
+
+    assert rows[0]["listed_on"] == "1991-04-03"
+    assert rows[0]["industry_key"] == "J66"
+    assert rows[0]["code_change_from"] == "深圳发展银行"
+    assert rows[0]["lifecycle_ref"] == str(lifecycle)

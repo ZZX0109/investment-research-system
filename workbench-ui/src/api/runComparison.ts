@@ -32,6 +32,8 @@ export function buildRunComparisonSummary(
     removed_gates: difference(baselineJudge?.gating_reasons ?? [], currentJudge?.gating_reasons ?? []),
     added_fallbacks: difference(current.snapshot.fallback_reasons, baseline.snapshot.fallback_reasons),
     removed_fallbacks: difference(baseline.snapshot.fallback_reasons, current.snapshot.fallback_reasons),
-    thesis_changed: (currentReport?.thesis ?? "") !== (baselineReport?.thesis ?? "")
+    thesis_changed: (currentReport?.thesis ?? "") !== (baselineReport?.thesis ?? ""),
+    current_source_meta: current.source_meta,
+    baseline_source_meta: baseline.source_meta
   };
 }

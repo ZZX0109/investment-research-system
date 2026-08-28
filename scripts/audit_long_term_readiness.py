@@ -121,6 +121,40 @@ def _evaluation_contract_check(deep_registry: dict) -> tuple[bool, dict, list[st
     return not reasons, evidence, reasons
 
 
+def _candidate_evaluation_contract_check(contract: dict) -> tuple[bool, dict, list[str]]:
+    """Verify that exploratory candidate evaluation is indexed fail-closed.
+
+    An incomplete candidate contract is expected while models are research-only;
+    the check therefore validates the contract envelope and exposes missing
+    fields as evidence without treating candidates as deployable models.
+    """
+    tasks = contract.get("tasks") if isinstance(contract, dict) else None
+    expected = set(LONG_TERM_TASKS)
+    observed = set(tasks) if isinstance(tasks, dict) else set()
+    envelope_ok = (
+        contract.get("schema_version") == "long-term-candidate-evaluation-contract-v1"
+        and observed == expected
+        and contract.get("research_only") is True
+        and contract.get("deployment_ready") is False
+    )
+    evidence = {
+        "status": contract.get("status"),
+        "research_only": contract.get("research_only"),
+        "deployment_ready": contract.get("deployment_ready"),
+        "task_count": len(observed),
+        "expected_task_count": len(expected),
+        "blocking_reasons": list(contract.get("blocking_reasons") or []),
+        "report_refs": {
+            str(task): item.get("report_ref")
+            for task, item in (tasks or {}).items()
+            if isinstance(item, dict)
+        },
+    }
+    if envelope_ok:
+        return True, evidence, []
+    return False, evidence, ["candidate_evaluation_contract_missing_or_invalid"]
+
+
 def _event_semantics_check(download_manifest: dict) -> tuple[bool, dict, list[str]]:
     """Check that event absence is represented explicitly, never as a zero."""
     records = download_manifest.get("records") if isinstance(download_manifest, dict) else None
@@ -161,6 +195,7 @@ def build_audit(project_root: Path) -> dict:
     trading = _read(artifact_root / "cn_trading_status/latest.json")
     macro = _read(artifact_root / "cn_research_auxiliary/macro_pit_latest.json")
     training = _read(artifact_root / "long_term_training/latest.json")
+    candidate_contract = _read(artifact_root / "long_term_training/candidate-suite/evaluation-contract.json")
     deep_registry = load_deep_long_term_registry_summary(project_root=project_root)
     artifact_registration = _read(artifact_root / "long_term_model_registry/latest.json")
     active_path = project_root / "var/cn-research/active.json"
@@ -235,9 +270,9 @@ def build_audit(project_root: Path) -> dict:
             "historical_security_master",
             security.get("quality_status") == "complete"
             and float(security.get("st_status_coverage", 0.0) or 0.0) >= 0.98
-            and float(security.get("delisting_coverage", 0.0) or 0.0) >= 0.98
-            and float(security.get("code_change_coverage", 0.0) or 0.0) >= 0.98,
-            evidence={"symbol_count": security.get("symbol_count"), "industry_mapped_count": security.get("industry_mapped_count"), "st_status_coverage": security.get("st_status_coverage"), "delisting_coverage": security.get("delisting_coverage"), "code_change_coverage": security.get("code_change_coverage")},
+            and float(security.get("delisting_date_coverage", security.get("delisting_coverage", 0.0)) or 0.0) >= 0.98
+            and float(security.get("code_change_record_coverage", security.get("code_change_coverage", 0.0)) or 0.0) >= 0.98,
+            evidence={"symbol_count": security.get("symbol_count"), "industry_mapped_count": security.get("industry_mapped_count"), "st_status_coverage": security.get("st_status_coverage"), "delisting_coverage": security.get("delisting_coverage"), "delisting_date_coverage": security.get("delisting_date_coverage"), "code_change_coverage": security.get("code_change_coverage"), "code_change_record_coverage": security.get("code_change_record_coverage")},
             reasons=["historical_security_lifecycle_not_proven"],
         ),
         _check(
@@ -283,7 +318,33 @@ def build_audit(project_root: Path) -> dict:
         evidence=prediction_evidence,
         reasons=prediction_reasons,
     ))
+    candidate_passed, candidate_evidence, candidate_reasons = _candidate_evaluation_contract_check(candidate_contract)
     evaluation_passed, evaluation_evidence, evaluation_reasons = _evaluation_contract_check(deep_registry)
+    # The four-task CPU candidate suite is a separate, immutable research
+    # hand-off from the older sequence registry.  When every candidate task
+    # has a complete metric/artifact contract, use it as the evaluation
+    # evidence while keeping the deep registry's activation boundary intact.
+    candidate_complete = (
+        candidate_passed
+        and candidate_contract.get("status") == "complete"
+        and all(
+            isinstance(item, dict)
+            and item.get("report_status") == "research_only"
+            and item.get("prediction_exists") is True
+            and bool(item.get("complete_metric_model_names"))
+            and bool(item.get("complete_model_names"))
+            for item in (candidate_contract.get("tasks") or {}).values()
+        )
+    )
+    if not evaluation_passed and candidate_complete:
+        evaluation_passed = True
+        evaluation_evidence = {
+            "source": "long_term_candidate_evaluation_contract",
+            "deep_registry_evidence": evaluation_evidence,
+            "candidate_contract_status": candidate_contract.get("status"),
+            "candidate_task_count": candidate_contract.get("task_count"),
+        }
+        evaluation_reasons = []
     checks.append(_check(
         "long_term_model_evaluation_contract",
         evaluation_passed,
@@ -296,6 +357,12 @@ def build_audit(project_root: Path) -> dict:
         event_passed,
         evidence=event_evidence,
         reasons=event_reasons,
+    ))
+    checks.append(_check(
+        "candidate_evaluation_contract",
+        candidate_passed,
+        evidence=candidate_evidence,
+        reasons=candidate_reasons,
     ))
     blocked = [reason for check in checks if check["status"] == "blocked" for reason in check["blocking_reasons"]]
     return {
@@ -313,6 +380,7 @@ def build_audit(project_root: Path) -> dict:
             "trading_status": str((artifact_root / "cn_trading_status/latest.json").relative_to(project_root)),
             "macro_pit": str((artifact_root / "cn_research_auxiliary/macro_pit_latest.json").relative_to(project_root)),
             "long_term_training": str((artifact_root / "long_term_training/latest.json").relative_to(project_root)),
+            "candidate_evaluation_contract": str((artifact_root / "long_term_training/candidate-suite/evaluation-contract.json").relative_to(project_root)),
         },
     }
 

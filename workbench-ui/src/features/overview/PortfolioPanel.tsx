@@ -1,11 +1,9 @@
 import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { Plus, Search, Trash2 } from "lucide-react";
 import { Panel } from "../../components/Panel";
-import { SourceBadge } from "../../components/SourceBadge";
 import {
   useAssetsQuery,
   useCreatePositionMutation,
-  useDeleteAssetMutation,
   usePositionsQuery,
   useWatchlistsQuery
 } from "../../hooks/useWorkbenchQueries";
@@ -19,13 +17,15 @@ export function PortfolioPanel() {
   const positionsQuery = usePositionsQuery();
   const watchlistsQuery = useWatchlistsQuery();
   const selectedAssetId = useWorkbenchStore((state) => state.selectedAssetId);
+  const researchAssetIds = useWorkbenchStore((state) => state.researchAssetIds);
+  const addResearchAsset = useWorkbenchStore((state) => state.addResearchAsset);
+  const removeResearchAssets = useWorkbenchStore((state) => state.removeResearchAssets);
   const mode = useWorkbenchStore((state) => state.mode);
   const setSelectedAssetId = useWorkbenchStore((state) => state.setSelectedAssetId);
   const assetSearch = useWorkbenchStore((state) => state.assetSearch);
   const setAssetSearch = useWorkbenchStore((state) => state.setAssetSearch);
   const deferredSearch = useDeferredValue(assetSearch);
   const createPosition = useCreatePositionMutation();
-  const deleteAsset = useDeleteAssetMutation();
   const [quantity, setQuantity] = useState("1");
   const [costBasis, setCostBasis] = useState("0");
   const [composerOpen, setComposerOpen] = useState(false);
@@ -40,13 +40,32 @@ export function PortfolioPanel() {
       return true;
     });
   }, [assetsQuery.data]);
-  const assets = uniqueAssets.filter((asset) => {
+  // The API exposes the full historical research pool. Only IDs explicitly
+  // added in this browser are workspace subjects; the rest remain candidates
+  // in the add dialog and must never leak into the research list.
+  const selectedAssets = uniqueAssets.filter((asset) => researchAssetIds.includes(asset.id));
+  const assets = selectedAssets.filter((asset) => {
     const needle = deferredSearch.trim().toLowerCase();
     return needle ? `${asset.ticker} ${asset.name}`.toLowerCase().includes(needle) : true;
   });
 
   return (
-    <Panel eyebrow={l("选股", "Pick")} title={l("研究对象", "Research assets")}>
+    <Panel
+      eyebrow={l("选股", "Pick")}
+      title={l("研究对象", "Research assets")}
+      actions={
+        <button
+          className="add-research-asset-button"
+          type="button"
+          data-testid="open-asset-composer"
+          onClick={() => setComposerOpen(true)}
+          aria-label={l("添加研究对象", "Add research asset")}
+          title={l("添加研究对象", "Add research asset")}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+      }
+    >
       <label className="asset-search" htmlFor="asset-search-input">
         <Search size={15} aria-hidden="true" />
         <input
@@ -57,15 +76,6 @@ export function PortfolioPanel() {
           onChange={(event) => setAssetSearch(event.target.value)}
         />
       </label>
-      <button
-        className="add-research-asset-button"
-        type="button"
-        data-testid="open-asset-composer"
-        onClick={() => setComposerOpen(true)}
-      >
-        <Plus size={16} aria-hidden="true" />
-        <span>{l("添加研究对象", "Add research asset")}</span>
-      </button>
       <div className="asset-list">
         {assets.map((asset) => (
           <div className="asset-card-shell" key={asset.id}>
@@ -75,39 +85,27 @@ export function PortfolioPanel() {
               type="button"
               onClick={() => setSelectedAssetId(asset.id)}
             >
-              <div>
+              <div className="asset-card__identity">
                 <strong>{asset.ticker}</strong>
-                <div className="muted">{asset.name}</div>
+                <span className="muted">{asset.name}</span>
                 <small className="asset-card__meta">{asset.exchange ?? "CN"} · {term(asset.asset_type)} · {term(asset.status)}</small>
               </div>
-              <SourceBadge provenance={asset.provenance} />
             </button>
             <button
               className="asset-card__delete"
               type="button"
               aria-label={l(`删除 ${asset.ticker} ${asset.name}`, `Delete ${asset.ticker} ${asset.name}`)}
               title={l("仅从当前工作区移除；其他用户和历史研究证据不受影响", "Remove only from this workspace; other users and historical evidence are unaffected")}
-              disabled={deleteAsset.isPending}
-              onClick={() => {
-                const sameResearchObject = (assetsQuery.data ?? []).filter(
+                onClick={() => {
+                const sameResearchObject = selectedAssets.filter(
                   (candidate) => candidate.ticker === asset.ticker && (candidate.exchange ?? "CN") === (asset.exchange ?? "CN")
                 );
                 const removedIds = new Set(sameResearchObject.map((candidate) => candidate.id));
-                void (async () => {
-                  try {
-                    // A ticker/exchange is one user-facing research object;
-                    // remove stale duplicate access records sequentially.
-                    for (const candidate of sameResearchObject) {
-                      await deleteAsset.mutateAsync(candidate.id);
-                    }
-                    if (selectedAssetId && removedIds.has(selectedAssetId)) {
-                      const next = uniqueAssets.find((candidate) => !removedIds.has(candidate.id));
-                      setSelectedAssetId(next?.id ?? null);
-                    }
-                  } catch {
-                    // The mutation exposes the actionable API error below.
-                  }
-                })();
+                removeResearchAssets([...removedIds]);
+                if (selectedAssetId && removedIds.has(selectedAssetId)) {
+                  const next = selectedAssets.find((candidate) => !removedIds.has(candidate.id));
+                  setSelectedAssetId(next?.id ?? null);
+                }
               }}
             >
               <Trash2 size={14} aria-hidden="true" />
@@ -115,10 +113,10 @@ export function PortfolioPanel() {
             </button>
           </div>
         ))}
-        {(assetsQuery.data ?? []).length === 0 ? (
+        {selectedAssets.length === 0 ? (
           <div className="asset-list-empty">
             <strong>{l("还没有研究对象", "No research assets yet")}</strong>
-            <span>{l("点击上方“添加研究对象”，从固定研究池中选择。", "Use “Add research asset” above to select from the fixed research pool.")}</span>
+            <span>{l("点击右上角 + 按钮，从固定研究池中选择。", "Use the + button in the upper-right corner to select from the fixed research pool.")}</span>
           </div>
         ) : assets.length === 0 ? (
           <div className="asset-list-empty">
@@ -127,9 +125,6 @@ export function PortfolioPanel() {
           </div>
         ) : null}
       </div>
-      {deleteAsset.error instanceof Error ? (
-        <p className="asset-action-error">{deleteAsset.error.message}</p>
-      ) : null}
       {mode !== "research" ? (
         <>
           <div className="metric-strip">
@@ -163,7 +158,9 @@ export function PortfolioPanel() {
       ) : null}
       <AssetComposer
         open={composerOpen}
-        assets={assetsQuery.data ?? []}
+        assets={uniqueAssets}
+        selectedAssetIds={researchAssetIds}
+        onAddResearchAsset={addResearchAsset}
         onClose={closeComposer}
       />
     </Panel>

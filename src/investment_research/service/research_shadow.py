@@ -10,6 +10,7 @@ from datetime import date, datetime
 from hashlib import sha256
 import json
 from pathlib import Path
+from collections import Counter
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -112,6 +113,19 @@ class ResearchShadowSummary(BaseModel):
     valid_session_count: int = Field(default=0, ge=0)
     forward_report_20_status: Literal["pending", "ready"] = "pending"
     primary_change_60_status: Literal["blocked", "eligible_for_review"] = "blocked"
+    # Distinguish real model predictions from empty-placeholder sessions so
+    # the 60-day gate does not overstate system capability.
+    real_prediction_count: int = Field(default=0, ge=0)
+    empty_prediction_count: int = Field(default=0, ge=0)
+    real_prediction_trade_date_count: int = Field(default=0, ge=0)
+    empty_prediction_trade_date_count: int = Field(default=0, ge=0)
+    prediction_trade_date_coverage: float = Field(default=0.0, ge=0, le=1)
+    outcome_backfill_count: int = Field(default=0, ge=0)
+    # Explain why a session has no final prediction.  These fields are kept in
+    # the API model so the UI cannot confuse valid evidence dates with model
+    # coverage or treat an abstention as an implicit forecast.
+    abstain_reason_counts: dict[str, int] = Field(default_factory=dict)
+    prediction_state_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class FileResearchShadowStore:
@@ -170,12 +184,42 @@ class FileResearchShadowStore:
         )
         abstained = sum(item.abstained for item in sessions)
         completed = {horizon: 0 for horizon in (1, 5, 20, 60)}
+        outcome_backfill = 0
         for session in sessions:
             for outcome in self.list_outcomes(session.id):
                 if outcome.data_complete:
                     completed[outcome.horizon_sessions] += 1
+                    outcome_backfill += 1
         count = len(sessions)
         valid_dates = {item.trade_date for item in sessions if item.evidence_valid}
+        real_predictions = sum(1 for item in sessions if item.frozen_prediction)
+        empty_predictions = count - real_predictions
+        abstain_reason_counts = Counter(
+            reason for item in sessions for reason in item.abstain_reasons
+        )
+        prediction_state_counts = {
+            "real_prediction": real_predictions,
+            "placeholder_abstain": sum(
+                not item.frozen_prediction
+                and item.abstain_reasons == ["empty_prediction_placeholder"]
+                for item in sessions
+            ),
+            "gated_abstain": sum(
+                not item.frozen_prediction
+                and bool(item.abstain_reasons)
+                and "empty_prediction_placeholder" not in item.abstain_reasons
+                for item in sessions
+            ),
+            "invalid_evidence": sum(not item.evidence_valid for item in sessions),
+        }
+        real_prediction_dates = {
+            item.trade_date for item in sessions
+            if item.evidence_valid and item.frozen_prediction
+        }
+        empty_prediction_dates = {
+            item.trade_date for item in sessions
+            if item.evidence_valid and not item.frozen_prediction
+        }
         return ResearchShadowSummary(
             session_count=count,
             answered_count=count - abstained,
@@ -187,6 +231,16 @@ class FileResearchShadowStore:
             valid_session_count=len(valid_dates),
             forward_report_20_status="ready" if len(valid_dates) >= 20 else "pending",
             primary_change_60_status="eligible_for_review" if len(valid_dates) >= 60 else "blocked",
+            real_prediction_count=real_predictions,
+            empty_prediction_count=empty_predictions,
+            real_prediction_trade_date_count=len(real_prediction_dates),
+            empty_prediction_trade_date_count=len(empty_prediction_dates),
+            prediction_trade_date_coverage=(
+                len(real_prediction_dates) / len(valid_dates) if valid_dates else 0.0
+            ),
+            outcome_backfill_count=outcome_backfill,
+            abstain_reason_counts=dict(sorted(abstain_reason_counts.items())),
+            prediction_state_counts=prediction_state_counts,
         )
 
     def generate_forward_report(
@@ -307,6 +361,11 @@ class ResearchShadowController:
         threshold = 0.30 if task.startswith("direction_") else 0.25 if task == "drawdown_20d" else 0.05 if task == "return_20d" else None
         if threshold is not None and model_disagreement is not None and model_disagreement > threshold:
             reasons.append("model_disagreement")
+        # An empty prediction is an abstention (the model did not produce a
+        # prediction).  Mark it so the shadow summary distinguishes real
+        # predictions from placeholder sessions.
+        if not prediction:
+            reasons.append("empty_prediction_placeholder")
         session = ResearchShadowSession(
             market=market, decision_context=decision_context, cohort=cohort, task=task,
             symbol=symbol, trade_date=trade_date, frozen_at=frozen_at,

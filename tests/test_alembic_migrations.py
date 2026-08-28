@@ -21,7 +21,7 @@ def test_upgrade_from_recent_catalog_revisions(starting_revision: str, tmp_path:
     command.upgrade(config, "head")
     connection = sqlite3.connect(database_path)
     assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-        "0021_conversations",
+        "0025_paper_game_onboarding",
     )
     assert connection.execute("SELECT COUNT(*) FROM financial_knowledge_documents").fetchone()[0] >= 4
     connection.close()
@@ -51,7 +51,7 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
     version = connection.execute("SELECT version_num FROM alembic_version").fetchone()
     connection.close()
 
-    assert version == ("0021_conversations",)
+    assert version == ("0025_paper_game_onboarding",)
     assert {
         "pit_dataset_partitions",
         "standard_event_revisions",
@@ -122,6 +122,15 @@ def test_alembic_upgrade_head_builds_fresh_sqlite_schema(tmp_path: Path) -> None
         "research_reports",
         "analysis_snapshots",
         "judge_scores",
+        "paper_game_days",
+        "paper_game_assets",
+        "paper_game_accounts",
+        "paper_game_positions",
+        "paper_game_orders",
+        "paper_game_trades",
+        "paper_game_equity",
+        "paper_game_bot_snapshots",
+        "paper_game_close_snapshots",
     }.issubset(tables)
 
 

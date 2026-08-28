@@ -23,6 +23,7 @@ from investment_research.domain.data_tier import DataTier
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.service.trusted_ingestion import RawPayloadIngestionService
+from investment_research.service.cn_universe import load_cn_symbols
 
 
 ETF_SYMBOLS = {"510050", "510300", "510500", "159915", "512100"}
@@ -33,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", type=Path, default=PROJECT / "var/cn-research/catalog.db")
     parser.add_argument("--object-store", type=Path, default=PROJECT / "var/cn-research/raw")
     parser.add_argument("--output-root", type=Path, default=PROJECT / "artifacts/cn_corporate_actions_detailed")
+    parser.add_argument("--target-symbols", type=Path, default=PROJECT / "config/cn_research_target_167_symbols.json")
+    parser.add_argument("--all-current-universe", action="store_true", help="use the current A-share/ETF enumeration and exclude ETFs")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--max-symbols", type=int, default=None)
     parser.add_argument("--no-resume", action="store_true")
@@ -42,8 +45,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     options = parse_args()
     options.output_root.mkdir(parents=True, exist_ok=True)
-    target = json.loads((PROJECT / "config/cn_research_target_167_symbols.json").read_text(encoding="utf-8"))
-    symbols = [str(item).zfill(6) for item in target["cn"] if str(item).zfill(6) not in ETF_SYMBOLS]
+    target_path = PROJECT / "artifacts/cn_security_master_universe/security_master_current.json" if options.all_current_universe else options.target_symbols
+    symbols = load_cn_symbols(target_path, exclude_etf=True)
     if options.max_symbols is not None:
         symbols = symbols[: options.max_symbols]
     progress_path = options.output_root / "progress.json"
@@ -55,49 +58,48 @@ def main() -> int:
     pending = [s for s in symbols if progress["symbols"].get(s, {}).get("status") != "complete"]
     print(f"target_equities={len(symbols)} pending={len(pending)}", flush=True)
 
-    fetched: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=max(1, min(options.workers, 8))) as pool:
-        futures = {pool.submit(_fetch_symbol, symbol): symbol for symbol in pending}
-        for future in as_completed(futures):
-            symbol = futures[future]
-            try:
-                fetched[symbol] = future.result()
-            except Exception as exc:
-                fetched[symbol] = {"status": "failed", "reason": f"{type(exc).__name__}:{exc}"}
-            print(f"fetched {len(fetched)}/{len(pending)} {symbol} {fetched[symbol].get('status')}", flush=True)
-
     uow = SQLiteUnitOfWork(options.database)
     service = RawPayloadIngestionService(uow, object_store=LocalObjectStore(options.object_store))
     try:
-        for symbol in sorted(fetched):
-            result = fetched[symbol]
-            if result.get("status") != "complete":
-                progress["symbols"][symbol] = result
+        completed_this_run = 0
+        with ThreadPoolExecutor(max_workers=max(1, min(options.workers, 8))) as pool:
+            futures = {pool.submit(_fetch_symbol, symbol): symbol for symbol in pending}
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {"status": "failed", "reason": f"{type(exc).__name__}:{exc}"}
+                completed_this_run += 1
+                if result.get("status") != "complete":
+                    progress["symbols"][symbol] = result
+                else:
+                    now = datetime.now(timezone.utc)
+                    payload = json.dumps(result["rows"], ensure_ascii=False, separators=(",", ":")).encode()
+                    batch = service.persist(
+                        provider="akshare_cn_corporate_actions_detailed",
+                        request_id=f"cn-corporate-actions-detailed-{symbol}-{uuid4()}",
+                        dataset="cn_corporate_actions_detailed",
+                        payload=payload,
+                        schema_version="cn-corporate-actions-detailed-v1",
+                        symbol=symbol,
+                        available_at=now,
+                        received_at=now,
+                        market_session="research_backfill",
+                        data_tier=DataTier.RESEARCH_PIT,
+                    )
+                    progress["symbols"][symbol] = {
+                        "status": "complete",
+                        "row_count": len(result["rows"]),
+                        "dividend_rows": result["dividend_rows"],
+                        "rights_issue_rows": result["rights_issue_rows"],
+                        "payload_hash": batch.payload_hash,
+                        "raw_batch_id": str(batch.id),
+                    }
+                # Persist after every symbol.  A multi-thousand-symbol run must be
+                # safely resumable even if the provider or host stops mid-batch.
                 _write_json(progress_path, progress)
-                continue
-            now = datetime.now(timezone.utc)
-            payload = json.dumps(result["rows"], ensure_ascii=False, separators=(",", ":")).encode()
-            batch = service.persist(
-                provider="akshare_cn_corporate_actions_detailed",
-                request_id=f"cn-corporate-actions-detailed-{symbol}-{uuid4()}",
-                dataset="cn_corporate_actions_detailed",
-                payload=payload,
-                schema_version="cn-corporate-actions-detailed-v1",
-                symbol=symbol,
-                available_at=now,
-                received_at=now,
-                market_session="research_backfill",
-                data_tier=DataTier.RESEARCH_PIT,
-            )
-            progress["symbols"][symbol] = {
-                "status": "complete",
-                "row_count": len(result["rows"]),
-                "dividend_rows": result["dividend_rows"],
-                "rights_issue_rows": result["rights_issue_rows"],
-                "payload_hash": batch.payload_hash,
-                "raw_batch_id": str(batch.id),
-            }
-            _write_json(progress_path, progress)
+                print(f"fetched {completed_this_run}/{len(pending)} {symbol} {result.get('status')}", flush=True)
     finally:
         uow.close()
 

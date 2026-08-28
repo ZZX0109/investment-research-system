@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -30,6 +31,26 @@ from investment_research.training.snapshot_landing import SnapshotGateConfig, ev
 from investment_research.training.active_snapshot_guard import ActiveSnapshotInputError, assert_training_sources, require_active_snapshot
 
 
+# The long-term loader needs the canonical sample contract, but not every
+# column carried by the PIT object (for example, some legacy provenance
+# extensions).  Projecting these columns keeps a research-only run bounded
+# when the manifest list contains thousands of small immutable partitions.
+_SAMPLE_LOAD_COLUMNS = [
+    "symbol", "market", "instrument_type", "coverage_group", "industry_key",
+    "benchmark_symbol", "sector_reference_symbol", "style_reference_symbol",
+    "as_of_date", "as_of_time", "feature_cutoff", "decision_context",
+    "prediction_start_date", "market_snapshot_id", "market_snapshot_hash",
+    "feature_version", "label_version", "data_version", "features",
+    "feature_coverage", "core_feature_coverage", "missing_features", "labels",
+    "point_in_time_event_count", "event_source_available", "event_coverage_status",
+    "event_count_1d", "event_count_7d", "event_count_30d", "event_provider_count",
+    "event_semantic_coverage", "data_issues", "provider", "published_at", "as_of",
+    "payload_ref", "source_url", "raw_hash", "normalized_hash", "data_tier",
+    "data_quality_status", "data_quality_mask", "event_missing_mask", "provider_id",
+    "revision_id", "source_delay_seconds", "cache_state", "input_revision_ids",
+]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=Path, required=True, help="JSON/JSONL/Parquet samples or a directory containing them")
@@ -40,10 +61,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-research-only", action="store_true", help="run against the immutable research rebuild without claiming activation")
     parser.add_argument("--target", default="excess_return_240d")
     parser.add_argument("--snapshot-frequency", choices=("quarterly", "monthly"), default=None)
+    parser.add_argument(
+        "--minimum-feature-coverage", type=float, default=None,
+        help=(
+            "Research-only override for the sample feature-coverage floor. "
+            "The configured formal floor remains the default and cannot be "
+            "lowered without --allow-research-only."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=PROJECT / "artifacts/long_term_training/latest.json")
     parser.add_argument("--predictions-output", type=Path, default=None, help="compressed Parquet row predictions; omitted when blocked")
     parser.add_argument("--checkpoint-dir", type=Path, default=None, help="per-model/per-fold checkpoint directory")
     parser.add_argument("--no-resume", action="store_true", help="ignore existing fold checkpoints")
+    parser.add_argument(
+        "--enrich-liquidity-from-rebuild", action="store_true",
+        help=(
+            "Research-only compatibility path: join same-date amount and "
+            "turnover fields from the immutable standard layer referenced by "
+            "--rebuild-index. No values are inferred when the bar is missing."
+        ),
+    )
     args = parser.parse_args()
     if args.predictions_output is None:
         args.predictions_output = args.output.with_suffix(".predictions.parquet")
@@ -77,12 +114,38 @@ def main() -> int:
             "formal_pit_activation_not_claimed",
         ])
     snapshot_frequency = args.snapshot_frequency or config.snapshot_frequency
+    minimum_feature_coverage = (
+        config.minimum_financial_coverage
+        if args.minimum_feature_coverage is None
+        else float(args.minimum_feature_coverage)
+    )
+    if not 0.0 <= minimum_feature_coverage <= 1.0:
+        _write_blocked(args.output, ["minimum_feature_coverage_must_be_between_0_and_1"])
+        return 2
+    if minimum_feature_coverage < config.minimum_financial_coverage:
+        if not args.allow_research_only:
+            _write_blocked(args.output, ["lower_feature_coverage_requires_research_only"])
+            return 2
+        gate_reasons.append(
+            "research_only_feature_coverage_override:"
+            f"{minimum_feature_coverage:.6f}<{config.minimum_financial_coverage:.6f}"
+        )
     loaded_samples = _load_samples(
         args.samples,
         object_store=args.object_store,
         target=args.target,
         snapshot_frequency=snapshot_frequency,
     )
+    feature_enrichment = None
+    if args.enrich_liquidity_from_rebuild:
+        if args.rebuild_index is None:
+            _write_blocked(args.output, ["liquidity_enrichment_requires_rebuild_index"])
+            return 2
+        loaded_samples, feature_enrichment = _enrich_liquidity_features(
+            loaded_samples,
+            rebuild_index=args.rebuild_index,
+            object_store=args.object_store,
+        )
     # Long-term cross-sectional labels are stock-only.  ETF rows may be
     # present in the same PIT partitions because they provide benchmark and
     # market-state features, but they must never become ranked observations or
@@ -102,8 +165,19 @@ def main() -> int:
     observations = build_long_term_observations(
         samples,
         target=args.target,
-        minimum_feature_coverage=config.minimum_financial_coverage,
+        minimum_feature_coverage=minimum_feature_coverage,
         snapshot_frequency=snapshot_frequency,
+    )
+    target_label_count = sum(
+        1 for sample in samples if getattr(sample.labels, args.target, None) is not None
+    )
+    coverage_eligible_count = sum(
+        1 for sample in samples if sample.feature_coverage >= minimum_feature_coverage
+    )
+    target_and_coverage_count = sum(
+        1 for sample in samples
+        if getattr(sample.labels, args.target, None) is not None
+        and sample.feature_coverage >= minimum_feature_coverage
     )
     if manifest is not None:
         gate = evaluate_snapshot_gate(
@@ -117,6 +191,23 @@ def main() -> int:
         if not gate.passed:
             _write_blocked(args.output, gate.reasons)
             return 2
+    if not observations:
+        _write_blocked(
+            args.output,
+            ["no_mature_long_term_observations"],
+            target=args.target,
+            snapshot_id=snapshot_id,
+            data_tier=data_tier,
+            gate_reasons=gate_reasons,
+            minimum_feature_coverage=minimum_feature_coverage,
+            configured_formal_feature_coverage=config.minimum_financial_coverage,
+            loaded_sample_count=len(loaded_samples),
+            ranking_sample_count=len(samples),
+            target_label_available_count=target_label_count,
+            coverage_eligible_count=coverage_eligible_count,
+            target_and_coverage_count=target_and_coverage_count,
+        )
+        return 2
     prediction_rows: list[dict] = []
     report = run_long_term_baselines(
         observations,
@@ -141,6 +232,13 @@ def main() -> int:
         "gate_reasons": gate_reasons,
         "deployment_ready": False,
         "snapshot_frequency": snapshot_frequency,
+        "minimum_feature_coverage": minimum_feature_coverage,
+        "configured_formal_feature_coverage": config.minimum_financial_coverage,
+        "target_label_available_count": target_label_count,
+        "coverage_eligible_count": coverage_eligible_count,
+        "target_and_coverage_count": target_and_coverage_count,
+        "mature_observation_count": len(observations),
+        "mature_decision_date_count": len({item.decision_date for item in observations}),
         "decision_unit": config.primary_decision_unit,
         "primary_output_contract": config.score_outputs,
         "scorecards": _latest_scorecards(samples, config),
@@ -153,6 +251,8 @@ def main() -> int:
             "etf_role": "benchmark_and_market_features_only",
         },
     })
+    if feature_enrichment is not None:
+        report["feature_enrichment"] = feature_enrichment
     if prediction_record is not None:
         report["predictions_ref"] = str(args.predictions_output)
         report["predictions_sha256"] = prediction_record.sha256
@@ -192,6 +292,81 @@ def _single_contract_version(samples: list[TrainingSample], field: str) -> str:
     return "mixed" if values else "not_recorded"
 
 
+def _enrich_liquidity_features(
+    samples: list[TrainingSample], *, rebuild_index: Path, object_store: Path,
+) -> tuple[list[TrainingSample], dict]:
+    """Join explicit same-date bar liquidity inputs without inventing values."""
+    rebuild_path = rebuild_index if rebuild_index.is_absolute() else PROJECT / rebuild_index
+    if not rebuild_path.is_file():
+        raise SystemExit(f"rebuild index is missing for liquidity enrichment: {rebuild_path}")
+    rebuild = json.loads(rebuild_path.read_text(encoding="utf-8"))
+    try:
+        from investment_research.service.object_store import LocalObjectStore
+        from investment_research.training.parquet_store import PITParquetStore
+        parquet_store = PITParquetStore(LocalObjectStore(object_store))
+    except ImportError as exc:
+        raise SystemExit("liquidity enrichment requires the local PIT parquet dependencies") from exc
+    bars: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    manifest_count = 0
+    partition_count = 0
+    for ref in rebuild.get("standard_manifest_refs") or []:
+        manifest_path = Path(ref)
+        if not manifest_path.is_absolute():
+            manifest_path = PROJECT / manifest_path
+        if not manifest_path.is_file():
+            continue
+        manifest_count += 1
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for partition in manifest.get("partitions") or []:
+            partition_count += 1
+            rows = parquet_store.read_partition(
+                partition["parquet_ref"],
+                expected_payload_hash=partition.get("payload_hash"),
+            )
+            for row in rows:
+                if not row.get("symbol") or not row.get("trade_date"):
+                    continue
+                amount = row.get("amount")
+                turnover = row.get("turnover_rate")
+                bars[(str(row["symbol"]), str(row["trade_date"])[:10])] = (
+                    None if amount is None else float(amount),
+                    None if turnover is None else float(turnover),
+                )
+    enriched_count = 0
+    amount_count = 0
+    turnover_count = 0
+    output: list[TrainingSample] = []
+    for sample in samples:
+        features = dict(sample.features)
+        amount, turnover = bars.get((sample.symbol, sample.as_of_date.isoformat()), (None, None))
+        changed = False
+        if features.get("amount_1d") is None and amount is not None and amount >= 0:
+            features["amount_1d"] = amount
+            amount_count += 1
+            changed = True
+        if features.get("turnover_rate_1d") is None and turnover is not None and turnover >= 0:
+            features["turnover_rate_1d"] = turnover
+            turnover_count += 1
+            changed = True
+        if changed:
+            enriched_count += 1
+            output.append(sample.model_copy(update={"features": features}))
+        else:
+            output.append(sample)
+    return output, {
+        "status": "complete",
+        "mode": "research_only_same_date_standard_bar_join",
+        "standard_manifest_count": manifest_count,
+        "standard_partition_count": partition_count,
+        "loaded_liquidity_bar_count": len(bars),
+        "sample_count": len(samples),
+        "enriched_sample_count": enriched_count,
+        "amount_1d_enriched_count": amount_count,
+        "turnover_rate_1d_enriched_count": turnover_count,
+        "missing_liquidity_is_preserved": True,
+    }
+
+
 def _load_samples(
     path: Path,
     *,
@@ -206,13 +381,43 @@ def _load_samples(
     CPU baseline and avoids pretending every daily row is independent.
     """
     paths = sorted(path.rglob("*") if path.is_dir() else [path])
-    selected: dict[tuple[str, object], TrainingSample] = {}
+    # Keep raw rows until period-end selection is complete.  The research
+    # manifest contains roughly one million daily rows; validating every row
+    # with Pydantic before discarding all but one row per symbol/quarter is a
+    # large, avoidable cost.  We still validate the selected rows below before
+    # they enter the canonical training pipeline.
+    selected: dict[tuple[str, object], dict] = {}
     try:
         from investment_research.service.object_store import LocalObjectStore
         from investment_research.training.parquet_store import PITParquetStore
         parquet_store = PITParquetStore(LocalObjectStore(object_store))
     except ImportError:
         parquet_store = None
+    def consider_rows(rows) -> None:
+        """Select period-end raw rows without retaining a whole partition set."""
+        for row in rows:
+            if isinstance(row, dict) and "labels" in row and "features" in row:
+                row = dict(row)
+                raw_date = row.get("as_of_date")
+                if raw_date is None:
+                    continue
+                if isinstance(raw_date, date):
+                    as_of_date = raw_date
+                else:
+                    try:
+                        as_of_date = date.fromisoformat(str(raw_date)[:10])
+                    except ValueError:
+                        continue
+                symbol = str(row.get("symbol") or "")
+                if not symbol:
+                    continue
+                period = _period_key(as_of_date, snapshot_frequency)
+                key = (symbol, period)
+                previous = selected.get(key)
+                previous_date = previous.get("as_of_date") if previous else None
+                if previous is None or str(raw_date)[:10] > str(previous_date)[:10]:
+                    selected[key] = row
+
     for item in paths:
         if not item.is_file() or item.name == "manifest.json":
             continue
@@ -231,12 +436,12 @@ def _load_samples(
                 if isinstance(payload, dict) and "sample_parquet_ref" in payload:
                     if parquet_store is None:
                         raise SystemExit("manifest input requires the local PIT parquet dependencies")
-                    rows = parquet_store.read_partition(
+                    rows = parquet_store.read_partition_columns(
                         payload["sample_parquet_ref"],
+                        columns=_SAMPLE_LOAD_COLUMNS,
                         expected_payload_hash=payload.get("payload_hash"),
                     )
                 elif isinstance(payload, dict) and "sample_manifests" in payload:
-                    rows = []
                     for value in payload["sample_manifests"]:
                         manifest_path = Path(value)
                         if not manifest_path.is_absolute():
@@ -244,27 +449,24 @@ def _load_samples(
                         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                         if parquet_store is None:
                             raise SystemExit("manifest input requires the local PIT parquet dependencies")
-                        rows.extend(parquet_store.read_partition(
+                        consider_rows(parquet_store.read_partition_columns(
                             manifest["sample_parquet_ref"],
+                            columns=_SAMPLE_LOAD_COLUMNS,
                             expected_payload_hash=manifest.get("payload_hash"),
                         ))
+                    continue
                 else:
                     rows = payload if isinstance(payload, list) else payload.get("samples", []) if isinstance(payload, dict) else []
         else:
             continue
-        for row in rows:
-            if isinstance(row, dict) and "labels" in row and "features" in row:
-                row = dict(row)
-                for key in ("features", "labels", "data_quality_mask", "event_missing_mask"):
-                    if isinstance(row.get(key), str):
-                        row[key] = json.loads(row[key])
-                sample = TrainingSample.model_validate(row)
-                period = _period_key(sample.as_of_date, snapshot_frequency)
-                key = (sample.symbol, period)
-                previous = selected.get(key)
-                if previous is None or sample.as_of_date > previous.as_of_date:
-                    selected[key] = sample
-    return sorted(selected.values(), key=lambda item: (item.as_of_date, item.symbol))
+        consider_rows(rows)
+    validated: list[TrainingSample] = []
+    for row in selected.values():
+        for key in ("features", "labels", "data_quality_mask", "event_missing_mask"):
+            if isinstance(row.get(key), str):
+                row[key] = json.loads(row[key])
+        validated.append(TrainingSample.model_validate(row))
+    return sorted(validated, key=lambda item: (item.as_of_date, item.symbol))
 
 
 def _period_key(value, frequency: str):
@@ -275,9 +477,15 @@ def _period_key(value, frequency: str):
     return date(value.year, quarter * 3 + 1, 1)
 
 
-def _write_blocked(path: Path, reasons: list[str]) -> None:
+def _write_blocked(path: Path, reasons: list[str], **details) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": "long-term-training-report-v1", "status": "blocked", "deployment_ready": False, "blocking_reasons": sorted(set(reasons))}
+    payload = {
+        "schema_version": "long-term-training-report-v1",
+        "status": "blocked",
+        "deployment_ready": False,
+        "blocking_reasons": sorted(set(reasons)),
+        **details,
+    }
     _atomic_write_json(path, payload)
     print(json.dumps(payload, ensure_ascii=False))
 

@@ -28,13 +28,13 @@ EvidenceClass = Literal["confirmed_fact", "explanation", "conflict", "missing"]
 
 
 class PlainSource(BaseModel):
-    """A citable material used by the answer.  Always carries a link."""
+    """A citable material used by the answer; live market reads may not link."""
 
     title: str = Field(min_length=1, max_length=200)
     source: str = Field(min_length=1, max_length=120)
-    url: str = Field(min_length=1, max_length=500)
+    url: str | None = Field(default=None, max_length=500)
     published_at: str | None = None
-    kind: Literal["announcement", "knowledge", "news", "calculation", "model"] = "knowledge"
+    kind: Literal["announcement", "knowledge", "news", "calculation", "model", "market"] = "knowledge"
     citation_id: str | None = None
     note: str | None = None
 
@@ -110,11 +110,12 @@ class PlainPortfolioNote(BaseModel):
 
 
 class PlainAnswer(BaseModel):
-    """The five-section structured answer shown on the homepage."""
+    """The retail-friendly structured answer shown beside the research chat."""
 
     schema_version: str = "plain-answer-v1"
     business_condition: str
     long_term_changes: str
+    recent_market_observation: str = "近期市场信息暂未获取，不能据此判断。"
     possible_risks: str
     missing_evidence: str
     sources_summary: str

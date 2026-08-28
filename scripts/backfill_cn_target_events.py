@@ -26,6 +26,7 @@ from investment_research.domain.data_tier import DataTier
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.service.trusted_ingestion import RawPayloadIngestionService
+from investment_research.service.cn_universe import load_cn_symbols
 
 
 URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
@@ -37,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database", type=Path, default=PROJECT / "var/cn-research/catalog.db")
     parser.add_argument("--object-store", type=Path, default=PROJECT / "var/cn-research/raw")
     parser.add_argument("--output-root", type=Path, default=PROJECT / "artifacts/cn_event_backfill")
+    parser.add_argument("--target-symbols", type=Path, default=PROJECT / "config/cn_research_target_167_symbols.json")
+    parser.add_argument("--all-current-universe", action="store_true", help="use the current A-share/ETF enumeration and exclude ETFs")
     parser.add_argument("--start-date", default="2021-01-01")
     parser.add_argument("--end-date", default=datetime.now(timezone.utc).date().isoformat())
     parser.add_argument("--workers", type=int, default=4)
@@ -49,8 +52,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     options = parse_args()
     options.output_root.mkdir(parents=True, exist_ok=True)
-    target = json.loads((PROJECT / "config/cn_research_target_167_symbols.json").read_text(encoding="utf-8"))
-    symbols = [str(item).zfill(6) for item in target["cn"] if str(item).zfill(6) not in ETF_SYMBOLS]
+    target_path = PROJECT / "artifacts/cn_security_master_universe/security_master_current.json" if options.all_current_universe else options.target_symbols
+    symbols = load_cn_symbols(target_path, exclude_etf=True)
     if options.max_symbols is not None:
         symbols = symbols[: options.max_symbols]
     progress_path = options.output_root / "progress.json"

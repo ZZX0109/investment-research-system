@@ -87,6 +87,11 @@ def main() -> int:
             cwd=ROOT,
             env=env,
         ),
+        subprocess.Popen(
+            [sys.executable, "-m", "scripts.run_intraday_spot_worker", "--interval", "300"],
+            cwd=ROOT,
+            env=env,
+        ),
     ]
     print(f"Research API: http://127.0.0.1:{args.api_port}", flush=True)
     print(f"Research web: http://127.0.0.1:{args.web_port}", flush=True)

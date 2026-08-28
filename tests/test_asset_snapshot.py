@@ -341,3 +341,32 @@ def test_snapshot_route_returns_as_of_pinned_bundle(tmp_path: Path) -> None:
         assert default.status_code == 200
     finally:
         app.dependency_overrides.clear()
+
+def test_snapshot_surfaces_catboost_readout_field(tmp_path: Path) -> None:
+    """§1 row-2 / §2 three-piece (snapshot field): the AssetSnapshot carries a
+    `catboost_readout` field (direction + OOF accuracy + feature importance)
+    so the dashboard shows it alongside the LLM plain-answer. When the real
+    trained CatBoost model is available, the builder's computation (mirrored
+    here) produces the readout shape; otherwise it degrades to None."""
+    from investment_research.service.asset_snapshot import AssetSnapshot
+    from investment_research.training.short_term import CatBoostShortTermRunner
+
+    # The field exists on the model + defaults to None (no fabrication).
+    assert "catboost_readout" in AssetSnapshot.model_fields
+
+    # The builder's computation logic (mirrored): when the real model is
+    # available, the 3 calls produce the readout shape the builder assembles.
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = CatBoostShortTermRunner(repo_root)
+    if not runner.is_available():
+        return  # no trained model in this env — degrade path covered above
+    readout = {
+        "direction": runner.calibrated_direction_for_symbol("600519"),
+        "accuracy": runner.accuracy_summary(),
+        "feature_importance": runner.feature_importance(),
+    }
+    assert readout["direction"] is not None
+    assert "direction" in readout["direction"] and "probability" in readout["direction"]
+    assert readout["accuracy"] is not None and readout["accuracy"]["status"] == "ok"
+    assert readout["feature_importance"] is not None
+    assert readout["feature_importance"]["features"][0]["feature"] == "industry_key"

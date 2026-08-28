@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.investment-research.daily-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Frameworks/Python.framework/Versions/3.10/bin/python3</string>
+    <string>/Users/afa/Documents/investment-research-system/scripts/run_research_worker.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/afa/Documents/investment-research-system</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>/Users/afa/Documents/investment-research-system/src</string>
+    <key>INVESTMENT_RESEARCH_COMPETITION_MODE</key>
+    <string>true</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/afa/Documents/investment-research-system/artifacts/research_lifecycle/worker.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/afa/Documents/investment-research-system/artifacts/research_lifecycle/worker.stderr.log</string>
+</dict>
+</plist>

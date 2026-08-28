@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, Search, X } from "lucide-react";
 import type { Asset } from "../../api/types";
-import { useCreateAssetMutation, useLatestResearchUniverseQuery } from "../../hooks/useWorkbenchQueries";
+import { useCreateAssetMutation, useResearchDiscoveryQuery } from "../../hooks/useWorkbenchQueries";
 import { useI18n } from "../../i18n";
 import { ModalPortal } from "../../components/ModalPortal";
 import { useWorkbenchStore } from "../../state/workbenchStore";
@@ -10,42 +10,38 @@ import { CN_RESEARCH_UNIVERSE, type CNResearchCandidate } from "./cnResearchUniv
 interface AssetComposerProps {
   open: boolean;
   assets: Asset[];
+  selectedAssetIds: string[];
+  onAddResearchAsset(assetId: string): void;
   onClose(): void;
 }
 
-export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
+export function AssetComposer({ open, assets, selectedAssetIds, onAddResearchAsset, onClose }: AssetComposerProps) {
   const { l, term } = useI18n();
   const mode = useWorkbenchStore((state) => state.mode);
   const setSelectedAssetId = useWorkbenchStore((state) => state.setSelectedAssetId);
   const mutation = useCreateAssetMutation();
-  const researchUniverse = useLatestResearchUniverseQuery();
   const [query, setQuery] = useState("");
+  const researchDiscovery = useResearchDiscoveryQuery({ query, limit: 80 });
   const [selectedCandidate, setSelectedCandidate] = useState<CNResearchCandidate | null>(null);
-  const universe = useMemo(() => {
-    if (mode !== "research" || !researchUniverse.data?.symbols.length) {
+  const universe: CNResearchCandidate[] = useMemo(() => {
+    if (mode !== "research" || !researchDiscovery.data?.symbols.length) {
       return CN_RESEARCH_UNIVERSE;
     }
     const known = new Map(CN_RESEARCH_UNIVERSE.map((item) => [item.ticker, item]));
-    return researchUniverse.data.symbols.map((item) => {
+    return researchDiscovery.data.symbols.map((item) => {
       const named = known.get(item.symbol);
       return {
         ticker: item.symbol,
         name: named?.name ?? (item.name && item.name !== item.symbol ? item.name : l("名称待补充", "Name pending")),
         exchange: item.exchange,
         assetType: item.asset_type,
-        frozenResultAvailable: item.frozen_result_available,
-        trainingEligible: item.training_eligible,
-        rowCount: item.row_count,
-        provider: item.provider
+        frozenResultAvailable: false,
+        trainingEligible: item.model_eligible,
+        provider: item.provider,
+        rowCount: undefined
       } satisfies CNResearchCandidate;
-    }).sort((left, right) => {
-      if (left.frozenResultAvailable !== right.frozenResultAvailable) return left.frozenResultAvailable ? -1 : 1;
-      const leftNamed = !left.name.includes("待补充") && left.name !== "Name pending";
-      const rightNamed = !right.name.includes("待补充") && right.name !== "Name pending";
-      if (leftNamed !== rightNamed) return leftNamed ? -1 : 1;
-      return left.ticker.localeCompare(right.ticker);
     });
-  }, [l, mode, researchUniverse.data]);
+  }, [l, mode, researchDiscovery.data]);
   const equityCount = universe.filter((item) => item.assetType === "equity").length;
   const etfCount = universe.filter((item) => item.assetType === "etf").length;
 
@@ -60,11 +56,11 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
     const needle = query.trim().toLowerCase();
     return universe.filter((candidate) =>
       needle ? `${candidate.ticker} ${candidate.name}`.toLowerCase().includes(needle) : true
-    );
+    ).slice(0, 80);
   }, [query, universe]);
 
   const existingCandidate = selectedCandidate
-    ? assets.find((asset) => asset.ticker === selectedCandidate.ticker)
+    ? assets.find((asset) => asset.ticker === selectedCandidate.ticker && (asset.exchange ?? "CN") === selectedCandidate.exchange)
     : undefined;
 
   useEffect(() => {
@@ -87,6 +83,7 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
   const submitCandidate = async () => {
     if (!selectedCandidate) return;
     if (existingCandidate) {
+      onAddResearchAsset(existingCandidate.id);
       setSelectedAssetId(existingCandidate.id);
       onClose();
       return;
@@ -101,6 +98,7 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
       observed_at: new Date().toISOString(),
       confidence: 0.95
     });
+    onAddResearchAsset(asset.id);
     setSelectedAssetId(asset.id);
     onClose();
   };
@@ -147,8 +145,8 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
 
         <p className="asset-composer-modal__hint">
           {l(
-            `当前可检索已有历史行情的 ${equityCount} 只股票和 ${etfCount} 只 ETF。研究任务将为所有通过质量门禁的标的生成结果，不再只限制流动性前几名。`,
-            `Search ${equityCount} equities and ${etfCount} ETFs with historical prices. Research runs cover every asset that passes the quality gate.`
+            `当前结果来自 ${researchDiscovery.data?.counts.current_universe ?? equityCount + etfCount} 个当前公开枚举标的；可通过名称或代码继续搜索。只有通过质量门禁的标的才会进入回测或模型，不会把“可搜索”误写成“可建模”。`,
+            `Results come from ${researchDiscovery.data?.counts.current_universe ?? equityCount + etfCount} currently enumerated subjects; search by name or ticker. Only quality-gated subjects enter backtests or models—searchability is never presented as model eligibility.`
           )}
         </p>
 
@@ -158,7 +156,11 @@ export function AssetComposer({ open, assets, onClose }: AssetComposerProps) {
         </div>
         <div className="asset-candidate-list" role="listbox" aria-label={l("可添加的研究对象", "Available research assets")}>
           {candidates.map((candidate) => {
-            const alreadyAdded = assets.some((asset) => asset.ticker === candidate.ticker);
+            const alreadyAdded = assets.some((asset) =>
+              selectedAssetIds.includes(asset.id) &&
+              asset.ticker === candidate.ticker &&
+              (asset.exchange ?? "CN") === candidate.exchange
+            );
             const selected = selectedCandidate?.ticker === candidate.ticker;
             return (
               <button

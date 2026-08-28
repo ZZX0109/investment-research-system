@@ -64,6 +64,8 @@ def args() -> argparse.Namespace:
     parser.add_argument("--catalog", type=Path, default=PROJECT / "config/free_research_data_catalog.yaml")
     parser.add_argument("--symbols-file", type=Path, help="JSON/YAML mapping of market to a publicly enumerated research universe.")
     parser.add_argument("--max-symbols-per-market", type=int, default=None, help="Optional safety cap; the coverage ledger keeps the exact capped target set.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Zero-based symbol shard for resumable parallel backfills.")
+    parser.add_argument("--shard-count", type=int, default=1, help="Number of deterministic symbol shards.")
     parser.add_argument("--no-discover-cn-universe", action="store_true", help="Use the configured fallback CN symbols instead of enumerating the public current universe.")
     parser.add_argument("--full-history", action="store_true", help="Backfill all available history; daily runs use a bounded lookback by default.")
     parser.add_argument("--lookback-days", type=int, default=None, help="Calendar-day lookback for incremental daily collection.")
@@ -78,6 +80,8 @@ def args() -> argparse.Namespace:
 
 def main() -> int:
     options = args()
+    if options.shard_count <= 0 or not 0 <= options.shard_index < options.shard_count:
+        raise SystemExit("shard-index must be in [0, shard-count) and shard-count must be positive")
     if options.list_catalog:
         print(options.catalog.read_text(encoding="utf-8"), end="")
         return 0
@@ -86,6 +90,11 @@ def main() -> int:
         options.symbols_file, options.max_symbols_per_market,
         discover_cn=not options.no_discover_cn_universe,
     )
+    if options.shard_count > 1:
+        symbols_by_market = {
+            market: symbols[options.shard_index::options.shard_count]
+            for market, symbols in symbols_by_market.items()
+        }
     uow = SQLiteUnitOfWork(options.database)
     service = RawPayloadIngestionService(uow, object_store=LocalObjectStore(options.object_store))
     ledger: list[dict] = []
@@ -117,6 +126,44 @@ def main() -> int:
             prior_records = list(json.loads(options.output.read_text(encoding="utf-8")).get("records", []))
         except (ValueError, TypeError):
             prior_records = []
+    # A provider outage must not erase the last non-empty event window.  Keep
+    # that immutable evidence as a degraded/partial record and expose the
+    # failed retry in ``reason``.  The fallback sibling is produced by the
+    # event-only retry job and is intentionally never treated as complete
+    # historical coverage.
+    fallback_event_records: list[dict] = []
+    fallback_path = options.output.with_name("free_research_coverage_events_inc.json")
+    if fallback_path.is_file():
+        try:
+            fallback_event_records = [
+                item for item in json.loads(fallback_path.read_text(encoding="utf-8")).get("records", [])
+                if item.get("provider") == "akshare_cninfo_notices"
+                and item.get("dataset") == "events"
+                and item.get("status") in {"partial", "backfilled"}
+                and int(item.get("rows_or_bytes", 0) or 0) > 0
+            ]
+        except (OSError, ValueError, TypeError):
+            fallback_event_records = []
+    if fallback_event_records:
+        existing = [
+            item for item in [*prior_records, *ledger]
+            if item.get("provider") == "akshare_cninfo_notices" and item.get("dataset") == "events"
+        ]
+        if existing and all(item.get("status") == "fetch_failed" for item in existing):
+            retained_fallback = dict(fallback_event_records[-1])
+            retained_fallback["reason"] = (
+                "provider_retry_failed_previous_partial_retained:"
+                + str(existing[-1].get("reason") or "fetch_failed")
+            )
+            prior_records = [
+                item for item in prior_records
+                if not (item.get("provider") == "akshare_cninfo_notices" and item.get("dataset") == "events")
+            ]
+            ledger = [
+                item for item in ledger
+                if not (item.get("provider") == "akshare_cninfo_notices" and item.get("dataset") == "events")
+            ]
+            ledger.append(retained_fallback)
     # A partial retry replaces only the requested dataset groups, retaining
     # successful coverage records from groups that were not run this time.
     group_by_dataset = {
@@ -161,6 +208,8 @@ def _collect_cn_prices(
         raise ValueError("lookback_days must be positive")
     if not 0 <= cross_check_ratio <= 1:
         raise ValueError("cross_check_ratio must be between zero and one")
+    request_timeout_seconds = float(config.get("provider_timeout_seconds", 20))
+    hard_timeout = bool(config.get("hard_timeout", True))
     end = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     configured_start = None if full_history else end - timedelta(days=lookback_days)
     primary = AkshareDailyResearchProvider()
@@ -182,7 +231,7 @@ def _collect_cn_prices(
     # discards and reconnects the session after an error, retaining the old
     # safety property without paying a login/logout round trip for every
     # symbol and adjustment mode.
-    backup = _PerRequestBaostock()
+    backup = _PerRequestBaostock(timeout_seconds=request_timeout_seconds)
     try:
         for symbol in symbols:
           for adjustment_mode in ("raw", "qfq"):
@@ -201,7 +250,13 @@ def _collect_cn_prices(
                     "cache_state": "fresh", "resume_reused": True,
                 })
                 continue
-            cursor = cursor_store.get(primary.name, symbol, adjustment_mode)
+            # Prefer the newest successful source cursor.  A failed AKShare
+            # call may have been recovered by Baostock on the prior cycle;
+            # reading only the primary cursor made that success invisible and
+            # caused the next incremental cycle to re-fetch the full lookback.
+            cursor = _latest_cursor(
+                cursor_store, (primary.name, backup.name), symbol, adjustment_mode,
+            )
             # A requested full-history repair must ignore an incremental
             # cursor.  Previously the cursor silently reduced a backfill to
             # the five-session overlap window and the newest tiny batch then
@@ -220,14 +275,23 @@ def _collect_cn_prices(
                     fallback, backup_attempts = call_with_retry(
                         lambda: backup.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
                         policy=backup_policy, limiter=backup_limiter,
+                        timeout_seconds=request_timeout_seconds,
+                        # An explicit Baostock run owns the serial session in
+                        # this process.  Forking every request makes the
+                        # client re-login and can exceed the short child IPC
+                        # deadline even when the socket itself is healthy;
+                        # its configured socket timeout plus the main-thread
+                        # guard provide the bounded path here.
+                        hard_timeout=False,
                     )
+                    source_end = _payload_latest_trade_date(fallback.payload, fallback=end)
                     batch = _persist(
                         service, backup.name, f"daily_bars_{adjustment_mode}", symbol,
-                        fallback.payload, coverage_start=start, coverage_end=end,
+                        fallback.payload, coverage_start=start, coverage_end=source_end,
                     )
                     cursor_store.put(CollectionCursor(
                         provider=backup.name, symbol=symbol, adjustment_mode=adjustment_mode,
-                        last_successful_trade_date=end, updated_at=datetime.now(timezone.utc),
+                        last_successful_trade_date=source_end, updated_at=datetime.now(timezone.utc),
                         payload_hash=batch.payload_hash,
                     ))
                     output.append({
@@ -254,14 +318,17 @@ def _collect_cn_prices(
                 primary_payload, primary_attempts = call_with_retry(
                     lambda: primary.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
                     policy=primary_policy, limiter=primary_limiter,
+                    timeout_seconds=request_timeout_seconds,
+                    hard_timeout=hard_timeout,
                 )
+                source_end = _payload_latest_trade_date(primary_payload.payload, fallback=end)
                 primary_batch = _persist(
                     service, primary.name, f"daily_bars_{adjustment_mode}", symbol,
-                    primary_payload.payload, coverage_start=start, coverage_end=end,
+                    primary_payload.payload, coverage_start=start, coverage_end=source_end,
                 )
                 cursor_store.put(CollectionCursor(
                     provider=primary.name, symbol=symbol, adjustment_mode=adjustment_mode,
-                    last_successful_trade_date=end, updated_at=datetime.now(timezone.utc),
+                    last_successful_trade_date=source_end, updated_at=datetime.now(timezone.utc),
                     payload_hash=primary_batch.payload_hash,
                 ))
             except Exception as primary_exc:
@@ -279,14 +346,17 @@ def _collect_cn_prices(
                     fallback, backup_attempts = call_with_retry(
                         lambda: backup.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
                         policy=backup_policy, limiter=backup_limiter,
+                        timeout_seconds=request_timeout_seconds,
+                        hard_timeout=hard_timeout,
                     )
+                    source_end = _payload_latest_trade_date(fallback.payload, fallback=end)
                     batch = _persist(
                         service, backup.name, f"daily_bars_{adjustment_mode}", symbol,
-                        fallback.payload, coverage_start=start, coverage_end=end,
+                        fallback.payload, coverage_start=start, coverage_end=source_end,
                     )
                     cursor_store.put(CollectionCursor(
                         provider=backup.name, symbol=symbol, adjustment_mode=adjustment_mode,
-                        last_successful_trade_date=end, updated_at=datetime.now(timezone.utc),
+                        last_successful_trade_date=source_end, updated_at=datetime.now(timezone.utc),
                         payload_hash=batch.payload_hash,
                     ))
                     output.append({
@@ -323,14 +393,17 @@ def _collect_cn_prices(
                 fallback, backup_attempts = call_with_retry(
                     lambda: backup.fetch(symbol, start=start, end=end, adjustment_mode=adjustment_mode),
                     policy=backup_policy, limiter=backup_limiter,
+                    timeout_seconds=request_timeout_seconds,
+                    hard_timeout=hard_timeout,
                 )
+                source_end = _payload_latest_trade_date(fallback.payload, fallback=end)
                 backup_batch = _persist(
                     service, backup.name, f"daily_bars_{adjustment_mode}", symbol,
-                    fallback.payload, coverage_start=start, coverage_end=end,
+                    fallback.payload, coverage_start=start, coverage_end=source_end,
                 )
                 cursor_store.put(CollectionCursor(
                     provider=backup.name, symbol=symbol, adjustment_mode=adjustment_mode,
-                    last_successful_trade_date=end, updated_at=datetime.now(timezone.utc),
+                    last_successful_trade_date=source_end, updated_at=datetime.now(timezone.utc),
                     payload_hash=backup_batch.payload_hash,
                 ))
                 comparison = compare_public_daily_payloads(primary_payload.payload, fallback.payload)
@@ -394,7 +467,7 @@ def _collect_events(service, market: str, config: dict, symbols: list[str]) -> l
     for provider in config["markets"][market]["events"]:
         try:
             if provider == "akshare_cninfo_notices":
-                output.append(_collect_cninfo_notices(service))
+                output.append(_collect_cninfo_notices(service, config=config))
                 continue
             import requests
             if provider == "sec_edgar":
@@ -423,7 +496,7 @@ def _collect_events(service, market: str, config: dict, symbols: list[str]) -> l
     return output
 
 
-def _collect_cninfo_notices(service) -> dict:
+def _collect_cninfo_notices(service, *, config: dict | None = None) -> dict:
     """Persist a rolling public announcement window without claiming completeness."""
     import akshare as ak
 
@@ -431,12 +504,27 @@ def _collect_cninfo_notices(service) -> dict:
     successes = 0
     failures: list[str] = []
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    collection = (config or {}).get("collection", {})
+    policy = ProviderPolicy(
+        requests_per_second=float(collection.get("primary_requests_per_second", 2)),
+        max_attempts=int(collection.get("max_attempts", 2)),
+        backoff_seconds=tuple(float(value) for value in collection.get("retry_backoff_seconds", [1, 2])),
+    )
+    limiter = SerialRateLimiter(policy.requests_per_second)
+    timeout_seconds = float(collection.get("provider_timeout_seconds", 8))
+    hard_timeout = bool(collection.get("hard_timeout", True))
     for offset in range(0, 8):
         candidate = today - timedelta(days=offset)
         if candidate.weekday() >= 5:
             continue
         try:
-            frame = ak.stock_notice_report(symbol="全部", date=candidate.strftime("%Y%m%d"))
+            frame, _attempts = call_with_retry(
+                lambda: ak.stock_notice_report(symbol="全部", date=candidate.strftime("%Y%m%d")),
+                policy=policy,
+                limiter=limiter,
+                timeout_seconds=timeout_seconds,
+                hard_timeout=hard_timeout,
+            )
             successes += 1
             if not frame.empty:
                 rows.extend(_classify_cninfo_notice(item, source_date=candidate) for item in json.loads(
@@ -604,9 +692,12 @@ class _PerRequestBaostock:
 
     name = "baostock"
 
+    def __init__(self, *, timeout_seconds: float = 20.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
     def fetch(self, *args, **kwargs):
         if not hasattr(self, "_provider"):
-            self._context = BaostockDailyResearchProvider()
+            self._context = BaostockDailyResearchProvider(timeout_seconds=self.timeout_seconds)
             self._provider = self._context.__enter__()
         try:
             return self._provider.fetch(*args, **kwargs)
@@ -676,19 +767,72 @@ def _overlap_start(latest: date) -> date:
     return current
 
 
+def _latest_cursor(
+    store: CursorStore,
+    providers: tuple[str, ...],
+    symbol: str,
+    adjustment_mode: str,
+) -> CollectionCursor | None:
+    """Return the latest verified cursor regardless of the prior provider.
+
+    Provider fallback is expected in the public-data path.  The cursor is a
+    record of the newest source bar, not a preference for one provider, so it
+    must survive an AKShare -> Baostock handoff.
+    """
+    values = [
+        value for provider in providers
+        if (value := store.get(provider, symbol, adjustment_mode)) is not None
+    ]
+    return max(values, key=lambda value: (value.last_successful_trade_date, value.updated_at)) if values else None
+
+
+def _payload_latest_trade_date(payload: bytes, *, fallback: date) -> date:
+    """Read the actual newest daily bar date from an AKShare/Baostock payload.
+
+    Public endpoints accept calendar end dates, including weekends and public
+    holidays.  Persisting that requested date as a *successful trading date*
+    makes freshness reporting incorrect and can skip a later repair.
+    """
+    try:
+        rows = json.loads(payload)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return fallback
+    if not isinstance(rows, list):
+        return fallback
+    values: list[date] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("date", row.get("日期"))
+        if raw in (None, ""):
+            continue
+        try:
+            values.append(date.fromisoformat(str(raw)[:10]))
+        except ValueError:
+            continue
+    return max(values, default=fallback)
+
+
 def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: bool = False) -> dict[str, list[str]]:
     if limit is not None and limit <= 0:
         raise ValueError("--max-symbols-per-market must be positive")
     values = {market: list(symbols) for market, symbols in DEFAULT_SYMBOLS.items()}
     if path is not None:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("symbols file must map market codes to symbol lists")
-        for market in values:
-            supplied = payload.get(market, values[market])
-            if not isinstance(supplied, list) or not all(isinstance(item, str) and item for item in supplied):
-                raise ValueError(f"symbols file has invalid {market} universe")
-            values[market] = list(dict.fromkeys(supplied))
+        # The current full-universe artifact is intentionally a list of
+        # records rather than a market mapping.  Accept it directly so a
+        # downloaded enumeration can feed the resumable price collector
+        # without a hand-maintained intermediate file.
+        if isinstance(payload, list):
+            values["cn"] = _coerce_symbol_list(payload, market="cn")
+        elif isinstance(payload, dict):
+            for market in values:
+                supplied = payload.get(market, values[market])
+                if not isinstance(supplied, list):
+                    raise ValueError(f"symbols file has invalid {market} universe")
+                values[market] = _coerce_symbol_list(supplied, market=market)
+        else:
+            raise ValueError("symbols file must be a market mapping or current-universe record list")
     elif discover_cn:
         # ``values`` begins with the small offline fallback list so the
         # collector remains usable without a network connection.  Discovery
@@ -732,6 +876,21 @@ def _symbols_by_market(path: Path | None, limit: int | None, *, discover_cn: boo
         else:
             output[market] = symbols[:limit]
     return output
+
+
+def _coerce_symbol_list(values: list[object], *, market: str) -> list[str]:
+    output: list[str] = []
+    for item in values:
+        raw = item.get("code") if isinstance(item, dict) else item
+        if raw in (None, "") or not isinstance(raw, (str, int, float)):
+            raise ValueError(f"symbols file has invalid {market} symbol record")
+        value = str(raw).strip()
+        if not value:
+            raise ValueError(f"symbols file has empty {market} symbol")
+        if market == "cn":
+            value = value.rsplit(".", 1)[-1].zfill(6)
+        output.append(value)
+    return list(dict.fromkeys(output))
 
 
 if __name__ == "__main__":

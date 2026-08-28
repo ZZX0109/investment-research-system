@@ -82,7 +82,13 @@ def main() -> int:
             for name in sorted(sample.features, key=lambda key: abs(float(sample.features[key])), reverse=True)[:5]
         ]
         for task in TASKS:
-            scope = args.roster_root / "cn" / args.decision_context / args.cohort / task
+            # Resolve the roster scope before emitting project-relative evidence
+            # references.  CLI callers commonly pass a relative --roster-root;
+            # mixing that with the absolute PROJECT path makes Path.relative_to
+            # fail and turns an otherwise valid inference into an abstention.
+            scope = (
+                args.roster_root / "cn" / args.decision_context / args.cohort / task
+            ).resolve()
             roster_path = scope / "research_model_roster.json"
             record = {
                 "decision_context": args.decision_context, "cohort": args.cohort,

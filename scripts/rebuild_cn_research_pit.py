@@ -11,6 +11,7 @@ import argparse
 from collections import defaultdict
 from datetime import date, datetime, time, timezone
 from hashlib import sha256
+import heapq
 import json
 from pathlib import Path
 import sys
@@ -27,6 +28,7 @@ from investment_research.domain.data_tier import (
 )
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
+from investment_research.service.research_data_quality import eligibility_for_symbol
 from investment_research.training.cn_free_providers import ETF_RESEARCH_SYMBOLS
 from investment_research.training.cn_research_universe import (
     build_cn_equity_core,
@@ -55,7 +57,6 @@ from investment_research.training.models import (
     PreparedPriceBar,
 )
 from investment_research.training.parquet_store import PITParquetStore
-from investment_research.training.pit_join import PITJoinService
 from investment_research.training.active_snapshot_guard import ActiveSnapshotInputError, require_active_snapshot
 
 
@@ -75,6 +76,25 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional development cap. By default every equity passing the quality gate is retained.",
     )
+    parser.add_argument(
+        "--include-all-raw-symbols",
+        action="store_true",
+        help=(
+            "Standardize every symbol with an append-only CN raw price batch, "
+            "not only the frozen research target pool. This broadens the "
+            "research master; it does not prove historical lifecycle/PIT "
+            "coverage and never promotes the result to formal data."
+        ),
+    )
+    parser.add_argument(
+        "--skip-samples",
+        action="store_true",
+        help=(
+            "Only write broad standard Parquet/manifests and snapshots. "
+            "Use this for a large universe backfill; training samples remain "
+            "a separate, explicitly scoped step."
+        ),
+    )
     parser.add_argument("--minimum-equities", type=int, default=80)
     parser.add_argument("--minimum-history-sessions", type=int, default=756)
     parser.add_argument(
@@ -93,11 +113,54 @@ def parse_args() -> argparse.Namespace:
         "--allow-current-cohort-breadth", action="store_true",
         help="Test-fixture-only compatibility: use the current cohort for breadth.",
     )
+    parser.add_argument(
+        "--reuse-standard-index", type=Path, default=None,
+        help=(
+            "Reuse immutable standard manifests from an earlier rebuild and "
+            "recompute only snapshots/features/samples. This avoids rewriting "
+            "the standard PIT layer when a feature contract changes."
+        ),
+    )
+    parser.add_argument(
+        "--sample-symbols-file", type=Path, default=None,
+        help=(
+            "Only materialize sample manifests for symbols listed in this "
+            "JSON/JSONL file. The full cohort is still used to compute "
+            "cross-sectional reference features; this is the resumable batch "
+            "mode for a large research-only rebuild."
+        ),
+    )
+    parser.add_argument(
+        "--reuse-snapshot-index", type=Path, default=None,
+        help=(
+            "Reuse the exact immutable snapshot objects referenced by this "
+            "index. Required for sample batches so every batch binds to the "
+            "same market snapshot instead of recomputing a different hash."
+        ),
+    )
+    parser.add_argument(
+        "--no-update-latest", action="store_true",
+        help="Write an immutable batch index without replacing output-root/latest.json.",
+    )
+    parser.add_argument(
+        "--resume-samples", action="store_true",
+        help=(
+            "Reuse already-written sample manifests under output-root when "
+            "their snapshot binding matches. This makes an interrupted "
+            "single-process full sample rebuild restartable."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    sample_symbol_filter = _load_symbol_filter(args.sample_symbols_file)
+    if sample_symbol_filter is not None and args.reuse_standard_index is None:
+        raise SystemExit("--sample-symbols-file requires --reuse-standard-index")
+    if args.reuse_snapshot_index is not None and args.reuse_standard_index is None:
+        raise SystemExit("--reuse-snapshot-index requires --reuse-standard-index")
+    reused_snapshots = _load_reused_snapshots(args.reuse_snapshot_index)
     # Legacy fixtures may intentionally run without an active pointer so they
     # can exercise normalization in tests.  If an active pointer exists, carry
     # its exact lineage into every derived sample manifest; training runners
@@ -122,27 +185,47 @@ def main() -> int:
     raw_store = LocalObjectStore(args.raw_object_store)
     parquet = PITParquetStore(LocalObjectStore(args.research_object_store))
     uow = SQLiteUnitOfWork(args.database)
+    catalog_validation_errors: list[dict[str, str]] = []
+
+    def _catalog_batches(*, dataset: str, data_tier: str) -> list:
+        """Hydrate valid catalog rows and retain explicit legacy-row errors."""
+        values = uow.trusted_market.raw_batches(
+            dataset=dataset, data_tier=data_tier, strict=False,
+        )
+        catalog_validation_errors.extend(
+            {"dataset": dataset, **item}
+            for item in uow.trusted_market.last_raw_batch_errors
+        )
+        return values
+
     try:
         batches = [
-            *uow.trusted_market.raw_batches(dataset="daily_bars_raw", data_tier=DataTier.RESEARCH_PIT.value),
-            *uow.trusted_market.raw_batches(dataset="daily_bars_qfq", data_tier=DataTier.RESEARCH_PIT.value),
+            *_catalog_batches(dataset="daily_bars_raw", data_tier=DataTier.RESEARCH_PIT.value),
+            *_catalog_batches(dataset="daily_bars_qfq", data_tier=DataTier.RESEARCH_PIT.value),
             # Compatibility only for explicit test fixtures created before the
             # raw/qfq split.  Production defaults never write this dataset.
-            *uow.trusted_market.raw_batches(dataset="daily_bars", data_tier=DataTier.RESEARCH_PIT.value),
+            *_catalog_batches(dataset="daily_bars", data_tier=DataTier.RESEARCH_PIT.value),
         ]
         supplement_batches = {
-            dataset: uow.trusted_market.raw_batches(
+            dataset: _catalog_batches(
                 dataset=dataset, data_tier=DataTier.RESEARCH_PIT.value,
             )
             for dataset in (
                 "cn_security_master_research",
                 "cn_adjustment_factors_research",
                 "cn_fundamentals_research",
+                # The Eastmoney four-statement landing importer writes a
+                # normalized, CNINFO-matched research-only dataset here.  It
+                # is intentionally admitted to the same feature join as the
+                # legacy fundamentals feed, but its publication-to-availability
+                # proof remains a separate research assumption (see the
+                # source-specific gate in _load_financial_features).
+                "cn_financial_eastmoney_research",
                 "cn_corporate_actions_research",
                 "cn_corporate_actions_detailed",
             )
         }
-        event_batches = uow.trusted_market.raw_batches(
+        event_batches = _catalog_batches(
             dataset="events", data_tier=DataTier.RESEARCH_PIT.value,
         )
     finally:
@@ -150,10 +233,15 @@ def main() -> int:
     if not batches:
         raise SystemExit("no append-only research_pit daily-bar batches are available")
 
-    # Prefer the newest AKShare batch, then the newest Baostock batch, per symbol.
+    # Prefer the newest append-only public batch per symbol.  Yahoo/Sina/
+    # Tencent/TDX are research-only fallbacks and remain subject to the same
+    # normalization and quality gates as AKShare/BaoStock.
     candidates: dict[tuple[str, str], list] = defaultdict(list)
     for batch in batches:
-        if batch.symbol and batch.provider in {"akshare", "baostock"}:
+        if batch.symbol and batch.provider in {
+            "akshare", "baostock", "sina", "tencent", "yahoo", "tdx",
+            "eastmoney", "eastmoney_bse_legacy_qfq",
+        }:
             mode = "qfq" if batch.dataset.endswith("_qfq") else "raw"
             candidates[(batch.symbol, mode)].append(batch)
     batch_groups = {
@@ -165,15 +253,23 @@ def main() -> int:
 
     standard_manifests: list[dict] = []
     all_bars: list[PreparedPriceBar] = []
-    failures: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = [
+        {
+            "stage": "raw_catalog_validation",
+            "reason": f"legacy_row_skipped:{item['dataset']}:{item.get('row_id', 'unknown')}",
+            "detail": item["error"],
+        }
+        for item in catalog_validation_errors
+    ]
     standard_root = args.output_root / "standard"
     symbols = sorted({symbol for symbol, _mode in batch_groups})
     # The append-only local catalog may contain symbols from older research
-    # runs.  The rebuild must use the frozen 162-equity + 5-ETF target pool,
-    # otherwise a successful rebuild can still silently train on the wrong
-    # universe.
+    # runs.  The normal rebuild uses the frozen 162-equity + 5-ETF target
+    # pool, otherwise a successful rebuild can silently train on the wrong
+    # universe.  The explicit all-raw mode is for broadening the research
+    # master only; downstream formal gates still inspect lifecycle/PIT proof.
     target_config = PROJECT / "config/cn_research_target_167_symbols.json"
-    if target_config.is_file():
+    if target_config.is_file() and not args.include_all_raw_symbols:
         configured = json.loads(target_config.read_text(encoding="utf-8"))
         target_symbols = {
             str(symbol).zfill(6)
@@ -182,11 +278,33 @@ def main() -> int:
         symbols = [symbol for symbol in symbols if symbol in target_symbols]
     provider_conflicts = _provider_conflict_symbols(args.coverage_ledger)
     quality_reports: list[dict] = []
-    for symbol in symbols:
+    if args.reuse_standard_index is not None:
+        standard_manifests, all_bars, reused_failures, reused_quality = _load_reusable_standard_layer(
+            args.reuse_standard_index, parquet
+        )
+        failures.extend(reused_failures)
+        quality_reports.extend(reused_quality)
+        symbols = sorted(item["symbol"] for item in standard_manifests)
+    raw_price_symbols = {
+        symbol for symbol, mode in batch_groups if mode == "raw"
+    }
+    qfq_price_symbols = {
+        symbol for symbol, mode in batch_groups if mode == "qfq"
+    }
+    for symbol in ([] if args.reuse_standard_index is not None else symbols):
         raw_batches = batch_groups.get((symbol, "raw"), [])
         qfq_batches = batch_groups.get((symbol, "qfq"), [])
-        if not raw_batches:
-            failures.append({"symbol": symbol, "stage": "standardize", "reason": "raw_adjustment_payload_missing"})
+        eligibility = eligibility_for_symbol(
+            symbol,
+            raw_symbols=raw_price_symbols,
+            qfq_symbols=qfq_price_symbols,
+        )
+        if not eligibility["model_eligible"]:
+            failures.append({
+                "symbol": symbol,
+                "stage": "model_backtest_eligibility",
+                "reason": ",".join(eligibility["blocking_reasons"]),
+            })
             continue
         try:
             raw_by_date = _merge_batches(
@@ -196,11 +314,13 @@ def main() -> int:
                 raise ValueError("no_normalized_rows_before_as_of")
             qfq_by_date = _merge_batches(
                 raw_store, qfq_batches, symbol=symbol, as_of=args.as_of,
-            ) if qfq_batches else {}
+            )
             bars: list[PreparedPriceBar] = []
             for trade_date in sorted(raw_by_date):
                 item, raw_batch = raw_by_date[trade_date]
-                qfq_item, qfq_batch = qfq_by_date.get(trade_date, (item, raw_batch))
+                if trade_date not in qfq_by_date:
+                    raise ValueError("qfq_trade_date_missing_for_raw_price")
+                qfq_item, qfq_batch = qfq_by_date[trade_date]
                 bars.append(item.model_copy(update={
                     "payload_ref": raw_batch.payload_ref,
                     "raw_hash": raw_batch.payload_hash,
@@ -212,7 +332,7 @@ def main() -> int:
                     "data_version": f"research-raw-qfq:{raw_batch.payload_hash[:8]}:{qfq_batch.payload_hash[:8]}",
                 }))
             latest_raw_batch = max(raw_batches, key=lambda item: item.fetched_at)
-            latest_qfq_batch = max(qfq_batches, key=lambda item: item.fetched_at) if qfq_batches else None
+            latest_qfq_batch = max(qfq_batches, key=lambda item: item.fetched_at)
             lineage_hash = sha256(_canonical({
                 "raw": [item.payload_hash for item in raw_batches],
                 "qfq": [item.payload_hash for item in qfq_batches],
@@ -253,8 +373,8 @@ def main() -> int:
                 "raw_input_batches": [_batch_lineage(item) for item in raw_batches],
                 "qfq_input_batches": [_batch_lineage(item) for item in qfq_batches],
                 "merged_lineage_hash": lineage_hash, "partitions": refs,
-                "qfq_raw_batch_id": None if latest_qfq_batch is None else str(latest_qfq_batch.id),
-                "qfq_payload_hash": None if latest_qfq_batch is None else latest_qfq_batch.payload_hash,
+                "qfq_raw_batch_id": str(latest_qfq_batch.id),
+                "qfq_payload_hash": latest_qfq_batch.payload_hash,
                 "adjustment_policy": "raw_market_state_plus_qfq_return_labels",
                 "quality_report": report.model_dump(mode="json"),
                 "row_count": len(bars),
@@ -273,7 +393,7 @@ def main() -> int:
         historical_universe_path,
         trade_dates={item.trade_date for item in all_bars},
     ) if historical_universe_path else None
-    if symbols_by_date is None and not args.allow_current_cohort_breadth:
+    if symbols_by_date is None and not args.allow_current_cohort_breadth and not args.skip_samples:
         raise SystemExit(
             "historical universe membership is required for market breadth; "
             "pass --historical-universe or use --allow-current-cohort-breadth only for fixtures"
@@ -312,7 +432,10 @@ def main() -> int:
     }
     financial_features_by_symbol = _load_financial_features(
         raw_store,
-        supplement_batches["cn_fundamentals_research"],
+        [
+            *supplement_batches["cn_fundamentals_research"],
+            *supplement_batches["cn_financial_eastmoney_research"],
+        ],
         bars_by_symbol,
         allow_unproven_available_at=args.allow_unproven_visibility,
     )
@@ -320,34 +443,38 @@ def main() -> int:
         trade_dates={bar.trade_date for bar in all_bars}
     )
     events_by_symbol = _load_research_events(raw_store, event_batches)
-    industry_references = build_industry_reference_bars(bars_by_symbol, industry_by_symbol)
+    industry_references = (
+        build_industry_reference_bars(bars_by_symbol, industry_by_symbol)
+        if not args.skip_samples else {}
+    )
     cohort_context: dict[str, dict] = {}
-    for cohort in cohorts:
-        member_symbols = [member.symbol for member in cohort.members]
-        broad_reference = list(bars_by_symbol.get("510300", []))
-        if not broad_reference:
-            broad_reference = build_equal_weight_reference_bars(
-                bars_by_symbol, symbols=member_symbols, reference_symbol="CN-COHORT-EW"
+    if not args.skip_samples:
+        for cohort in cohorts:
+            member_symbols = [member.symbol for member in cohort.members]
+            broad_reference = list(bars_by_symbol.get("510300", []))
+            if not broad_reference:
+                broad_reference = build_equal_weight_reference_bars(
+                    bars_by_symbol, symbols=member_symbols, reference_symbol="CN-COHORT-EW"
+                )
+            style_reference = build_equal_weight_reference_bars(
+                bars_by_symbol,
+                symbols=member_symbols,
+                reference_symbol=f"{cohort.cohort}:EQUAL_WEIGHT",
             )
-        style_reference = build_equal_weight_reference_bars(
-            bars_by_symbol,
-            symbols=member_symbols,
-            reference_symbol=f"{cohort.cohort}:EQUAL_WEIGHT",
-        )
-        cross_section = build_cross_sectional_features(
-            bars_by_symbol,
-            symbols=member_symbols,
-            symbols_by_date=symbols_by_date,
-        )
-        benchmark_features = build_reference_return_features(broad_reference)
-        for symbol in member_symbols:
-            for trade_date, values in benchmark_features.items():
-                cross_section.setdefault(symbol, {}).setdefault(trade_date, {}).update(values)
-        cohort_context[cohort.cohort] = {
-            "benchmark_bars": broad_reference,
-            "style_reference_bars": style_reference,
-            "cross_section": cross_section,
-        }
+            cross_section = build_cross_sectional_features(
+                bars_by_symbol,
+                symbols=member_symbols,
+                symbols_by_date=symbols_by_date,
+            )
+            benchmark_features = build_reference_return_features(broad_reference)
+            for symbol in member_symbols:
+                for trade_date, values in benchmark_features.items():
+                    cross_section.setdefault(symbol, {}).setdefault(trade_date, {}).update(values)
+            cohort_context[cohort.cohort] = {
+                "benchmark_bars": broad_reference,
+                "style_reference_bars": style_reference,
+                "cross_section": cross_section,
+            }
     contexts: dict[str, dict] = {}
     for context in args.contexts:
         snapshot = _freeze_snapshot(
@@ -357,13 +484,29 @@ def main() -> int:
                 batch for values in supplement_batches.values() for batch in values
             ],
         )
-        snapshot_path = args.output_root / "snapshots" / context / f"{as_of.isoformat()}-{snapshot['market_snapshot_hash'][:12]}.json"
-        _write_json(snapshot_path, snapshot)
+        reused_snapshot = reused_snapshots.get(context)
+        if reused_snapshot is not None:
+            snapshot = reused_snapshot["snapshot"]
+            snapshot_path = reused_snapshot["path"]
+        else:
+            snapshot_path = args.output_root / "snapshots" / context / f"{as_of.isoformat()}-{snapshot['market_snapshot_hash'][:12]}.json"
+            _write_json(snapshot_path, snapshot)
         sample_manifests: dict[str, list[str]] = defaultdict(list)
-        for cohort in cohorts:
-            for member in cohort.members:
-                try:
-                    manifests = _build_samples(
+        if not args.skip_samples:
+            for cohort in cohorts:
+                for member in cohort.members:
+                    if sample_symbol_filter is not None and member.symbol not in sample_symbol_filter:
+                        continue
+                    if args.resume_samples:
+                        existing = _existing_sample_manifests(
+                            args.output_root, context=context, cohort=cohort.cohort,
+                            symbol=member.symbol, snapshot=snapshot,
+                        )
+                        if existing:
+                            sample_manifests[cohort.cohort].extend(_portable_path(item) for item in existing)
+                            continue
+                    try:
+                        manifests = _build_samples(
                         symbol=member.symbol, cohort=cohort.cohort,
                         cohort_version=cohort.cohort_version, context=context,
                         bars=bars_by_symbol[member.symbol], standard=standard_by_symbol[member.symbol],
@@ -389,13 +532,25 @@ def main() -> int:
                             else snapshot["event_coverage_status"]
                         ),
                         data_snapshot_binding=data_snapshot_binding,
-                    )
-                    sample_manifests[cohort.cohort].extend(_portable_path(item) for item in manifests)
-                except Exception as exc:
-                    failures.append({
-                        "symbol": member.symbol, "stage": f"sample:{context}:{cohort.cohort}",
-                        "reason": f"{type(exc).__name__}:{exc}",
-                    })
+                        )
+                        sample_manifests[cohort.cohort].extend(_portable_path(item) for item in manifests)
+                        _write_json(
+                            args.output_root / "samples" / context / cohort.cohort
+                            / member.symbol / ".complete.json",
+                            {
+                                "schema_version": "free-research-sample-completion-v1",
+                                "symbol": member.symbol,
+                                "cohort": cohort.cohort,
+                                "market_snapshot_id": snapshot["market_snapshot_id"],
+                                "market_snapshot_hash": snapshot["market_snapshot_hash"],
+                                "manifest_count": len(manifests),
+                            },
+                        )
+                    except Exception as exc:
+                        failures.append({
+                            "symbol": member.symbol, "stage": f"sample:{context}:{cohort.cohort}",
+                            "reason": f"{type(exc).__name__}:{exc}",
+                        })
         leakage = _leakage_report(context, snapshot, sample_manifests)
         leakage_path = args.output_root / "leakage" / context / f"{as_of.isoformat()}-{snapshot['market_snapshot_hash'][:12]}.json"
         _write_json(leakage_path, leakage)
@@ -405,6 +560,21 @@ def main() -> int:
             "sample_manifests": dict(sample_manifests), "leakage_report_ref": _portable_path(leakage_path),
         }
 
+    sample_symbols = {
+        Path(ref).parent.name
+        for values in contexts.values()
+        for refs in values.get("sample_manifests", {}).values()
+        if isinstance(refs, list)
+        for ref in refs
+    }
+    core_symbols = {member.symbol for member in cohorts[0].members}
+    training_blocking_reasons: list[str] = []
+    if len(core_symbols) < args.minimum_equities:
+        training_blocking_reasons.append("eligible_equity_count_below_80")
+    if args.skip_samples or not sample_symbols:
+        training_blocking_reasons.append("sample_manifests_not_generated")
+    elif not core_symbols.issubset(sample_symbols):
+        training_blocking_reasons.append("sample_manifests_incomplete_for_equity_cohort")
     index = {
         "schema_version": "cn-zero-budget-research-rebuild-v1",
         "data_tier": DataTier.RESEARCH_PIT.value,
@@ -423,8 +593,8 @@ def main() -> int:
             "event_symbol_count": len(events_by_symbol),
             "supplement_batch_count": sum(len(values) for values in supplement_batches.values()),
         },
-        "training_blocked": len(cohorts[0].members) < args.minimum_equities,
-        "training_blocking_reasons": ["eligible_equity_count_below_80"] if len(cohorts[0].members) < args.minimum_equities else [],
+        "training_blocked": bool(training_blocking_reasons),
+        "training_blocking_reasons": training_blocking_reasons,
         "rebuilt_from_latest_fetched_at": max(
             item.fetched_at for values in batch_groups.values() for item in values
         ).isoformat(),
@@ -435,8 +605,162 @@ def main() -> int:
     })).hexdigest()
     output = args.output_root / f"rebuild-{as_of.isoformat()}-{index_hash[:12]}.json"
     _write_json(output, index)
+    # Keep a stable pointer for audit/UI consumers while retaining the
+    # immutable, content-addressed rebuild file above.
+    if not args.no_update_latest:
+        _write_json_pointer(args.output_root / "latest.json", index)
     print(output)
     return 0
+
+
+def _load_reusable_standard_layer(
+    index_path: Path, parquet: PITParquetStore,
+) -> tuple[list[dict], list[PreparedPriceBar], list[dict[str, str]], list[dict]]:
+    """Load a previously written immutable standard layer for sample-only rebuilds."""
+    if not index_path.is_file():
+        raise SystemExit(f"reusable standard index is missing: {index_path}")
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    refs = index.get("standard_manifest_refs") or []
+    manifests: list[dict] = []
+    bars: list[PreparedPriceBar] = []
+    failures = list(index.get("failures") or [])
+    quality = list(index.get("quality_reports") or [])
+    for ref in refs:
+        path = Path(ref)
+        if not path.is_absolute():
+            path = PROJECT / path
+        if not path.is_file():
+            failures.append({"stage": "reuse_standard", "reason": f"manifest_missing:{path}"})
+            continue
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        # Older broad rebuilds persisted the ref only in the index, not inside
+        # each manifest.  Normalize that legacy shape in memory so sample-only
+        # rebuilds can safely reuse the immutable standard layer.
+        manifest.setdefault("manifest_ref", _portable_path(path))
+        manifests.append(manifest)
+        for partition in manifest.get("partitions") or []:
+            try:
+                rows = parquet.read_partition(
+                    partition["parquet_ref"],
+                    expected_payload_hash=partition.get("payload_hash"),
+                )
+                bars.extend(PreparedPriceBar.model_validate(row) for row in rows)
+            except Exception as exc:
+                failures.append({
+                    "symbol": manifest.get("symbol", ""), "stage": "reuse_standard",
+                    "reason": f"{type(exc).__name__}:{exc}",
+                })
+    if not manifests or not bars:
+        raise SystemExit("reusable standard index contains no readable standard bars")
+    return manifests, bars, failures, quality
+
+
+def _load_symbol_filter(path: Path | None) -> set[str] | None:
+    """Read a normalized symbol allow-list for resumable sample batches."""
+    if path is None:
+        return None
+    if not path.is_file():
+        raise SystemExit(f"sample symbols file is missing: {path}")
+    try:
+        if path.suffix.lower() == ".jsonl":
+            payload: object = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        else:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"sample symbols file is not valid JSON/JSONL: {path}: {exc}") from exc
+    if isinstance(payload, dict):
+        payload = payload.get("symbols", payload.get("records", []))
+    if not isinstance(payload, list):
+        raise SystemExit("sample symbols file must contain a list or {\"symbols\": [...]}")
+    values: set[str] = set()
+    for item in payload:
+        if isinstance(item, dict):
+            item = item.get("symbol") or item.get("code")
+        if item in (None, ""):
+            continue
+        values.add(str(item).rsplit(".", 1)[-1].zfill(6))
+    if not values:
+        raise SystemExit(f"sample symbols file contains no usable symbols: {path}")
+    return values
+
+
+def _load_reused_snapshots(index_path: Path | None) -> dict[str, dict[str, object]]:
+    """Load exact immutable snapshot refs from an earlier rebuild index."""
+    if index_path is None:
+        return {}
+    if not index_path.is_file():
+        raise SystemExit(f"reusable snapshot index is missing: {index_path}")
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"reusable snapshot index is invalid: {index_path}: {exc}") from exc
+    contexts = index.get("contexts") if isinstance(index, dict) else None
+    if not isinstance(contexts, dict):
+        raise SystemExit("reusable snapshot index has no contexts")
+    output: dict[str, dict[str, object]] = {}
+    for context, value in contexts.items():
+        if not isinstance(value, dict) or not value.get("snapshot_ref"):
+            raise SystemExit(f"reusable snapshot index has no snapshot_ref for context: {context}")
+        path = Path(str(value["snapshot_ref"]))
+        if not path.is_absolute():
+            path = PROJECT / path
+        if not path.is_file():
+            raise SystemExit(f"reusable snapshot file is missing: {path}")
+        try:
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"reusable snapshot is invalid: {path}: {exc}") from exc
+        if not isinstance(snapshot, dict) or not snapshot.get("market_snapshot_hash"):
+            raise SystemExit(f"reusable snapshot has no market_snapshot_hash: {path}")
+        if value.get("snapshot_id") and value["snapshot_id"] != snapshot.get("market_snapshot_id"):
+            raise SystemExit(f"reusable snapshot id mismatch for context: {context}")
+        if value.get("snapshot_hash") and value["snapshot_hash"] != snapshot.get("market_snapshot_hash"):
+            raise SystemExit(f"reusable snapshot hash mismatch for context: {context}")
+        output[str(context)] = {"snapshot": snapshot, "path": path}
+    return output
+
+
+def _existing_sample_manifests(
+    output_root: Path, *, context: str, cohort: str, symbol: str, snapshot: dict,
+) -> list[Path]:
+    """Return only immutable sample manifests bound to the requested snapshot."""
+    root = output_root / "samples" / context / cohort / symbol
+    if not root.is_dir():
+        return []
+    marker_path = root / ".complete.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # A directory without a completion marker may be a process
+        # interruption half-way through a symbol; never treat it as complete.
+        return []
+    if (
+        marker.get("symbol") != symbol
+        or marker.get("market_snapshot_id") != snapshot.get("market_snapshot_id")
+        or marker.get("market_snapshot_hash") != snapshot.get("market_snapshot_hash")
+    ):
+        return []
+    manifests: list[Path] = []
+    for path in sorted(root.glob("*.json")):
+        if path.name == ".complete.json":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("market_snapshot_id") == snapshot.get("market_snapshot_id")
+            and payload.get("market_snapshot_hash") == snapshot.get("market_snapshot_hash")
+            and payload.get("symbol") == symbol
+            and payload.get("sample_parquet_ref")
+        ):
+            manifests.append(path)
+    return manifests
 
 
 def _merge_batches(
@@ -756,13 +1080,36 @@ def _load_financial_features(
             statistical = str(row.get("statDate") or "")
             if published is None:
                 continue
-            available_at = getattr(batch, "available_at", None)
-            if available_at is None:
+
+            # The Eastmoney importer records the CNINFO publication match but
+            # deliberately leaves row-level ``available_at`` empty.  The
+            # catalog's ingestion timestamp is collection time, not proof
+            # that the value was public then.  Keep this source out of the
+            # default PIT path and only admit it for the explicit
+            # research-assumption rebuild flag.
+            if batch.dataset == "cn_financial_eastmoney_research":
                 if not allow_unproven_available_at:
                     continue
-                available_at = datetime.combine(published, time.min, timezone.utc)
-            elif available_at.tzinfo is None:
-                available_at = available_at.replace(tzinfo=timezone.utc)
+                row_available_at = row.get("available_at")
+                if row_available_at in (None, ""):
+                    available_at = datetime.combine(published, time.min, timezone.utc)
+                else:
+                    try:
+                        available_at = datetime.fromisoformat(
+                            str(row_available_at).replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        available_at = datetime.combine(published, time.min, timezone.utc)
+                    if available_at.tzinfo is None:
+                        available_at = available_at.replace(tzinfo=timezone.utc)
+            else:
+                available_at = getattr(batch, "available_at", None)
+                if available_at is None:
+                    if not allow_unproven_available_at:
+                        continue
+                    available_at = datetime.combine(published, time.min, timezone.utc)
+                elif available_at.tzinfo is None:
+                    available_at = available_at.replace(tzinfo=timezone.utc)
             values: dict[str, float] = {}
             for source, feature in _FUNDAMENTAL_FIELDS.items():
                 value = _optional_float(row.get(source))
@@ -785,26 +1132,49 @@ def _load_financial_features(
                 reference["values"].update(values)
 
     output: dict[str, dict[date, dict[str, float]]] = {}
-    joiner = PITJoinService()
     for symbol, keyed in references_by_symbol.items():
         references = sorted(keyed.values(), key=lambda item: (item["effective_date"], item["revision_id"]))
         current: dict[str, float] = {}
         latest_published: date | None = None
         timeline: dict[date, dict[str, float]] = {}
+        # Both target dates and decision timestamps are monotonic.  Maintain a
+        # visible reference frontier instead of calling PITJoinService with a
+        # full reference scan for every bar (which made broad sample builds
+        # quadratic in bars × statement revisions).
+        available_refs = sorted(
+            references,
+            key=lambda item: (item["available_at"], item["effective_date"], item["revision_id"]),
+        )
+        available_cursor = 0
+        future_effective: list[tuple[date, int, dict]] = []
+        active_by_effective: dict[date, dict] = {}
+        selected: dict | None = None
+
+        def activate(reference: dict) -> None:
+            effective = reference["effective_date"]
+            previous = active_by_effective.get(effective)
+            if previous is None or _financial_reference_rank(reference) > _financial_reference_rank(previous):
+                active_by_effective[effective] = reference
+
         for bar in sorted(bars_by_symbol.get(symbol, []), key=lambda item: item.trade_date):
             decision_time = bar.published_at
-            joined = joiner.join(
-                [(bar.trade_date, decision_time)], references,
-                value_field="values",
-            )[0]
-            if joined.value:
-                current.update(joined.value)
-                visible = [
-                    ref["effective_date"] for ref in references
-                    if ref["effective_date"] <= bar.trade_date
-                    and ref["available_at"] <= decision_time
-                ]
-                latest_published = max(visible) if visible else latest_published
+            while available_cursor < len(available_refs) and available_refs[available_cursor]["available_at"] <= decision_time:
+                reference = available_refs[available_cursor]
+                if reference["effective_date"] <= bar.trade_date:
+                    activate(reference)
+                else:
+                    heapq.heappush(future_effective, (reference["effective_date"], available_cursor, reference))
+                available_cursor += 1
+            while future_effective and future_effective[0][0] <= bar.trade_date:
+                _effective, _sequence, reference = heapq.heappop(future_effective)
+                activate(reference)
+            if active_by_effective:
+                newest_effective = max(active_by_effective)
+                newest = active_by_effective[newest_effective]
+                if newest is not selected:
+                    selected = newest
+                    current.update(newest["values"])
+                    latest_published = newest_effective
             if current:
                 timeline[bar.trade_date] = {
                     **current,
@@ -815,6 +1185,15 @@ def _load_financial_features(
         if timeline:
             output[symbol] = timeline
     return output
+
+
+def _financial_reference_rank(reference: dict) -> tuple[datetime, int, str]:
+    revision = reference.get("revision")
+    try:
+        numeric = int(revision or 0)
+    except (TypeError, ValueError):
+        numeric = 0
+    return reference["available_at"], numeric, str(reference.get("revision_id") or "")
 
 
 def _load_research_events(
@@ -1094,6 +1473,15 @@ def _write_json(path: Path, payload: object) -> None:
         # requires a new as-of or removal in an explicit test workspace.
         raise ValueError(f"immutable research artifact already exists with different content: {path}")
     path.write_text(encoded, encoding="utf-8")
+
+
+def _write_json_pointer(path: Path, payload: object) -> None:
+    """Replace a stable pointer while keeping dated artifacts immutable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(encoded, encoding="utf-8")
+    temporary.replace(path)
 
 
 if __name__ == "__main__":

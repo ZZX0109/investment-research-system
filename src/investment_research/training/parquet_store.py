@@ -54,6 +54,37 @@ class PITParquetStore:
     def read_partition(self, key: str, *, expected_payload_hash: str | None = None) -> list[dict]:
         import pyarrow.parquet as pq
 
+        payload = self._validated_payload(key, expected_payload_hash)
+        return pq.read_table(io.BytesIO(payload)).to_pylist()
+
+    def read_partition_columns(
+        self,
+        key: str,
+        *,
+        columns: list[str] | None = None,
+        expected_payload_hash: str | None = None,
+    ) -> list[dict]:
+        """Read only selected columns while retaining payload-hash validation.
+
+        Training and audit jobs often need the nested ``features`` and
+        ``labels`` maps plus a handful of routing fields, not the complete
+        provenance payload.  Column projection materially reduces memory and
+        deserialization cost for the large research sample layer without
+        weakening its immutable-object integrity check.
+        """
+        import pyarrow.parquet as pq
+
+        payload = self._validated_payload(key, expected_payload_hash)
+        source = io.BytesIO(payload)
+        if columns is None:
+            return pq.read_table(source).to_pylist()
+        available = set(pq.read_schema(source).names)
+        selected = [name for name in columns if name in available]
+        if not selected:
+            return [{} for _ in range(pq.read_table(source, columns=[]).num_rows)]
+        return pq.read_table(source, columns=selected).to_pylist()
+
+    def _validated_payload(self, key: str, expected_payload_hash: str | None) -> bytes:
         payload = self.object_store.get(_object_key(key))
         if expected_payload_hash is not None:
             observed = hashlib.sha256(payload).hexdigest()
@@ -61,7 +92,7 @@ class PITParquetStore:
                 raise ValueError(
                     f"parquet_payload_hash_mismatch:{key}:expected={expected_payload_hash}:observed={observed}"
                 )
-        return pq.read_table(io.BytesIO(payload)).to_pylist()
+        return payload
 
 
 def _object_key(ref: str) -> str:

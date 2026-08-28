@@ -2,6 +2,7 @@
 """Download historical security-name/ST evidence for the target CN equities."""
 from __future__ import annotations
 
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import json
@@ -19,16 +20,20 @@ from investment_research.domain.data_tier import DataTier
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.service.trusted_ingestion import RawPayloadIngestionService
+from investment_research.service.cn_universe import load_cn_symbols
 
 ETF = {"159915", "510050", "510300", "510500", "512100"}
-OUTPUT = PROJECT / "artifacts/cn_security_name_history_sina"
-
-
 def main() -> int:
-    target = json.loads((PROJECT / "config/cn_research_target_167_symbols.json").read_text())
-    symbols = sorted({str(x).zfill(6) for x in target["cn"] if str(x).zfill(6) not in ETF})
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-symbols", type=Path, default=PROJECT / "config/cn_research_target_167_symbols.json")
+    parser.add_argument("--all-current-universe", action="store_true")
+    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--output-root", type=Path, default=PROJECT / "artifacts/cn_security_name_history_sina")
+    args = parser.parse_args()
+    target_path = PROJECT / "artifacts/cn_security_master_universe/security_master_current.json" if args.all_current_universe else args.target_symbols
+    symbols = load_cn_symbols(target_path, exclude_etf=True)
     results: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(args.workers, 16))) as pool:
         futures = {pool.submit(_fetch, symbol): symbol for symbol in symbols}
         for index, future in enumerate(as_completed(futures), 1):
             symbol = futures[future]
@@ -62,8 +67,9 @@ def main() -> int:
 
     completed = {s: r for s, r in results.items() if r.get("status") == "complete"}
     rows = [row for result in completed.values() for row in result.get("rows", [])]
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    (OUTPUT / "security_name_history.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
+    output = args.output_root
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "security_name_history.json").write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n")
     report = {
         "schema_version": "cn-security-name-history-sina-v1",
         "data_tier": DataTier.RESEARCH_PIT.value,
@@ -81,7 +87,7 @@ def main() -> int:
         "generated_at": now.isoformat(),
         "normalized_ref": "security_name_history.json",
     }
-    (OUTPUT / "latest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    (output / "latest.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({k: report[k] for k in ("status", "completed_equity_count", "row_count", "st_name_evidence_symbol_count", "dated_status_coverage")}, ensure_ascii=False))
     return 0 if report["status"] == "complete" else 1
 

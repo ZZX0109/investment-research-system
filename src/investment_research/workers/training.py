@@ -18,6 +18,7 @@ from investment_research.repository.sqlite import SQLiteUnitOfWork, create_unit_
 from investment_research.service.ingestion_jobs import IngestionJobService
 from investment_research.training.active_snapshot_guard import (
     ActiveSnapshotInputError,
+    assert_manifest_list_binding,
     require_active_snapshot,
     require_training_snapshot_gate,
 )
@@ -87,23 +88,32 @@ class ResearchTrainingWorker:
     def _run_job(self, job, service: IngestionJobService):
         if job.job_type not in TRAINING_JOB_TYPES:  # pragma: no cover - protected by TRAINING_JOB_TYPES
             raise ValueError(f"unsupported training job: {job.job_type}")
+        data_root = self.project / "var" / "cn-research"
+        try:
+            active = require_active_snapshot(data_root)
+        except (ActiveSnapshotInputError, OSError, ValueError) as exc:
+            raise RuntimeError(f"long_term_training_active_snapshot_missing:{exc}") from exc
         rebuild_index = self._latest_rebuild_index()
-        if rebuild_index is None:
+        sample_manifest = self._latest_bound_sample_manifest(active)
+        if sample_manifest is None:
             raise RuntimeError(
-                "long_term_training_rebuild_index_missing; run the PIT rebuild before training"
+                "long_term_training_bound_sample_manifest_missing; rebuild samples under the active snapshot before training"
             )
         queue_root = self.project / "artifacts" / "long_term_training_queue" / (
             f"{job.job_type}-{getattr(job, 'trade_date', None) or self.clock():%Y%m%d}"
         )
         command = [
             sys.executable,
-            str(self.project / "scripts/run_research_optimization_queue.py"),
-            "--rebuild-index", str(rebuild_index),
+            str(self.project / "scripts/run_long_term_automation.py"),
+            "--mode", "formal",
+            "--samples", str(sample_manifest),
             "--object-store", str(self.project / "var" / "cn-research" / "parquet"),
             "--data-root", str(self.project / "var" / "cn-research"),
-            "--queue-root", str(queue_root),
-            "--max-wait-hours", "0",
+            "--run-root", str(queue_root),
+            "--lock-root", str(self.project / "var" / "locks"),
         ]
+        if rebuild_index is not None:
+            command.extend(["--rebuild-index", str(rebuild_index)])
         completed = subprocess.run(
             command,
             cwd=self.project,
@@ -121,6 +131,36 @@ class ResearchTrainingWorker:
             artifact_version=f"{job.job_type}:{self.clock():%Y%m%d}",
             latest_source_time=self.clock(),
         )
+
+    def _latest_bound_sample_manifest(self, active) -> Path | None:
+        """Return only a manifest list whose children bind to active's hash."""
+        roots = (
+            self.project / "artifacts" / "long_term_training" / "current-research" / "manifest-lists",
+            self.project / "artifacts" / "long_term_training" / "runs",
+            self.project / "artifacts" / "long_term_training_queue",
+        )
+        candidates: list[tuple[float, Path]] = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*.json"):
+                # Do not rely on a filename convention: formal rebuilds may
+                # publish a dated or provider-specific list.  First inspect
+                # the small JSON envelope, then apply the same immutable
+                # child/hash binding guard to every candidate.  Arbitrary
+                # JSON artifacts without a non-empty list are ignored.
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict) or not isinstance(payload.get("sample_manifests"), list) or not payload["sample_manifests"]:
+                    continue
+                try:
+                    assert_manifest_list_binding(active, path)
+                    candidates.append((path.stat().st_mtime, path.resolve()))
+                except (ActiveSnapshotInputError, OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+        return max(candidates, key=lambda item: (item[0], str(item[1])))[1] if candidates else None
 
     def _latest_rebuild_index(self) -> Path | None:
         """Find the newest validated PIT rebuild index without touching landing.

@@ -110,6 +110,19 @@ class LocalResearchScheduler:
             from apscheduler.schedulers.background import BackgroundScheduler
         except ImportError:
             return
+        uow = create_unit_of_work()
+        try:
+            IngestionJobService(uow).recover_interrupted_running(
+                job_types={
+                    "research_daily_close", "research_weekly_monitor",
+                    "research_label_backfill", "research_model_promotion",
+                    "research_model_rollback", "knowledge_daily_incremental",
+                    "knowledge_historical_backfill", "knowledge_weekly_audit",
+                    "knowledge_monthly_reindex", "knowledge_document_fetch",
+                }
+            )
+        finally:
+            uow.close()
         self.scheduler = BackgroundScheduler(timezone="UTC")
         self.scheduler.add_job(
             self.tick,
@@ -156,7 +169,13 @@ class LocalResearchScheduler:
                         market_service.refresh(str(asset.id))
                 return IngestionJobService(uow, clock=lambda: now).complete(job, coverage_ratio=1.0, latest_source_time=now)
             IngestionJobService(uow, clock=lambda: now).drain(
-                {"daily_close_confirmation": refresh_market_job}, limit=100
+                {"daily_close_confirmation": refresh_market_job},
+                limit=100,
+                # The durable queue also contains research lifecycle jobs.
+                # Without this ownership boundary, the market-observation
+                # pass claims them first and marks every daily collection as
+                # "No handler registered" before _drain_research_jobs runs.
+                allowed_job_types={"daily_close_confirmation"},
             )
             self._drain_research_jobs(uow, now)
             timed = uow.report_schedules.list_due(now.isoformat())
@@ -200,12 +219,7 @@ class LocalResearchScheduler:
 
         def run_script(job):
             if job.job_type == "research_daily_close":
-                command = [
-                    sys.executable,
-                    str(project / "scripts/run_free_research_cycle.py"),
-                    "--groups", "prices", "events",
-                    "--run-directory", str(project / "artifacts" / "research_lifecycle" / "daily-runs"),
-                ]
+                command = self._daily_collection_command(project)
             elif job.job_type == "research_label_backfill":
                 # Outcome backfill needs the exact per-symbol standard
                 # manifest.  Keep the job durable and explicit until that
@@ -259,10 +273,19 @@ class LocalResearchScheduler:
                     job=job,
                     collection_stdout=completed.stdout,
                 )
+                health = self._check_daily_collection_health(
+                    project=project,
+                    trade_date=job.trade_date or now.date(),
+                )
                 return service.complete(
                     job,
-                    coverage_ratio=1.0,
-                    artifact_version=f"{job.job_type}:{now:%Y%m%d}:predictions={prediction_count}",
+                    degraded=health["status"] != "healthy",
+                    coverage_ratio=float(health.get("coverage_ratio", 0.0)),
+                    quality_issues=list(health.get("reasons", [])),
+                    artifact_version=(
+                        f"{job.job_type}:{now:%Y%m%d}:predictions={prediction_count}:"
+                        f"health={health['status']}"
+                    ),
                     latest_source_time=now,
                 )
             return service.complete(
@@ -293,6 +316,28 @@ class LocalResearchScheduler:
                 "knowledge_monthly_reindex", "knowledge_document_fetch",
             },
         )
+
+    @staticmethod
+    def _daily_collection_command(project: Path) -> list[str]:
+        """Build the full-current-universe close-confirmed collection command.
+
+        Daily collection previously overrode the collector with the historical
+        167-symbol demo list.  That made the scheduler report a successful
+        daily close while more than 95% of the publicly enumerated market was
+        never refreshed.  The current security master is the explicit daily
+        denominator; the broad standard layer is rebuilt separately from
+        samples so it cannot be mistaken for a trained/formal PIT snapshot.
+        """
+        return [
+            sys.executable,
+            str(project / "scripts/run_free_research_cycle.py"),
+            "--groups", "prices", "events",
+            "--symbols-file", str(project / "artifacts" / "cn_security_master_universe" / "security_master_current.json"),
+            "--rebuild-include-all-raw-symbols",
+            "--rebuild-skip-samples",
+            "--rebuild-output-root", str(project / "artifacts" / "free_research_rebuild_all_raw_standard"),
+            "--run-directory", str(project / "artifacts" / "research_lifecycle" / "daily-runs"),
+        ]
 
     def _run_daily_research_inference(
         self,
@@ -363,6 +408,35 @@ class LocalResearchScheduler:
             # session so daily evidence accumulation does not disappear.
             subprocess.run(freeze_base, cwd=project, text=True, capture_output=True, timeout=30 * 60, check=False)
         return len(prediction_files)
+
+    @staticmethod
+    def _check_daily_collection_health(*, project: Path, trade_date) -> dict:
+        """Run the read-only post-close probe and preserve a degraded result.
+
+        Collection can succeed at the process level while one cursor is stale,
+        a provider returned a weekend date, or an adjustment mode is missing.
+        Those cases must surface as a degraded lifecycle job rather than a
+        misleading 100% successful daily close.
+        """
+        output = project / "artifacts" / "research_lifecycle" / "daily-data-health.json"
+        command = [
+            sys.executable, str(project / "scripts" / "check_daily_research_health.py"),
+            "--as-of", trade_date.isoformat(), "--output", str(output),
+        ]
+        subprocess.run(command, cwd=project, text=True, capture_output=True, timeout=5 * 60, check=False)
+        try:
+            payload = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {
+                "status": "degraded", "coverage_ratio": 0.0,
+                "reasons": ["daily_health_check_unavailable"],
+            }
+        if not isinstance(payload, dict):
+            return {
+                "status": "degraded", "coverage_ratio": 0.0,
+                "reasons": ["daily_health_check_invalid"],
+            }
+        return payload
 
     @staticmethod
     def _latest_json_path(output: str) -> Path | None:

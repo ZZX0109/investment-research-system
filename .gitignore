@@ -37,6 +37,7 @@ screenshots/
 traces/
 videos/
 coverage/
+.workbuddy/
 config/.master-key
 config/local-secrets.json
 investment-research-system/
@@ -46,3 +47,4 @@ data/free_research_raw/
 data/free_research_standard/
 data/cn_research_raw/
 data/cn_research_standard/
+vendor/kittencn/

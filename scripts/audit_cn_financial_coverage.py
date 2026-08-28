@@ -15,8 +15,12 @@ import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 
 PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT / "src"))
+
+from investment_research.service.cn_universe import load_cn_symbols
 ETF_SYMBOLS = {"159915", "510050", "510300", "510500", "512100"}
 
 # These are the stable fields consumed by the cn-research-feature-v4 dataset.
@@ -31,6 +35,13 @@ REQUIRED_FIELDS = {
     "dupont": ("dupontROE", "dupontAssetStoEquity", "dupontAssetTurn"),
 }
 
+# Eastmoney stores some metrics under a Chinese source_metric_label rather
+# than the akshare field name.  Map these labels to the REQUIRED_FIELDS field
+# name so the coverage script counts them as observed.
+SOURCE_METRIC_MAP = {
+    "growth": {"SJLTZ": "YOYAsset"},  # 总资产增长率 = YOYAsset
+}
+
 
 def _symbol(value: object) -> str:
     text = str(value or "").strip().upper()
@@ -42,12 +53,7 @@ def _present(value: object) -> bool:
 
 
 def _target_symbols(path: Path) -> set[str]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        _symbol(item)
-        for item in payload.get("cn", [])
-        if _symbol(item) and _symbol(item) not in ETF_SYMBOLS
-    }
+    return set(load_cn_symbols(path, exclude_etf=True))
 
 
 def audit(database: Path, raw_root: Path, target_path: Path, minimum_coverage: float) -> dict:
@@ -66,7 +72,8 @@ def audit(database: Path, raw_root: Path, target_path: Path, minimum_coverage: f
     try:
         rows = connection.execute(
             "SELECT dataset,available_at,payload_json FROM raw_data_batches "
-            "WHERE dataset IN ('cn_fundamentals_research','cn_financial_ratios_akshare_research')"
+            "WHERE dataset IN ('cn_fundamentals_research','cn_financial_ratios_akshare_research',"
+            "'cn_financial_eastmoney_research','cn_financial_analysis_indicator_research')"
         ).fetchall()
     finally:
         connection.close()
@@ -81,7 +88,7 @@ def audit(database: Path, raw_root: Path, target_path: Path, minimum_coverage: f
             malformed += 1
             continue
         payload_count += 1
-        records = payload if isinstance(payload, list) else payload.get("rows", payload.get("data", []))
+        records = payload if isinstance(payload, list) else payload.get("rows", payload.get("data", [payload] if isinstance(payload, dict) else []))
         if isinstance(records, dict):
             records = [records]
         if not isinstance(records, list):
@@ -101,7 +108,7 @@ def audit(database: Path, raw_root: Path, target_path: Path, minimum_coverage: f
             periods.add(period)
             family_rows[family] += 1
             family_cells[family].add((symbol, period))
-            if dataset_name == "cn_fundamentals_research":
+            if dataset_name in {"cn_fundamentals_research", "cn_financial_eastmoney_research"}:
                 primary_family_cells[family].add((symbol, period))
             family_publication[family] += int(_present(record.get("pubDate")))
             # This is the catalog collection timestamp, not an asserted PIT
@@ -282,11 +289,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, default=PROJECT / "var/cn-research/catalog.db")
     parser.add_argument("--raw-root", type=Path, default=PROJECT / "var/cn-research/raw")
-    parser.add_argument("--target-symbols", type=Path, default=PROJECT / "config/cn_research_target_167_symbols.json")
+    parser.add_argument(
+        "--target-symbols",
+        type=Path,
+        default=PROJECT / "artifacts/cn_security_master_universe/security_master_current.json",
+        help="Current-universe JSON by default; accepts the legacy {cn: [...]} target format.",
+    )
     parser.add_argument("--minimum-coverage", type=float, default=0.95)
     parser.add_argument("--output", type=Path, default=PROJECT / "artifacts/cn_financial_coverage/latest.json")
     args = parser.parse_args()
-    report = audit(args.database, args.raw_root, args.target_symbols, args.minimum_coverage)
+    target_path = args.target_symbols
+    if not target_path.is_file():
+        target_path = PROJECT / "config/cn_research_target_167_symbols.json"
+    report = audit(args.database, args.raw_root, target_path, args.minimum_coverage)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"status": report["status"], "coverage": report["coverage"], "observed_field_count": report["observed_field_count"], "target_field_count": report["target_field_count"]}, ensure_ascii=False))

@@ -105,21 +105,21 @@ export function AgentExecutionPanel() {
       {false && (
         <>
       {!["research", "real"].includes(mode) ? <InlineNotice tone="warn" title={l("非权威模式", "Non-authoritative mode")} body={l("本次固定数据运行与正式研究证据隔离。", "This seeded run remains isolated from research evidence.")} /> : null}
-      {run.error ? <InlineNotice tone="error" title={l("智能研究失败", "Agent failed")} body={run.error.message} /> : null}
+      {run.error ? <InlineNotice tone="block" title={l("智能研究失败", "Agent failed")} body={run.error?.message ?? l("未知错误", "Unknown error")} /> : null}
       {agentResult ? (
         <>
           <div className="metric-strip">
-            <Metric label={l("状态", "State")} value={term(agentResult.state)} />
-            <Metric label={l("门禁", "Gate")} value={term(agentResult.verdict ?? "pending")} />
-            <Metric label={l("模型调用", "LLM")} value={`${agentResult.budget.llm_calls_used}/${agentResult.budget.max_llm_calls}`} />
-            <Metric label={l("工具调用", "Tools")} value={`${agentResult.budget.tool_calls_used}/${agentResult.budget.max_tool_calls}`} />
+            <Metric label={l("状态", "State")} value={term(agentResult!.state)} />
+            <Metric label={l("门禁", "Gate")} value={term(agentResult!.verdict ?? "pending")} />
+            <Metric label={l("模型调用", "LLM")} value={`${agentResult!.budget.llm_calls_used}/${agentResult!.budget.max_llm_calls}`} />
+            <Metric label={l("工具调用", "Tools")} value={`${agentResult!.budget.tool_calls_used}/${agentResult!.budget.max_tool_calls}`} />
           </div>
           <details className="agent-technical-details">
             <summary>{l("查看执行步骤与技术状态", "View execution steps and technical status")}</summary>
             <div className="agent-node-grid" aria-label={l("智能研究执行步骤", "Agent execution nodes")}>
               {nodes.map((node, index) => {
-                const completed = agentResult.state === "completed" || agentResult.state === "abstained" || index < activeIndex;
-                const stopped = agentResult.state === "abstained" && index > activeIndex;
+                const completed = agentResult!.state === "completed" || agentResult!.state === "abstained" || index < activeIndex;
+                const stopped = agentResult!.state === "abstained" && index > activeIndex;
                 return (
                   <div className={`agent-node agent-node--${stopped ? "stopped" : completed ? "complete" : index === activeIndex ? "active" : "pending"}`} key={node}>
                     {stopped ? <Ban size={14} /> : completed ? <CheckCircle2 size={14} /> : index === activeIndex ? <BrainCircuit size={14} /> : <span className="status-dot" />}
@@ -129,12 +129,12 @@ export function AgentExecutionPanel() {
               })}
             </div>
           </details>
-          {agentResult.abstain_reason ? (
-            <InlineNotice tone="warn" title={l("证据不足，暂不生成结论", "Insufficient evidence; no conclusion generated")} body={agentResult.abstain_reason} />
-          ) : agentResult.report_id ? (
-            <InlineNotice tone="info" title={l("固定报告已生成", "Fixed report created")} body={l(`报告 ${agentResult.report_id} 已绑定研究运行 ${agentResult.research_run_id}。`, `Report ${agentResult.report_id} is bound to research run ${agentResult.research_run_id}.`)} />
+          {agentResult!.abstain_reason ? (
+            <InlineNotice tone="warn" title={l("证据不足，暂不生成结论", "Insufficient evidence; no conclusion generated")} body={agentResult!.abstain_reason ?? ""} />
+          ) : agentResult!.report_id ? (
+            <InlineNotice tone="info" title={l("固定报告已生成", "Fixed report created")} body={l(`报告 ${agentResult!.report_id} 已绑定研究运行 ${agentResult!.research_run_id}。`, `Report ${agentResult!.report_id} is bound to research run ${agentResult!.research_run_id}.`)} />
           ) : null}
-          <div className="agent-run-footer"><ShieldAlert size={14} /> {l("关联标识", "Correlation")} {agentResult.correlation_id}</div>
+          <div className="agent-run-footer"><ShieldAlert size={14} /> {l("关联标识", "Correlation")} {agentResult!.correlation_id}</div>
         </>
       ) : <p className="muted">{l("先在左侧选择研究对象，再点击“生成风险研究”。结果会显示风险状态、门禁结论、固定报告或拒答原因。", "Select an asset on the left, then choose “Generate risk research”. The result will show risk status, gate outcome, a fixed report, or the abstain reason.")}</p>}
         </>
@@ -269,7 +269,7 @@ function LLMProviderSettings({
         <strong>{l("AI 辅助解读", "AI-assisted explanation")}</strong>
         <p>{l("让你配置的大模型调用受控投研函数，整理冻结证据、模型输出和质量门禁。它不能访问任意网址、修改数据或给出买卖指令。", "Your configured model calls constrained research functions to organize frozen evidence, model output, and quality gates. It cannot browse arbitrary URLs, alter data, or issue trading instructions.")}</p>
       </div>
-      <button className="ghost-button" type="button" disabled={assistantBusy || !onRunAssistant} onClick={onRunAssistant}>
+      <button className="ghost-button" type="button" disabled={assistantBusy || !onRunAssistant} onClick={onRunAssistant ?? undefined}>
         {assistantBusy ? l("正在调用研究工具…", "Calling research tools...") : l("生成 AI 研究解读", "Generate AI research explanation")}
       </button>
     </div>
@@ -352,7 +352,7 @@ function ResearchRiskInputOutput({
         : l("差异较小", "Narrow spread");
   const abstainExplanation = explainResearchAbstention(
     [...result.abstain_reasons, ...result.blocking_reasons],
-    result.model?.model_disagreement,
+    result.model?.model_disagreement ?? undefined,
     l,
   );
   return (

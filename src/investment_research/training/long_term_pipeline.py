@@ -56,7 +56,14 @@ def build_long_term_observations(
         "future_max_drawdown_120d", "future_max_drawdown_240d",
     }
     for sample in sample_list:
-        if long_term_target and not sample.labels.long_term_label_available:
+        # ``long_term_label_available`` is a bundle-level flag: the label
+        # generator sets it false when *any* of the 60/120/240-day benchmark
+        # horizons is unavailable.  A target-specific run must not discard a
+        # valid 120-day label merely because the 240-day label is immature
+        # (or vice versa).  Selective training is safe because the concrete
+        # target value below is still required and all other targets remain
+        # absent from this observation.
+        if long_term_target and getattr(sample.labels, target, None) is None:
             continue
         if not long_term_target and not sample.labels.label_available:
             continue
@@ -73,11 +80,35 @@ def build_long_term_observations(
         if not features:
             continue
         period_key = (sample.symbol, _period_key(sample.as_of_date, snapshot_frequency))
+        # Round 35 — enrich long-term features with northbound capital (北向资金,
+        # fortune's real alpha source) + GARCH-style volatility ratio, so the
+        # excess-return model gets real predictive signals beyond simple
+        # amount/benchmark features (which left all 11 candidates' OOF Rank IC
+        # negative).  Both degrade to NaN-missing via the northbound API when no
+        # history exists; the minimum_feature_coverage filter keeps/ drops them
+        # consistently with the rest of the feature panel.
+        enriched = dict(features)
+        try:
+            from investment_research.training.short_term.fortune_feature_engine import (
+                load_local_northbound_history,
+                northbound_features_asof,
+            )
+
+            if "_northbound_cache" not in build_long_term_observations.__dict__:
+                from pathlib import Path
+
+                build_long_term_observations.__dict__["_northbound_cache"] = (
+                    load_local_northbound_history(Path.cwd())
+                )
+            nb = build_long_term_observations.__dict__["_northbound_cache"]
+            enriched.update(northbound_features_asof(nb.get(sample.symbol, []), sample.as_of_date))
+        except Exception:
+            pass
         observation = LongTermObservation(
             symbol=sample.symbol,
             decision_date=sample.as_of_date,
             industry_key=sample.industry_key,
-            features=features,
+            features=enriched,
             target=float(value),
             regime=_infer_feature_regime(features),
             feature_coverage=float(sample.feature_coverage),
@@ -163,12 +194,15 @@ def evaluate_cross_sectional(
     *,
     top_k: int = 20,
     transaction_cost_bps: float = 15.0,
+    interval_half_width: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate rank quality and a simple long-only top-k portfolio.
 
     Scores and targets are compared within each decision date. The cost model
-    is intentionally explicit and conservative; capacity remains unavailable
-    until turnover, volume and market-impact data are supplied.
+    is intentionally explicit and conservative. When point-in-time
+    ``amount_1d`` features are present, capacity is reported as a research
+    estimate using a declared participation cap; otherwise it remains
+    explicitly unavailable.
     """
     if len(observations) != len(scores):
         raise ValueError("observations and scores must have equal length")
@@ -179,6 +213,7 @@ def evaluate_cross_sectional(
     top_returns: list[float] = []
     spreads: list[float] = []
     turnovers: list[float] = []
+    capacity_values: list[float] = []
     previous_symbols: set[str] = set()
     for day in sorted(grouped):
         indexes = grouped[day]
@@ -197,6 +232,17 @@ def evaluate_cross_sectional(
         bottom_return = _mean(observations[idx].target for idx in bottom)
         top_returns.append(top_return)
         spreads.append(top_return - bottom_return)
+        top_amounts = [
+            float(observations[idx].features["amount_1d"])
+            for idx in top
+            if observations[idx].features.get("amount_1d") is not None
+            and float(observations[idx].features["amount_1d"]) > 0
+        ]
+        if len(top_amounts) == len(top):
+            # Ten percent of the selected basket's observed one-day traded
+            # amount is a transparent research participation assumption, not
+            # a promise of executable liquidity.
+            capacity_values.append(sum(top_amounts) * 0.10)
         current_symbols = {observations[idx].symbol for idx in top}
         turnovers.append(1.0 if not previous_symbols else 1.0 - len(current_symbols & previous_symbols) / k)
         previous_symbols = current_symbols
@@ -208,6 +254,7 @@ def evaluate_cross_sectional(
         )
         for score, observation in zip(scores, observations)
     )
+    interval_coverage = _interval_coverage(observations, scores, interval_half_width)
     if not top_returns:
         return {
             "sample_count": len(observations),
@@ -220,7 +267,7 @@ def evaluate_cross_sectional(
             "top_k_excess_return_after_cost": None,
             "top_bottom_spread_after_cost": None,
             "max_drawdown_after_cost": None,
-            "capacity_estimate": None,
+            "capacity_estimate": _capacity_summary(capacity_values),
             "year_rank_ic": {},
             "industry_sample_counts": {},
             "industry_rank_ic": {},
@@ -230,7 +277,9 @@ def evaluate_cross_sectional(
             "data_completeness_sample_counts": {},
             "mae": point_mae,
             "pinball_loss": median_pinball,
-            "interval_coverage": None,
+            "interval_coverage": interval_coverage,
+            "interval_half_width": interval_half_width,
+            "interval_method": "oof_abs_residual_q90" if interval_half_width is not None else None,
         }
     turnover = _mean(turnovers)
     cost = turnover * transaction_cost_bps / 10000.0
@@ -293,10 +342,12 @@ def evaluate_cross_sectional(
         "top_k_excess_return_after_cost": _mean(net_returns),
         "top_bottom_spread_after_cost": _mean(spreads) - cost,
         "max_drawdown_after_cost": _max_drawdown(net_returns),
-        "capacity_estimate": None,
+        "capacity_estimate": _capacity_summary(capacity_values),
         "mae": point_mae,
         "pinball_loss": median_pinball,
-        "interval_coverage": None,
+        "interval_coverage": interval_coverage,
+        "interval_half_width": interval_half_width,
+        "interval_method": "oof_abs_residual_q90" if interval_half_width is not None else None,
         "year_rank_ic": {year: _mean(values) for year, values in sorted(year_ic.items())},
         "industry_sample_counts": dict(sorted(industry_counts.items())),
         "industry_rank_ic": {industry: _mean(values) for industry, values in sorted(industry_ics.items())},
@@ -422,7 +473,17 @@ def run_long_term_baselines(
         if not oof_observations:
             report["models"][model_name] = {"status": "blocked", "reason": "no_oof_predictions"}
             continue
-        oof_metrics = evaluate_cross_sectional(oof_observations, oof_scores, top_k=config.top_k, transaction_cost_bps=config.transaction_cost_bps)
+        # Calibrate the prediction interval only from out-of-fold residuals.
+        # The final holdout and stress periods never contribute to the width,
+        # so the interval coverage metric remains time-safe.
+        interval_half_width = _oof_interval_half_width(oof_observations, oof_scores)
+        oof_metrics = evaluate_cross_sectional(
+            oof_observations,
+            oof_scores,
+            top_k=config.top_k,
+            transaction_cost_bps=config.transaction_cost_bps,
+            interval_half_width=interval_half_width,
+        )
         final_model, fallback_reason = _fit_model(model_name, factory, development, feature_names)
         if fallback_reason:
             gpu_fallbacks[model_name] = fallback_reason
@@ -435,14 +496,45 @@ def run_long_term_baselines(
         if prediction_rows is not None:
             prediction_rows.extend(_prediction_rows(model_name, "holdout", holdout, holdout_scores))
             prediction_rows.extend(_prediction_rows(model_name, "stress", stress, stress_scores))
+        artifact_ref, artifact_sha256 = _persist_final_model_artifact(
+            checkpoint_root, model_name, final_model,
+            context_hash=context_hash, feature_names=feature_names,
+        )
         report["models"][model_name] = {
             "status": "research_only",
             "oof_metrics": oof_metrics,
-            "holdout_metrics": evaluate_cross_sectional(holdout, holdout_scores, top_k=config.top_k, transaction_cost_bps=config.transaction_cost_bps),
-            "stress_metrics": evaluate_cross_sectional(stress, stress_scores, top_k=config.top_k, transaction_cost_bps=config.transaction_cost_bps),
+            "holdout_metrics": evaluate_cross_sectional(
+                holdout,
+                holdout_scores,
+                top_k=config.top_k,
+                transaction_cost_bps=config.transaction_cost_bps,
+                interval_half_width=interval_half_width,
+            ),
+            "stress_metrics": evaluate_cross_sectional(
+                stress,
+                stress_scores,
+                top_k=config.top_k,
+                transaction_cost_bps=config.transaction_cost_bps,
+                interval_half_width=interval_half_width,
+            ),
+            "interval_calibration": {
+                "method": "oof_abs_residual_q90" if interval_half_width is not None else "unavailable",
+                "half_width": interval_half_width,
+                "source_split": "oof",
+                "leakage_safe": True,
+            },
+            "artifact_ref": str(artifact_ref) if artifact_ref else None,
+            "artifact_sha256": artifact_sha256,
         }
     if gpu_fallbacks:
         report["gpu_fallbacks"] = gpu_fallbacks
+    if any(
+        isinstance(item.get("holdout_metrics"), dict)
+        and item["holdout_metrics"].get("capacity_estimate") is not None
+        for item in report["models"].values()
+        if isinstance(item, dict)
+    ):
+        report["capacity_status"] = "research_estimate_from_point_in_time_amount"
     return report
 
 
@@ -533,6 +625,46 @@ def _write_fold_checkpoint(
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def _persist_final_model_artifact(
+    root: Path | None,
+    model_name: str,
+    model: object,
+    *,
+    context_hash: str,
+    feature_names: list[str],
+) -> tuple[Path | None, str | None]:
+    """Persist the final research model with an explicit context envelope.
+
+    Fold checkpoints contain predictions, not a reusable fitted model.  The
+    candidate contract therefore could not prove model-artifact lineage.  A
+    serialized artifact is written only under a research checkpoint root and
+    is never promoted or placed in ``active.json``.
+    """
+    if root is None:
+        return None, None
+    safe_model = "".join(character if character.isalnum() or character in "-_" else "_" for character in model_name)
+    path = root / safe_model / "final_model.joblib"
+    envelope = {
+        "schema_version": "long-term-final-model-artifact-v1",
+        "model_name": model_name,
+        "context_sha256": context_hash,
+        "feature_names": feature_names,
+        "model": model,
+    }
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import joblib
+        joblib.dump(envelope, temporary)
+    except Exception:
+        import pickle
+        with temporary.open("wb") as handle:
+            pickle.dump(envelope, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary.replace(path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return path, digest
 
 
 QUALITY_FEATURES = (
@@ -726,6 +858,29 @@ def _models():
             )
     except ImportError:
         pass
+    try:
+        from catboost import CatBoostRegressor
+        catboost_kwargs = dict(
+            iterations=500,
+            depth=6,
+            learning_rate=0.03,
+            loss_function="RMSE",
+            random_seed=42,
+            thread_count=max(1, (os.cpu_count() or 2) - 1),
+            verbose=False,
+            allow_writing_files=False,
+        )
+        models["catboost"] = lambda: make_pipeline(
+            SimpleImputer(strategy="median"),
+            CatBoostRegressor(**catboost_kwargs),
+        )
+        if use_gpu:
+            models["catboost-gpu"] = lambda: make_pipeline(
+                SimpleImputer(strategy="median"),
+                CatBoostRegressor(**catboost_kwargs, task_type="GPU", devices="0"),
+            )
+    except ImportError:
+        pass
     return models
 
 
@@ -824,6 +979,63 @@ def _ranks(values: list[float]) -> list[float]:
 def _mean(values: Iterable[float]) -> float:
     values = list(values)
     return sum(values) / len(values) if values else 0.0
+
+
+def _capacity_summary(values: list[float]) -> dict[str, object] | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+
+    def percentile(q: float) -> float:
+        index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * q))))
+        return ordered[index]
+
+    return {
+        "status": "research_estimate",
+        "method": "top_k_amount_1d_sum_times_participation_rate",
+        "participation_rate": 0.10,
+        "observation_days": len(ordered),
+        "p10": percentile(0.10),
+        "median": percentile(0.50),
+        "p90": percentile(0.90),
+        "unit": "provider_amount_units",
+        "not_executable_capacity": True,
+    }
+
+
+def _oof_interval_half_width(
+    observations: list[LongTermObservation], scores: list[float],
+) -> float | None:
+    """Return a robust 90% absolute-residual width from OOF predictions.
+
+    This is deliberately a calibration statistic, not a forecast of returns.
+    It is computed before holdout/stress evaluation and therefore cannot use
+    future labels from either of those periods.
+    """
+    residuals = sorted(
+        abs(float(observation.target) - float(score))
+        for observation, score in zip(observations, scores)
+        if _finite(float(observation.target)) and _finite(float(score))
+    )
+    if not residuals:
+        return None
+    index = min(len(residuals) - 1, max(0, int(round((len(residuals) - 1) * 0.90))))
+    return float(residuals[index])
+
+
+def _interval_coverage(
+    observations: list[LongTermObservation],
+    scores: list[float],
+    half_width: float | None,
+) -> float | None:
+    if half_width is None or half_width < 0 or not observations:
+        return None
+    values = [
+        abs(float(observation.target) - float(score)) <= half_width
+        for observation, score in zip(observations, scores)
+        if _finite(float(observation.target)) and _finite(float(score))
+    ]
+    return sum(values) / len(values) if values else None
 
 
 def _std(values: list[float]) -> float:

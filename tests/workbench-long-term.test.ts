@@ -56,7 +56,7 @@ describe("long-term investor summary", () => {
     expect(html).toContain("相对表现（约12个月）");
     expect(html).toContain("潜在回撤（约6个月）");
     expect(html).toContain("潜在回撤（约12个月）");
-    expect(html).toContain("专业详情（默认折叠）");
+    expect(html).toContain("专业详情与研究证据（默认折叠）");
     expect(html).not.toContain("建议买入");
   });
 

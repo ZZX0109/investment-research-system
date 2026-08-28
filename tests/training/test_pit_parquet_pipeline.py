@@ -141,6 +141,10 @@ def test_pit_pipeline_publishes_schema_parquet_and_catalog(tmp_path) -> None:
     assert len(manifest.standard_parquet_refs) == 2
     assert manifest.standard_layer_hash is not None
     assert parquet.read_partition(manifest.parquet_refs[0])[0]["symbol"] == "AAPL"
+    projected = parquet.read_partition_columns(
+        manifest.parquet_refs[0], columns=["symbol", "market", "not_in_schema"],
+    )
+    assert projected == [{"symbol": "AAPL", "market": "us"}]
     assert (
         uow.connection.execute(
             "SELECT COUNT(*) FROM pit_dataset_partitions"

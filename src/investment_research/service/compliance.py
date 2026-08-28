@@ -75,7 +75,10 @@ class ResearchTextComplianceChecker:
         ("DIRECT_SELL_INSTRUCTION", re.compile(r"卖出")),
         (
             "HOLD_INSTRUCTION",
-            re.compile(r"(?:继续持有|建议持有|应该持有|可以持有|适合持有|坚定持有|长期持有|持有该股|持有此股|持有这只股票)"),
+            re.compile(
+                r"(?:(?:继续|建议|应该|可以|适合|坚定).{0,6}(?:长期)?持有(?!者|信心|偏好|需求|人群)|"
+                r"持有该股|持有此股|持有这只股票)"
+            ),
         ),
     )
     _target_price = re.compile(

@@ -176,9 +176,15 @@ class PersistedFallbackEvidenceProvider:
         )
 
 
-class StubRealtimeMarketDataProvider:
-    provider_name = "stub-realtime-market-data-provider"
-    provider_version = "0.1.0"
+class RealtimeMarketDataProvider:
+    """§6⑤: live market data via the xystock akshare adapter (replaces the
+    ``stub-realtime`` filter).  Prefers pre-supplied REAL entries; when none
+    are present it fetches a daily kline window via xystock + builds
+    REAL-provenance ``PricePoint``s, then degrades to the persisted fallback
+    on network failure — never synthesizes."""
+
+    provider_name = "xystock-realtime-market-data-provider"
+    provider_version = "1.0.0"
 
     def select(self, asset: Asset, *, price_series: list[PriceSeries]) -> PriceSeriesSelection:
         real_series = [entry for entry in price_series if entry.provenance.source_type == DataSourceType.REAL]
@@ -186,16 +192,86 @@ class StubRealtimeMarketDataProvider:
             return PriceSeriesSelection(
                 provider_name=self.provider_name,
                 provider_version=self.provider_version,
-                status="stub_real_time",
+                status="real_time",
                 price_series=real_series,
             )
-
+        fetched = self._fetch_xystock_series(asset)
+        if fetched:
+            return PriceSeriesSelection(
+                provider_name=self.provider_name,
+                provider_version=self.provider_version,
+                status="real_time_fetched",
+                price_series=fetched,
+            )
         return PersistedFallbackMarketDataProvider().select(asset, price_series=price_series)
 
+    def _fetch_xystock_series(self, asset: Asset) -> list[PriceSeries]:
+        try:
+            from datetime import datetime
 
-class StubRealtimeEvidenceProvider:
-    provider_name = "stub-realtime-evidence-provider"
-    provider_version = "0.1.0"
+            from investment_research.domain.models import PricePoint, PriceSeries, Provenance
+
+            from investment_research.integrations.xystock.quote_fetcher import fetch_kline
+
+            result = fetch_kline(asset.ticker, days=90)
+            if not result.ok or not isinstance(result.data, list):
+                return []
+            points: list[PricePoint] = []
+            for bar in result.data:
+                if not isinstance(bar, dict):
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(str(bar.get("date", "")))
+                except (ValueError, TypeError):
+                    continue
+                open_v = bar.get("open")
+                high_v = bar.get("high")
+                low_v = bar.get("low")
+                close_v = bar.get("close")
+                if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (open_v, high_v, low_v, close_v)):
+                    continue
+                provenance = Provenance(
+                    data_mode=DataMode.REAL,
+                    source_type=DataSourceType.REAL,
+                    source_name="xystock-akshare-kline",
+                    observed_at=timestamp,
+                )
+                points.append(
+                    PricePoint(
+                        asset_id=asset.id,
+                        timestamp=timestamp,
+                        open=float(open_v),
+                        high=float(high_v),
+                        low=float(low_v),
+                        close=float(close_v),
+                        volume=bar.get("volume"),
+                        provenance=provenance,
+                    )
+                )
+            if not points:
+                return []
+            series = PriceSeries(
+                asset_id=asset.id,
+                interval="1d",
+                series_role="asset",
+                reference_symbol=asset.ticker,
+                points=points,
+                provenance=points[0].provenance,
+            )
+            return [series]
+        except Exception:
+            return []
+
+
+class RealtimeEvidenceProvider:
+    """§6⑤: live fundamental evidence via the fortune akshare adapter
+    (replaces the ``stub-realtime`` filter).  Prefers pre-supplied REAL
+    entries; when none are present it fetches fundamentals via fortune +
+    builds REAL-provenance ``FILING`` ``Evidence`` entries, then degrades to
+    the persisted fallback on network failure — never synthesizes."""
+
+    provider_name = "fortune-realtime-evidence-provider"
+    provider_version = "1.0.0"
 
     def select(self, asset: Asset, *, evidence: list[Evidence]) -> EvidenceSelection:
         real_evidence = [entry for entry in evidence if entry.provenance.source_type == DataSourceType.REAL]
@@ -203,11 +279,55 @@ class StubRealtimeEvidenceProvider:
             return EvidenceSelection(
                 provider_name=self.provider_name,
                 provider_version=self.provider_version,
-                status="stub_real_time",
+                status="real_time",
                 evidence=real_evidence,
             )
-
+        fetched = self._fetch_fortune_evidence(asset)
+        if fetched:
+            return EvidenceSelection(
+                provider_name=self.provider_name,
+                provider_version=self.provider_version,
+                status="real_time_fetched",
+                evidence=fetched,
+            )
         return PersistedFallbackEvidenceProvider().select(asset, evidence=evidence)
+
+    def _fetch_fortune_evidence(self, asset: Asset) -> list[Evidence]:
+        try:
+            from datetime import datetime, timezone
+
+            from investment_research.domain.enums import EvidenceType
+            from investment_research.domain.models import Evidence, Provenance
+
+            from investment_research.integrations.fortune.data_services.fundamental import fetch_fundamentals
+
+            result = fetch_fundamentals(asset.ticker)
+            if not result.ok or not isinstance(result.data, dict):
+                return []
+            observed_at = datetime.now(timezone.utc)
+            provenance = Provenance(
+                data_mode=DataMode.REAL,
+                source_type=DataSourceType.REAL,
+                source_name="fortune-akshare-fundamentals",
+                observed_at=observed_at,
+            )
+            entries: list[Evidence] = []
+            for metric, value in result.data.items():
+                if metric == "symbol" or not isinstance(value, (int, float)) or isinstance(value, bool):
+                    continue
+                entries.append(
+                    Evidence(
+                        asset_id=asset.id,
+                        evidence_type=EvidenceType.FILING,
+                        title=str(metric),
+                        summary=f"{metric}: {value}",
+                        collected_at=observed_at,
+                        provenance=provenance,
+                    )
+                )
+            return entries
+        except Exception:
+            return []
 
 
 class BundleBackedMarketDataProvider:
@@ -335,8 +455,10 @@ def _build_market_data_provider(provider_key: str) -> MarketDataProvider:
     normalized = provider_key.strip().lower()
     if normalized in {"persisted_fallback", "persisted"}:
         return PersistedFallbackMarketDataProvider()
-    if normalized in {"stub_realtime", "stub"}:
-        return StubRealtimeMarketDataProvider()
+    if normalized in {"realtime", "real", "stub_realtime", "stub"}:
+        # §6⑤: the stub filter is replaced by the xystock live fetcher;
+        # "stub*" keys stay as aliases so existing env configs keep working.
+        return RealtimeMarketDataProvider()
     if normalized in {"bundle_backed", "authoritative_bundle", "training_bundle"}:
         return BundleBackedMarketDataProvider()
     raise ValueError(f"Unsupported market data provider '{provider_key}'.")
@@ -346,8 +468,10 @@ def _build_evidence_provider(provider_key: str) -> EvidenceProvider:
     normalized = provider_key.strip().lower()
     if normalized in {"persisted_fallback", "persisted"}:
         return PersistedFallbackEvidenceProvider()
-    if normalized in {"stub_realtime", "stub"}:
-        return StubRealtimeEvidenceProvider()
+    if normalized in {"realtime", "real", "stub_realtime", "stub"}:
+        # §6⑤: the stub filter is replaced by the fortune live fetcher;
+        # "stub*" keys stay as aliases so existing env configs keep working.
+        return RealtimeEvidenceProvider()
     if normalized in {"bundle_backed", "authoritative_bundle", "training_bundle"}:
         return BundleBackedEvidenceProvider()
     raise ValueError(f"Unsupported evidence provider '{provider_key}'.")

@@ -109,6 +109,32 @@ def test_cn_research_rebuild_binds_rows_to_one_immutable_snapshot(tmp_path: Path
     assert leakage["research_error_count"] == 0
     assert leakage["formal_release_blocked"] is True
 
+    # Reuse the immutable standard index and exact snapshot for a resumable
+    # sample batch. Legacy standard manifests did not always carry their own
+    # manifest_ref; the reuse path must normalize that shape in memory.
+    batch_root = tmp_path / "sample-batch"
+    symbols_file = tmp_path / "sample-symbols.json"
+    symbols_file.write_text(json.dumps({"symbols": ["600000"]}), encoding="utf-8")
+    reused = subprocess.run(
+        [
+            sys.executable, str(project / "scripts/rebuild_cn_research_pit.py"),
+            "--database", str(database), "--raw-object-store", str(raw_root),
+            "--research-object-store", str(parquet_root), "--output-root", str(batch_root),
+            "--reuse-standard-index", completed.stdout.strip(),
+            "--reuse-snapshot-index", completed.stdout.strip(),
+            "--sample-symbols-file", str(symbols_file), "--as-of", days[-1].isoformat(),
+            "--max-equities", "1", "--minimum-equities", "1",
+            "--minimum-history-sessions", "250", "--minimum-training-sessions", "250",
+            "--allow-current-cohort-breadth", "--no-update-latest",
+        ],
+        cwd=project, text=True, capture_output=True, check=False,
+    )
+    assert reused.returncode == 0, reused.stderr
+    batch_index = json.loads(Path(reused.stdout.strip()).read_text(encoding="utf-8"))
+    batch_close = batch_index["contexts"]["close_confirmed"]
+    assert batch_close["snapshot_hash"] == close["snapshot_hash"]
+    assert all("600000" in Path(ref).parts for ref in batch_close["sample_manifests"]["cn_equity_core"])
+
 
 def _business_days(start: date, count: int) -> list[date]:
     output: list[date] = []

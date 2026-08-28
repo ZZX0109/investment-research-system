@@ -12,6 +12,7 @@ map covers exactly the symbols the demo trains on.
 from __future__ import annotations
 
 import json
+import argparse
 from pathlib import Path
 
 import baostock as bs
@@ -23,6 +24,15 @@ OUT = PROJECT / "config" / "cn_industry_map.json"
 
 def load_universe(rebuild: Path) -> list[str]:
     data = json.loads(Path(rebuild).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return sorted({
+            str(item.get("code") if isinstance(item, dict) else item).rsplit(".", 1)[-1].zfill(6)
+            for item in data
+            if (item.get("code") if isinstance(item, dict) else item)
+            and str(item.get("instrument_type", "equity") if isinstance(item, dict) else "equity") != "etf"
+        })
+    if isinstance(data, dict) and isinstance(data.get("symbols"), list):
+        return sorted({str(item).rsplit(".", 1)[-1].zfill(6) for item in data["symbols"]})
     symbols = set()
     for qr in data.get("quality_reports", []):
         sym = qr.get("symbol")
@@ -31,8 +41,10 @@ def load_universe(rebuild: Path) -> list[str]:
     return sorted(symbols)
 
 
-def to_baostock_code(symbol: str) -> str:
+def to_baostock_code(symbol: str, bse_mapping: dict[str, str] | None = None) -> str:
     s = symbol.strip()
+    if bse_mapping and s in bse_mapping:
+        s = bse_mapping[s]
     if s.startswith(("sh.", "sz.", "bj.")):
         return s
     if s.startswith("6"):
@@ -45,15 +57,50 @@ def to_baostock_code(symbol: str) -> str:
 
 
 def main() -> int:
-    symbols = load_universe(REBUILD)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--universe", type=Path, default=REBUILD, help="JSON rebuild index or current security-master universe")
+    parser.add_argument("--output", type=Path, default=OUT)
+    parser.add_argument("--resume", action="store_true", help="resume from <output>.progress.json")
+    parser.add_argument(
+        "--bse-mapping",
+        type=Path,
+        default=PROJECT / "artifacts/cn_bse_code_mapping/mapping.json",
+        help="map current BSE 920 codes to legacy 8/4 codes before querying Baostock",
+    )
+    parser.add_argument("--request-interval-seconds", type=float, default=0.05)
+    args = parser.parse_args()
+    if args.request_interval_seconds < 0:
+        raise SystemExit("request interval cannot be negative")
+    symbols = load_universe(args.universe)
     print(f"universe size: {len(symbols)}")
     login = bs.login()
     print("baostock login:", login.error_code, login.error_msg)
 
-    mapping: dict[str, str] = {}
-    missing: list[str] = []
+    progress_path = args.output.with_name(args.output.name + ".progress.json")
+    progress = {}
+    if args.resume and progress_path.exists():
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            progress = {}
+    mapping: dict[str, str] = dict(progress.get("mapping", {}))
+    missing: list[str] = list(progress.get("missing", []))
+    try:
+        bse_rows = json.loads(args.bse_mapping.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        bse_rows = []
+    bse_mapping = {
+        str(row.get("new_code")).zfill(6): str(row.get("old_code")).zfill(6)
+        for row in bse_rows
+        if isinstance(row, dict) and row.get("new_code") and row.get("old_code")
+    }
+    # A failed request remains pending on resume; this makes a later run with
+    # a repaired source mapping (for example BSE 920->legacy) effective.
+    completed = set(mapping)
     for index, sym in enumerate(symbols, start=1):
-        code = to_baostock_code(sym)
+        if sym in completed:
+            continue
+        code = to_baostock_code(sym, bse_mapping)
         try:
             rs = bs.query_stock_industry(code)
             row = None
@@ -67,6 +114,11 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             missing.append(sym)
             print(f"  ERR {sym}: {type(exc).__name__}: {exc}")
+        completed.add(sym)
+        progress_path.write_text(json.dumps({"mapping": mapping, "missing": missing}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if args.request_interval_seconds:
+            import time
+            time.sleep(args.request_interval_seconds)
         if index % 25 == 0:
             print(f"  {index}/{len(symbols)} mapped={len(mapping)} missing={len(missing)}")
 
@@ -81,8 +133,9 @@ def main() -> int:
         "mapped": len(mapping),
         "missing": missing,
     }
-    OUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"wrote {OUT}: mapped={len(mapping)}/{len(symbols)} missing={len(missing)}")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"wrote {args.output}: mapped={len(mapping)}/{len(symbols)} missing={len(missing)}")
     return 0
 
 

@@ -111,15 +111,80 @@ class HTTPStructuredProvider:
             headers=headers,
         )
         try:
-            with urlopen(http_request, timeout=self.profile.timeout_seconds, context=self._ssl_context()) as response:  # noqa: S310 - operator-configured endpoint
-                body = json.loads(response.read().decode("utf-8"))
-            content = self._content(body)
-            parsed = json.loads(content) if isinstance(content, str) else content
-            output = response_model.model_validate(parsed)
+            # A gateway may occasionally close an otherwise valid long-lived
+            # request, or wrap its JSON response inconsistently. Retry once
+            # for only those transient cases.  This is intentionally not a
+            # timeout: a request with timeout_seconds=0 still waits for the
+            # provider's response without a product-imposed deadline.
+            last_transient: Exception | None = None
+            for attempt in range(3):
+                try:
+                    with urlopen(http_request, timeout=self._request_timeout(), context=self._ssl_context()) as response:  # noqa: S310 - operator-configured endpoint
+                        body = json.loads(response.read().decode("utf-8"))
+                    content = self._content(body)
+                    parsed = self._parse_structured_content(content)
+                    output = response_model.model_validate(parsed)
+                    break
+                except HTTPError as exc:
+                    # A few OpenAI-compatible gateways accept ordinary chat
+                    # completions from a model but reject response_format /
+                    # json_schema with a 400 "Format Error".  The schema is
+                    # already included in the system prompt, so retry once
+                    # without the transport-level constraint rather than
+                    # dropping to a deterministic response.  Parsing and
+                    # Pydantic validation still enforce the same contract.
+                    if attempt == 0 and self._can_retry_without_response_format(exc, payload):
+                        payload = dict(payload)
+                        payload.pop("response_format", None)
+                        http_request = Request(
+                            self._request_endpoint(),
+                            data=json.dumps(payload).encode("utf-8"),
+                            method="POST",
+                            headers=headers,
+                        )
+                        continue
+                    # Provider gateways can return a short-lived 5xx while a
+                    # model worker is being allocated. Retry the same request
+                    # instead of immediately replacing the LLM answer with a
+                    # deterministic explanation.
+                    if 500 <= exc.code < 600 and attempt < 2:
+                        time.sleep(float(attempt + 1))
+                        continue
+                    raise
+                except LLMProviderError as exc:
+                    # Some gateways signal an unsupported response_format with
+                    # HTTP 200 plus an empty choices array. Treat that the same
+                    # as their 400 Format Error variant, then retry ordinary
+                    # JSON-in-prompt mode. Empty completions without a format
+                    # constraint are transient and receive the remaining retry.
+                    if "no completion" in str(exc).lower() and "response_format" in payload:
+                        payload = dict(payload)
+                        payload.pop("response_format", None)
+                        http_request = Request(
+                            self._request_endpoint(),
+                            data=json.dumps(payload).encode("utf-8"),
+                            method="POST",
+                            headers=headers,
+                        )
+                        continue
+                    if "no completion" in str(exc).lower() and attempt < 2:
+                        time.sleep(float(attempt + 1))
+                        continue
+                    raise
+                except (URLError, json.JSONDecodeError) as exc:
+                    last_transient = exc
+                    if attempt < 2:
+                        time.sleep(float(attempt + 1))
+                        continue
+                    raise
+            else:  # pragma: no cover - the loop always breaks or raises
+                raise last_transient or RuntimeError("Structured LLM request failed")
         except HTTPError as exc:
             raise LLMProviderError(f"Structured LLM call failed: HTTP {exc.code}") from exc
         except URLError as exc:
             raise LLMProviderError("Structured LLM call failed: network_unreachable") from exc
+        except LLMProviderError:
+            raise
         except Exception as exc:
             raise LLMProviderError(f"Structured LLM call failed: {type(exc).__name__}") from exc
         return LLMResponse(
@@ -156,7 +221,7 @@ class HTTPStructuredProvider:
             headers=headers,
         )
         try:
-            with urlopen(http_request, timeout=self.profile.timeout_seconds, context=self._ssl_context()) as response:  # noqa: S310 - operator-configured endpoint
+            with urlopen(http_request, timeout=self._request_timeout(), context=self._ssl_context()) as response:  # noqa: S310 - operator-configured endpoint
                 body = json.loads(response.read().decode("utf-8"))
             calls, content = self._tool_response(body)
         except HTTPError as exc:
@@ -224,7 +289,7 @@ class HTTPStructuredProvider:
             "that validates against this schema:\n"
             f"{json.dumps(request.response_schema, ensure_ascii=False)}"
         )
-        return {
+        payload: dict[str, object] = {
             "model": self.profile.model,
             "messages": [
                 {"role": "system", "content": schema_prompt},
@@ -235,7 +300,21 @@ class HTTPStructuredProvider:
                 "json_schema": {"name": request.response_model_name, "strict": True, "schema": request.response_schema},
             },
             "max_tokens": request.max_output_tokens,
-        }, headers
+        }
+        # This gateway's DeepSeek Flash model enables an internal reasoning
+        # channel by default.  It can spend the whole response budget there
+        # and return an empty visible message, which is unsuitable for a
+        # concise research-assistant answer.  The provider supports this
+        # OpenAI-compatible switch; keep it scoped to DeepSeek profiles so
+        # other configured providers retain their own defaults.
+        if "deepseek" in self.profile.model.lower():
+            payload["enable_thinking"] = False
+            # This gateway does not implement json_schema response_format for
+            # DeepSeek Flash consistently (400/500 or HTTP 200 + empty
+            # choices). The schema remains embedded in the system prompt and
+            # the returned JSON is still parsed and Pydantic-validated.
+            payload.pop("response_format", None)
+        return payload, headers
 
     def _content(self, body: dict[str, object]) -> object:
         if self.profile.protocol == "anthropic_messages":
@@ -247,7 +326,52 @@ class HTTPStructuredProvider:
             candidates = body.get("candidates") or []
             parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
             return "".join(str(part.get("text", "")) for part in parts if isinstance(part, dict))
-        return body.get("choices", [])[0]["message"]["content"]  # type: ignore[index]
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            error = body.get("error")
+            detail = error.get("message") if isinstance(error, dict) else error
+            raise LLMProviderError(
+                f"OpenAI-compatible response has no completion{f': {detail}' if detail else ''}"
+            )
+        message = choices[0].get("message")
+        if not isinstance(message, dict) or message.get("content") is None:
+            raise LLMProviderError("OpenAI-compatible response has no message content")
+        return message["content"]
+
+    def _can_retry_without_response_format(self, exc: HTTPError, payload: dict[str, object]) -> bool:
+        if self.profile.protocol != "openai_compatible" or exc.code != 400 or "response_format" not in payload:
+            return False
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            return False
+        return "format error" in body.lower() or "response_format" in body.lower() or "json_schema" in body.lower()
+
+    @staticmethod
+    def _parse_structured_content(content: object) -> object:
+        """Accept provider JSON wrapped in an accidental Markdown fence.
+
+        The prompt asks for raw JSON, but OpenAI-compatible gateways sometimes
+        wrap otherwise-valid JSON in a code fence.  This parser is deliberately
+        narrow: it only accepts one JSON object and never attempts to repair a
+        truncated response.
+        """
+        if not isinstance(content, str):
+            return content
+        text = content.strip()
+        if text.startswith("```"):
+            newline = text.find("\n")
+            text = text[newline + 1:] if newline >= 0 else text
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3]
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                return json.loads(text[start:end + 1])
+            raise
 
     def _tool_payload(self, request: LLMToolRequest) -> tuple[dict[str, object], dict[str, str]]:
         headers = {"Content-Type": "application/json"}
@@ -441,6 +565,10 @@ class HTTPStructuredProvider:
         if self.profile.protocol == "openai_compatible" and endpoint.endswith("/v1"):
             return f"{endpoint}/chat/completions"
         return endpoint
+
+    def _request_timeout(self) -> float | None:
+        """A non-positive profile value deliberately means no product timeout."""
+        return self.profile.timeout_seconds if self.profile.timeout_seconds > 0 else None
 
 
 class MockProvider:

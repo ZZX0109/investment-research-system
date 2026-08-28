@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
+from uuid import uuid4
 
 from investment_research.domain.data_tier import DataTier
 from investment_research.domain.data_tier import formal_data_blocking_reasons
@@ -36,3 +38,24 @@ def test_formal_gate_rejects_free_provider_and_request_prefix_independently() ->
     assert formal_data_blocking_reasons(
         data_tier=DataTier.FORMAL_PIT, provider="licensed-cn", request_id="free-manual-1",
     ) == ["free_request_prefix_forbidden_in_formal_path"]
+
+
+def test_filtered_raw_batches_do_not_fail_on_unrelated_legacy_rows(tmp_path: Path) -> None:
+    uow = SQLiteUnitOfWork(tmp_path / "catalog.db")
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    # This shape mirrors pre-qualification catalog rows.  It is intentionally
+    # invalid as a RawDataBatch, but belongs to qfq and must not break a raw
+    # rebuild that asks for a different dataset.
+    uow.connection.execute(
+        "INSERT INTO raw_data_batches (id,provider,request_id,dataset,fetched_at,available_at,quality_status,data_tier,time_semantics,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (
+            str(uuid4()), "legacy", "legacy-qfq", "daily_bars_qfq", now.isoformat(),
+            now.isoformat(), "degraded", "research_pit", "legacy_time_semantics",
+            json.dumps({"dataset": "daily_bars_qfq", "symbol": "920011"}),
+        ),
+    )
+    uow.connection.commit()
+    assert uow.trusted_market.raw_batches(dataset="daily_bars_raw") == []
+    assert uow.trusted_market.raw_batches(dataset="daily_bars_qfq", strict=False) == []
+    assert len(uow.trusted_market.last_raw_batch_errors) == 1
+    uow.close()

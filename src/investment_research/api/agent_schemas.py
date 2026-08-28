@@ -36,7 +36,7 @@ class ProviderProfileCreateRequest(BaseModel):
     endpoint: str | None = None
     model: str = Field(min_length=1, max_length=256)
     credential_ref: str | None = None
-    timeout_seconds: float = Field(default=20.0, ge=1.0, le=120.0)
+    timeout_seconds: float = Field(default=0.0, ge=0.0, le=120.0)
     context_limit: int = Field(default=32_000, ge=1000, le=1_000_000)
     fallback_profile_id: str | None = None
     enabled: bool = True
@@ -48,7 +48,7 @@ class ProviderProfilePatchRequest(BaseModel):
     endpoint: str | None = None
     model: str | None = Field(default=None, min_length=1, max_length=256)
     credential_ref: str | None = None
-    timeout_seconds: float | None = Field(default=None, ge=1.0, le=120.0)
+    timeout_seconds: float | None = Field(default=None, ge=0.0, le=120.0)
     context_limit: int | None = Field(default=None, ge=1000, le=1_000_000)
     fallback_profile_id: str | None = None
     enabled: bool | None = None

@@ -1,0 +1,190 @@
+schema_version: cn-data-completion-plan-v1
+purpose: >-
+  Reproducible execution map for expanding the current A-share/ETF denominator
+  into raw, standard, PIT and active-ready datasets. Public adapters remain
+  research_only until official or licensed publication/effective-time evidence
+  is verified.
+target:
+  universe: artifacts/cn_security_master_universe/security_master_current.json
+  exclude_etf_from_company_denominators: true
+steps:
+  - id: security_universe
+    priority: P0
+    dataset: cn_security_master_universe
+    artifact: artifacts/cn_security_master_universe/latest.json
+    required: true
+    provider_options: [AKShare, BaoStock, SSE, SZSE]
+    license_required_for_formal: false
+    command: [scripts/fetch_cn_security_master_universe.py]
+    depends_on: []
+  - id: historical_prices
+    priority: P0
+    dataset: daily_bars_raw+daily_bars_qfq
+    artifact: artifacts/cn_security_master/latest.json
+    required: true
+    provider_options: [SSE/SZSE licensed, BaoStock research, AKShare research]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_baostock_parallel.py, --symbols-file, artifacts/cn_security_master_universe/security_master_current.json, --provider, public, --modes, qfq, --missing-only, --workers, "2", --chunk-size, "1", --inter-request-delay, "0.15", --output, artifacts/free_research_coverage_baostock_parallel_completion.json]
+    depends_on: [security_universe]
+  - id: security_lifecycle
+    priority: P0
+    dataset: cn_historical_security_lifecycle
+    artifact: artifacts/cn_security_lifecycle_full/latest.json
+    required: true
+    provider_options: [SSE, SZSE, CSRC, CNINFO, AKShare research]
+    license_required_for_formal: false
+    command: [scripts/fetch_cn_security_lifecycle_akshare.py, --all-current-universe, --skip-industry-history]
+    depends_on: [security_universe]
+  - id: security_status_evidence
+    priority: P1
+    dataset: cn_security_status_disclosures_cninfo_research
+    artifact: artifacts/cn_security_status_disclosures_cninfo/latest.json
+    required: true
+    provider_options: [CNINFO official, SSE, SZSE, CSRC]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_security_status_disclosures_cninfo.py, --all-current-universe]
+    depends_on: [security_lifecycle]
+  - id: security_name_history
+    priority: P1
+    dataset: cn_security_name_history_sina_research
+    artifact: artifacts/cn_security_name_history_sina/latest.json
+    required: true
+    provider_options: [Sina research, CNINFO official, SSE, SZSE]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_security_name_history_sina.py, --all-current-universe]
+    depends_on: [security_lifecycle]
+  - id: financial_publication_pit
+    priority: P0
+    dataset: cn_fundamentals_research+cn_financial_disclosures_cninfo_research
+    artifact: artifacts/cn_financial_coverage/latest.json
+    required: true
+    provider_options: [CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_disclosures_cninfo.py, --all-current-universe]
+    depends_on: [security_universe]
+  - id: financial_core_bulk_reports
+    priority: P0
+    dataset: cn_financial_reports_eastmoney
+    artifact: artifacts/cn_financial_reports_eastmoney/latest.json
+    required: true
+    provider_options: [Eastmoney research, CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_reports_eastmoney.py, --start-year, "2010"]
+    depends_on: [security_universe]
+  - id: financial_income_bulk_reports
+    priority: P0
+    dataset: cn_financial_reports_eastmoney_income
+    artifact: artifacts/cn_financial_reports_eastmoney/income-latest.json
+    required: true
+    provider_options: [Eastmoney research, CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_reports_eastmoney.py, --report-family, income, --start-year, "2010"]
+    depends_on: [security_universe]
+  - id: financial_cashflow_bulk_reports
+    priority: P0
+    dataset: cn_financial_reports_eastmoney_cashflow
+    artifact: artifacts/cn_financial_reports_eastmoney/cashflow-latest.json
+    required: true
+    provider_options: [Eastmoney research, CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_reports_eastmoney.py, --report-family, cashflow, --start-year, "2010"]
+    depends_on: [security_universe]
+  - id: financial_balance_bulk_reports
+    priority: P0
+    dataset: cn_financial_reports_eastmoney_balance
+    artifact: artifacts/cn_financial_reports_eastmoney/balance-latest.json
+    required: true
+    provider_options: [Eastmoney research, CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_reports_eastmoney.py, --report-family, balance, --start-year, "2010"]
+    depends_on: [security_universe]
+  - id: financial_statement_landing_import
+    priority: P0
+    dataset: cn_financial_eastmoney_research
+    artifact: artifacts/cn_financial_eastmoney_import/latest.json
+    required: true
+    provider_options: [internal normalized import, Eastmoney research, CNINFO official]
+    license_required_for_formal: true
+    command: [scripts/import_cn_financial_eastmoney_landing.py, --report-family, all]
+    depends_on: [financial_publication_pit, financial_core_bulk_reports, financial_income_bulk_reports, financial_cashflow_bulk_reports, financial_balance_bulk_reports]
+  - id: financial_pit_reconciliation
+    priority: P0
+    dataset: cn_financial_pit_reconciled
+    artifact: artifacts/cn_financial_disclosures_cninfo/pit-reconciliation-run.json
+    required: true
+    provider_options: [CNINFO official, SSE, SZSE, Wind licensed, Choice licensed]
+    license_required_for_formal: true
+    command: [scripts/run_cn_financial_pit_reconciliation.py]
+    depends_on: [financial_publication_pit, financial_statement_landing_import, financial_extended_ratios]
+  - id: financial_extended_ratios
+    priority: P1
+    dataset: cn_financial_ratios_akshare_research
+    artifact: artifacts/cn_financial_ratios_akshare/latest.json
+    required: true
+    provider_options: [CNINFO official, Wind licensed, Choice licensed, AKShare research]
+    license_required_for_formal: true
+    command: [scripts/fetch_cn_financial_ratios_akshare.py, --all-current-universe]
+    depends_on: [security_universe]
+  - id: corporate_actions
+    priority: P1
+    dataset: cn_corporate_actions_detailed
+    artifact: artifacts/cn_corporate_actions_detailed/latest.json
+    required: true
+    provider_options: [SSE, SZSE, CNINFO, AKShare research]
+    license_required_for_formal: true
+    command: [scripts/backfill_cn_corporate_actions_detailed.py, --all-current-universe]
+    depends_on: [security_universe]
+  - id: events_and_filings
+    priority: P1
+    dataset: events+cn_news_backfill
+    artifact: artifacts/cn_event_backfill_full/latest.json
+    required: true
+    provider_options: [CNINFO official, SSE, SZSE, Eastmoney research]
+    license_required_for_formal: true
+    command: [scripts/backfill_cn_target_events.py, --all-current-universe]
+    depends_on: [security_universe]
+  - id: macro_release_times
+    priority: P0
+    dataset: cn_macro_pit
+    artifact: artifacts/cn_research_auxiliary/macro_pit_latest.json
+    required: true
+    provider_options: [NBS official, PBOC official]
+    license_required_for_formal: false
+    command: [scripts/fetch_cn_macro_actual_release_nbs.py]
+    depends_on: []
+  - id: standard_and_quality_rebuild
+    priority: P0
+    dataset: standard+trading_status+security_master
+    artifact: artifacts/free_research_rebuild_all_raw_standard/latest.json
+    required: true
+    provider_options: [internal pipeline]
+    license_required_for_formal: false
+    command: [scripts/rebuild_cn_research_pit.py, --include-all-raw-symbols, --skip-samples, --output-root, artifacts/free_research_rebuild_all_raw_standard]
+    depends_on: [historical_prices, security_lifecycle]
+  - id: research_sample_layer
+    priority: P1
+    dataset: research_pit_samples
+    artifact: artifacts/free_research_rebuild_all_raw_standard/latest.json
+    required: true
+    provider_options: [internal pipeline]
+    license_required_for_formal: false
+    command: [scripts/run_cn_research_sample_batches.py, --base-index, artifacts/free_research_rebuild_all_raw_standard/latest.json, --batch-size, 20]
+    depends_on: [standard_and_quality_rebuild]
+  - id: shadow_60_validation
+    priority: P0
+    dataset: cn_research_shadow_forward_validation
+    artifact: artifacts/research_shadow/summary.json
+    required: true
+    provider_options: [internal shadow store, BaoStock research, AKShare research]
+    license_required_for_formal: true
+    command: [scripts/build_research_shadow_summary.py]
+    depends_on: [standard_and_quality_rebuild]
+  - id: audit_and_active_gate
+    priority: P0
+    dataset: download_manifest+active_snapshot
+    artifact: artifacts/long_term_readiness/latest.json
+    required: true
+    provider_options: [internal audit]
+    license_required_for_formal: false
+    command: [scripts/audit_download_output.py]
+    depends_on: [standard_and_quality_rebuild, financial_publication_pit, macro_release_times]

@@ -99,10 +99,23 @@ class PlainAnswerBuilder:
         tools_used: Iterable[str] | None = None,
         fact_cards: Iterable[Mapping[str, object]] | None = None,
         line_items: Iterable[Mapping[str, object]] | None = None,
+        walk_forward_daily: Mapping[str, object] | None = None,
+        fundamental_coverage: Mapping[str, object] | None = None,
+        catboost_direction: Mapping[str, object] | None = None,
+        catboost_accuracy: Mapping[str, object] | None = None,
+        catboost_feature_importance: Mapping[str, object] | None = None,
+        catboost_short_term_horizons: Mapping[str, object] | None = None,
+        catboost_horizon_walk_forward_daily: Mapping[str, object] | None = None,
+        price_path_forecast: Mapping[str, object] | None = None,
+        recent_market_observation: str | None = None,
+        additional_sources: Iterable[Mapping[str, object]] | None = None,
+        long_term_directional_by_regime: Mapping[str, object] | None = None,
         generated_by: Literal["llm", "deterministic_fallback"] = "deterministic_fallback",
         causal_observations: Iterable[CausalObservation] | None = None,
         prior_turns: Iterable[Mapping[str, object]] | None = None,
         forecast_note: str | None = None,
+        intraday_quote: Mapping[str, object] | None = None,
+        market_news: Iterable[Mapping[str, object]] | None = None,
     ) -> PlainAnswer:
         """Build the five-section answer.
 
@@ -146,6 +159,16 @@ class PlainAnswerBuilder:
             abstain_reasons=abstain_list,
         )
         sources = merge_result.sources
+        seen_source_keys = {source.citation_id or source.url or source.title for source in sources}
+        for item in additional_sources or []:
+            try:
+                source = PlainSource.model_validate(item)
+            except (TypeError, ValueError):
+                continue
+            key = source.citation_id or source.url or source.title
+            if key not in seen_source_keys:
+                sources.append(source)
+                seen_source_keys.add(key)
         evidence_items = merge_result.evidence
         arbitrations = list(merge_result.arbitrations)
         observations = self._build_observations(readings)
@@ -170,21 +193,22 @@ class PlainAnswerBuilder:
                 data_as_of=data_as_of,
             )
 
-        business = self._business_condition(card, observations, price)
+        business = self._business_condition(card, observations, price, intraday_quote)
         if forecast_note:
             business = f"{business}{forecast_note}".strip()
-        changes = self._long_term_changes(card, observations, knowledge, web, data_as_of, arbitrations)
+        changes = self._long_term_changes(card, observations, knowledge, web, data_as_of, arbitrations, market_news)
         prior_clause = self._prior_turn_clause(prior_turns)
         if prior_clause:
             changes = f"{prior_clause}{changes}"
         risks = self._possible_risks(card, observations, evidence_items, arbitrations)
-        missing = self._missing_evidence(abstain_list, evidence_items, card, readings)
+        missing = self._missing_evidence(abstain_list, evidence_items, card, readings, walk_forward_daily, fundamental_coverage, catboost_direction, catboost_accuracy, catboost_feature_importance, long_term_directional_by_regime, catboost_short_term_horizons, catboost_horizon_walk_forward_daily, price_path_forecast)
         sources_summary = self._sources_summary(sources, data_as_of)
         result_status = self._result_status(abstain_list, evidence_items, readings)
 
         answer = PlainAnswer(
             business_condition=business,
             long_term_changes=changes,
+            recent_market_observation=recent_market_observation or "近期市场信息暂未获取，不能据此判断。",
             possible_risks=risks,
             missing_evidence=missing,
             sources_summary=sources_summary,
@@ -231,7 +255,7 @@ class PlainAnswerBuilder:
         snippet = last_assistant if len(last_assistant) <= 48 else f"{last_assistant[:48]}……"
         return f"已结合前一轮讨论（“{snippet}”），在此基础上继续观察。"
 
-    def _business_condition(self, card: Mapping[str, object], observations: list[PlainReadingObservation], price: Mapping[str, object]) -> str:
+    def _business_condition(self, card: Mapping[str, object], observations: list[PlainReadingObservation], price: Mapping[str, object], intraday_quote: Mapping[str, object] | None = None) -> str:
         quality = self._score_label(card.get("long_term_quality"))
         growth = self._score_label(card.get("growth_stability"))
         parts: list[str] = []
@@ -246,6 +270,13 @@ class PlainAnswerBuilder:
         if excess:
             compact = "；".join(f"{item.horizon}相对基准的长期表现观察{item.tendency}" for item in excess)
             parts.append(f"长期表现观察：{compact}。")
+        # Round 34 — same-day intraday quote (盘中实时) so the LLM answer cites
+        # the live move alongside the frozen close.  盘中价为实时快照，非收盘确认。
+        if intraday_quote and intraday_quote.get("latest_price") is not None:
+            ip = float(intraday_quote["latest_price"])
+            chg = intraday_quote.get("change_pct")
+            chg_txt = f"（当日涨跌{float(chg):+.2f}%）" if chg is not None else ""
+            parts.append(f"当日盘中价约{ip}{chg_txt}，盘中价为实时快照、非收盘确认。")
         close = price.get("latest_close")
         if close is not None:
             parts.append(f"最近收盘价约 {self._format_close(close)}。")
@@ -259,8 +290,20 @@ class PlainAnswerBuilder:
         web: list[Mapping[str, object]],
         data_as_of: str | None,
         arbitrations: list[object] | None = None,
+        market_news: Iterable[Mapping[str, object]] | None = None,
     ) -> str:
         parts: list[str] = []
+        # Round 34 — per-asset news + notices (个股新闻+公告) so the LLM
+        # answer cites same-day news alongside the intraday quote.
+        news_items = list(market_news or [])
+        if news_items:
+            head = news_items[:3]
+            compact = "；".join(
+                f"{(n.get('title') or '')[:24]}"
+                for n in head if n.get("title")
+            )
+            if compact:
+                parts.append(f"近期新闻与公告：{compact}。")
         known_events = self._event_sentences(knowledge, web)
         if known_events:
             parts.append("近期可引用的主要变化：" + "；".join(known_events[:3]) + "。")
@@ -308,7 +351,7 @@ class PlainAnswerBuilder:
             risks.append("当前可引用的风险证据有限，主要需关注行业景气度、盈利变化和融资情况")
         return "；".join(risks) + "。这些是观察线索，不构成交易结论。"
 
-    def _missing_evidence(self, abstain: list[str], evidence: list[EvidenceItem], card: Mapping[str, object], readings: Mapping[str, Mapping[str, object]]) -> str:
+    def _missing_evidence(self, abstain: list[str], evidence: list[EvidenceItem], card: Mapping[str, object], readings: Mapping[str, Mapping[str, object]], walk_forward_daily: Mapping[str, object] | None = None, fundamental_coverage: Mapping[str, object] | None = None, catboost_direction: Mapping[str, object] | None = None, catboost_accuracy: Mapping[str, object] | None = None, catboost_feature_importance: Mapping[str, object] | None = None, long_term_directional_by_regime: Mapping[str, object] | None = None, catboost_short_term_horizons: Mapping[str, object] | None = None, catboost_horizon_walk_forward_daily: Mapping[str, object] | None = None, price_path_forecast: Mapping[str, object] | None = None) -> str:
         missing_items: list[str] = []
         if not card:
             missing_items.append("基本面五维评分尚未生成或未通过核验")
@@ -321,6 +364,173 @@ class PlainAnswerBuilder:
             missing_items.append("来源之间存在冲突，需要交叉核对后再下判断")
         if abstain:
             missing_items.append("研究门禁暂未通过：" + "；".join(self._human_reason(item) for item in abstain[:3]))
+        # §3 数据可信度细化: surface per-asset fundamental coverage gaps so the
+        # user sees WHICH fundamentals are missing for this stock, not a blank
+        # completeness number ("训练说清楚"). Compliance-safe: it names missing
+        # data, never a price/target instruction.
+        if isinstance(fundamental_coverage, Mapping) and fundamental_coverage.get("status") == "ok":
+            missing_set = fundamental_coverage.get("missing") or []
+            cov_pct = fundamental_coverage.get("coverage_pct")
+            if isinstance(missing_set, list) and missing_set:
+                pct_txt = f"{cov_pct:g}%" if isinstance(cov_pct, (int, float)) else ""
+                missing_items.append(f"基本面覆盖{pct_txt}（缺：{'、'.join(missing_set)}），相关科目待补")
+        # §1 step 7 / §3 walk-forward: surface the model's realized directional
+        # accuracy + error for THIS stock as a reliability caveat — grounded in
+        # archived predicted-vs-actual, not a guess. Compliance-safe: it is a
+        # historical-accuracy caveat, never a forward instruction.
+        if isinstance(walk_forward_daily, Mapping) and walk_forward_daily.get("status") == "ok":
+            count = walk_forward_daily.get("decision_count")
+            acc = walk_forward_daily.get("directional_accuracy")
+            mae = walk_forward_daily.get("mean_abs_error")
+            bias = walk_forward_daily.get("mean_signed_error")
+            parts: list[str] = []
+            if isinstance(acc, (int, float)) and isinstance(count, int):
+                parts.append(f"历史方向命中{acc * 100:.0f}%（{count}次）")
+            if isinstance(mae, (int, float)):
+                parts.append(f"平均误差{mae * 100:.1f}%")
+            if isinstance(bias, (int, float)):
+                sign = "高估" if bias > 0 else ("低估" if bias < 0 else "无偏")
+                parts.append(f"系统性{sign}{abs(bias) * 100:.1f}%")
+            if parts:
+                missing_items.append("长期模型在该标的上的历史表现：" + "、".join(parts) + "，仅作研究参考")
+        # §1 row-2 / §2 three-piece: surface the CatBoost research-model
+        # direction readout + its real OOF accuracy (训练说清楚). Compliance-
+        # safe: it is a research readout + historical-accuracy caveat, never a
+        # buy/sell/target instruction — mirrors the walk-forward caveat framing.
+        if isinstance(catboost_direction, Mapping) and catboost_direction.get("direction") is not None:
+            direction = catboost_direction.get("direction")
+            proba = catboost_direction.get("probability")
+            dir_txt = "偏强" if direction == 1 else ("偏弱" if direction == 0 else "中性")
+            cb_parts: list[str] = []
+            if isinstance(proba, (int, float)):
+                cb_parts.append(f"置信{proba * 100:.0f}%")
+            if isinstance(catboost_accuracy, Mapping) and catboost_accuracy.get("status") == "ok":
+                acc = catboost_accuracy.get("directional_accuracy")
+                base = catboost_accuracy.get("majority_base_rate")
+                edge = catboost_accuracy.get("edge_over_base")
+                if isinstance(acc, (int, float)):
+                    cb_parts.append(f"OOF 方向命中{acc * 100:.1f}%")
+                if isinstance(edge, (int, float)):
+                    cb_parts.append(f"较基线高{edge * 100:.1f}个百分点")
+                # Per-regime granularity (训练说清楚: WHERE the model works).
+                # Surface the best regime only if it beats the global accuracy
+                # by >=5pts (notable) — e.g. "牛市命中率更高（76%）".
+                by_regime = catboost_accuracy.get("by_regime") or {}
+                if isinstance(by_regime, dict) and isinstance(acc, (int, float)):
+                    reg_label = {"bull": "牛市", "range": "震荡市", "high_vol": "高波动市", "bear": "熊市"}
+                    best = max(by_regime.values(), key=lambda m: m.get("directional_accuracy", 0)) if by_regime else None
+                    if isinstance(best, Mapping):
+                        best_reg = next((k for k, v in by_regime.items() if v is best), None)
+                        best_acc = best.get("directional_accuracy")
+                        if isinstance(best_acc, (int, float)) and best_acc - acc >= 0.05 and best_reg:
+                            lbl = reg_label.get(str(best_reg), str(best_reg))
+                            cb_parts.append(f"{lbl}命中率更高（{best_acc * 100:.0f}%）")
+            # §1 row-2 explainability (训练说清楚): name the top feature driver
+            # so the user sees WHAT drives the direction, not just the number.
+            if isinstance(catboost_feature_importance, Mapping) and catboost_feature_importance.get("status") == "ok":
+                feats = catboost_feature_importance.get("features") or []
+                if isinstance(feats, list) and feats and isinstance(feats[0], Mapping):
+                    top = feats[0]
+                    top_feat = top.get("feature")
+                    top_pct = top.get("importance_pct")
+                    feat_label = {
+                        "score": "长期模型得分", "regime": "市场状态",
+                        "industry_key": "行业", "feature_coverage": "数据覆盖度",
+                        "data_quality_status": "数据质量",
+                    }.get(str(top_feat), str(top_feat)) if top_feat else "特征"
+                    if isinstance(top_pct, (int, float)) and top_pct > 0:
+                        cb_parts.append(f"主要由{feat_label}驱动（{top_pct:.0f}%）")
+            if cb_parts:
+                missing_items.append(f"CatBoost 研究模型方向读数{dir_txt}（{'、'.join(cb_parts)}），仅作研究参考")
+        # §1 row-2 (round 27) / §2 three-piece (plain_answer render): surface
+        # the price-based 1/5/20d CatBoost horizon forecasts + their REAL holdout
+        # directional accuracy (训练说清楚). Compliance-safe: a research readout
+        # + historical-accuracy caveat, never a buy/sell/target instruction.
+        if isinstance(catboost_short_term_horizons, Mapping) and catboost_short_term_horizons.get("status") == "ok":
+            hz = catboost_short_term_horizons.get("horizons") or {}
+            if isinstance(hz, dict):
+                hz_parts: list[str] = []
+                for h in ("1d", "5d", "20d"):
+                    cell = hz.get(h)
+                    if not isinstance(cell, Mapping):
+                        continue
+                    d = cell.get("direction")
+                    p = cell.get("probability")
+                    acc = cell.get("directional_accuracy")
+                    if d in ("up", "down") and isinstance(p, (int, float)):
+                        tag = "看涨" if d == "up" else "看跌"
+                        seg = f"{h}方向{tag}（置信{p * 100:.0f}%）"
+                        if isinstance(acc, (int, float)):
+                            seg += f"／历史命中{acc * 100:.0f}%"
+                        hz_parts.append(seg)
+                if hz_parts:
+                    missing_items.append("短期 CatBoost 方向读数：" + "、".join(hz_parts) + "，仅作研究参考（短期噪声大、20d 相对稳）")
+        # §1 row-3 (round 28) / 训练说清楚 WHERE per-asset (short-term): surface
+        # the 1/5/20d model's REALIZED directional accuracy on THIS stock's
+        # history (replayed walk-forward) — distinct from the global holdout
+        # accuracy (训练说清楚 per-asset). Compliance-safe: a historical-accuracy
+        # caveat, never a forward instruction.
+        if isinstance(catboost_horizon_walk_forward_daily, Mapping) and catboost_horizon_walk_forward_daily.get("status") == "ok":
+            wf_hz = catboost_horizon_walk_forward_daily.get("horizons") or {}
+            if isinstance(wf_hz, dict):
+                wf_parts: list[str] = []
+                for h in ("1d", "5d", "20d"):
+                    cell = wf_hz.get(h)
+                    if not isinstance(cell, Mapping) or cell.get("status") != "ok":
+                        continue
+                    n = cell.get("decision_count")
+                    acc = cell.get("directional_accuracy")
+                    if isinstance(acc, (int, float)) and isinstance(n, int):
+                        wf_parts.append(f"{h}命中{acc * 100:.0f}%（{n}次）")
+                if wf_parts:
+                    missing_items.append("短期模型在该标的的历史表现：" + "、".join(wf_parts) + "，仅作研究参考")
+        # §1 row-5 (round 30) / §2 three-piece: surface the temporal price-path
+        # forecast (the trained kittenCN price-only LSTM) + its honest
+        # directional accuracy in the plain answer (训练说清楚). Compliance-safe:
+        # a research readout + historical-accuracy caveat, never a target price.
+        if isinstance(price_path_forecast, Mapping) and price_path_forecast.get("status") == "ok":
+            model = price_path_forecast.get("model")
+            ep = price_path_forecast.get("endpoint_q50")
+            q10 = price_path_forecast.get("endpoint_q10")
+            q90 = price_path_forecast.get("endpoint_q90")
+            hz = price_path_forecast.get("horizon_days")
+            acc = price_path_forecast.get("directional_accuracy")
+            is_temporal = isinstance(model, str) and "temporal" in model
+            if isinstance(ep, (int, float)) and isinstance(hz, int):
+                pp_parts: list[str] = [f"未来{hz}日中位路径约{ep:g}"]
+                if isinstance(q10, (int, float)) and isinstance(q90, (int, float)):
+                    pp_parts.append(f"区间{q10:g}~{q90:g}")
+                if isinstance(acc, (int, float)):
+                    pp_parts.append(f"历史方向命中{acc * 100:.0f}%")
+                # adapt the architecture qualifier to the actual trained model:
+                # vendored TemporalHybridNet (round 31) vs self-contained LSTM (round 29).
+                if isinstance(model, str) and "temporal_hybrid" in model:
+                    tag = "时序混合网络（kittenCN 价格路径）"
+                elif is_temporal:
+                    tag = "时序 LSTM（kittenCN 价格路径）"
+                else:
+                    tag = "价格路径"
+                missing_items.append(tag + "：" + "、".join(pp_parts) + "，仅作研究参考（路径为模型推演，不构成投资建议）")
+        # §3 / 训练说清楚 WHERE (long-term, global): surface the long-term model's
+        # global directional accuracy by regime as a system-level reliability
+        # caveat — distinct from the per-asset walk_forward. Compliance-safe:
+        # a historical-accuracy caveat, never buy/sell.
+        if isinstance(long_term_directional_by_regime, Mapping) and long_term_directional_by_regime.get("status") == "ok":
+            g_acc = long_term_directional_by_regime.get("directional_accuracy")
+            by_reg = long_term_directional_by_regime.get("by_regime") or {}
+            reg_label = {"bull": "牛市", "range": "震荡市", "high_vol": "高波动市", "bear": "熊市"}
+            lt_parts: list[str] = []
+            if isinstance(g_acc, (int, float)):
+                lt_parts.append(f"整体方向命中{g_acc * 100:.1f}%")
+            # Surface the best + worst regime (WHERE the long-term model works).
+            if isinstance(by_reg, dict) and by_reg:
+                items = [(reg_label.get(str(k), str(k)), v.get("directional_accuracy")) for k, v in by_reg.items() if isinstance(v, Mapping) and isinstance(v.get("directional_accuracy"), (int, float))]
+                if items:
+                    items.sort(key=lambda kv: kv[1], reverse=True)
+                    best_lbl, best_acc = items[0]
+                    lt_parts.append(f"{best_lbl}命中率更高（{best_acc * 100:.0f}%）")
+            if lt_parts:
+                missing_items.append("长期模型整体表现：" + "、".join(lt_parts) + "，仅作研究参考")
         if not missing_items:
             missing_items.append("目前证据相对完整；仍建议持续关注下一次定期报告和重大披露")
         return "；".join(missing_items) + "。"

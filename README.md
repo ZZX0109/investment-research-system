@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-149ECA?logo=react&logoColor=white)
-![Tests](https://img.shields.io/badge/Python_tests-637_passed-16A34A)
+![Tests](https://img.shields.io/badge/Python_tests-797_passed-16A34A)
 ![Research Only](https://img.shields.io/badge/status-research__only-7C3AED)
 ![Deployment](https://img.shields.io/badge/deployment__ready-false-B45309)
 
@@ -26,6 +26,7 @@
 - 网页操作：[用户操作手册](docs/用户操作手册.md)
 - 带截图的 Word 版本：[A 股量化研究平台－界面与操作手册](docs/A股量化研究平台-界面与操作手册.docx)
 - 技术原理：[技术白皮书](docs/technical-whitepaper.md)
+- 数据源与资源：[数据源及授权资源矩阵](docs/data-source-resource-matrix.md)
 - WorkBuddy 接入：[MCP 连接指南](docs/WorkBuddy-MCP接入指南.md)
 - 最快启动：`npm run dev:research-platform`
 - 比赛演示：[长期投资 AI 研究助手 · 比赛演示手册](docs/competition-demo.md)
@@ -538,7 +539,105 @@ python3 scripts/audit_long_term_readiness.py
 python3 scripts/build_cn_macro_pit.py
 ```
 
-当前公开源未提供可核验的发布日期，宏观记录会保持 `degraded` 并进入下载清单阻断项，不能直接进入历史训练。
+国家统计局原文发布日期证据可用以下命令抓取；无法取得原文 `PubDate` 时仍保持缺失，不把计划日期或抓取时间当成实际发布时间：
+
+```bash
+python3 scripts/fetch_cn_macro_actual_release_nbs.py
+```
+
+当前宏观记录仍有未匹配的历史发布日期，因此会保持 `degraded` 并进入下载清单阻断项，不能直接进入历史训练。
+
+当前全 A 股/ETF 证券枚举可用以下命令追加落地；该枚举扩大证券主数据分母，但不等同于历史行情或生命周期证明：
+
+```bash
+python3 scripts/fetch_cn_security_master_universe.py
+python3 scripts/build_cn_security_master.py
+```
+
+将该枚举送入可断点续跑的研究行情回补（公开 BaoStock 备用链）可使用：
+
+```bash
+python3 scripts/fetch_free_research_data.py \
+  --markets cn --only prices --full-history \
+  --symbols-file artifacts/cn_security_master_universe/security_master_current.json \
+  --cn-price-primary baostock \
+  --output artifacts/free_research_coverage_full_universe.json
+```
+
+该命令按证券和复权模式追加 raw payload；中断后重复执行会复用已覆盖批次，失败证券保留
+在 coverage ledger 中，不会被当作“无数据”。
+
+大规模回补可使用进程级 BaoStock worker；worker 只返回 provider bytes，由主进程统一写入
+catalog，适合按 `--max-symbols` 或外部队列分批执行：
+
+```bash
+python3 scripts/fetch_cn_baostock_parallel.py \
+  --symbols-file artifacts/cn_security_master_universe/security_master_current.json \
+  --workers 4 --chunk-size 5 \
+  --output artifacts/free_research_coverage_baostock_parallel.json
+```
+
+该命令仍是 `research_pit`，并不会绕过发布时间、历史生命周期或 active snapshot 门禁。
+并行 worker 对登录和单证券请求分别设置进程级 deadline；BaoStock 网络异常会记录为
+`fetch_failed` 并进入覆盖账本，不会阻塞整批任务，也不会被解释为“无历史数据”。
+
+需要并行拆分时，可用 `--shard-index/--shard-count` 生成多个独立账本，再合并：
+
+```bash
+python3 scripts/fetch_free_research_data.py ... --shard-index 0 --shard-count 8 \
+  --output artifacts/free_research_coverage_cn_0.json
+python3 scripts/merge_free_research_coverage.py \
+  --inputs artifacts/free_research_coverage_cn_*.json \
+  --symbols-file artifacts/cn_security_master_universe/security_master_current.json \
+  --output artifacts/free_research_coverage_full_universe.json
+```
+
+已有 raw 行情批次可显式扩展到当前枚举之外的全部已下载证券；该操作只生成研究级
+standard Parquet/快照，不生成正式 active 指针：
+
+```bash
+python3 scripts/rebuild_cn_research_pit.py \
+  --include-all-raw-symbols --skip-samples \
+  --output-root artifacts/free_research_rebuild_all_raw_standard
+python3 scripts/build_cn_security_master.py
+```
+
+`--skip-samples` 只用于大 universe 的标准层回补；训练样本仍必须在固定 PIT 股票池、
+历史成员和发布时间证明通过后单独构建。
+
+候选模型评估单独生成可审计契约，记录四项任务的报告/预测文件哈希、逐模型缺失字段和
+promotion 条件，但不会把研究候选提升为正式模型：
+
+```bash
+python3 scripts/build_candidate_evaluation_contract.py
+```
+
+契约产物位于 `artifacts/long_term_training/candidate-suite/evaluation-contract.json`；
+`status=incomplete` 是当前容量评估或稳定性指标未完成的明确证据，只有完整指标、模型
+artifact、预测文件、Shadow 与 active 快照门禁全部通过后，才允许另行执行正式注册。
+
+全市场数据补齐使用显式计划，默认只读并列出每个数据集的覆盖率、门禁、来源和下一条命令：
+
+```bash
+python3 scripts/run_cn_data_completion.py
+python3 scripts/run_cn_data_completion.py --execute --step historical_prices
+```
+
+执行模式必须逐步指定，且仍不会写入 `var/cn-research/active.json`；计划与每次执行日志写入
+`artifacts/cn_data_completion_plan/latest.json`。
+
+生命周期补充证据可在当前全市场范围执行：
+
+```bash
+python3 scripts/fetch_cn_security_status_disclosures_cninfo.py --all-current-universe
+python3 scripts/fetch_cn_security_name_history_sina.py --all-current-universe
+```
+
+CNINFO 公告回补按证券增量写入 `progress.json`，中断后可直接重跑继续。
+
+最终交付状态汇总见 `artifacts/optimization_delivery/latest.json`，其中同时核验数据完成、
+PIT/active、模型指标、Shadow、Agent 引用和前端构建；任一门禁未通过时发布通道保持
+`research_only`。
 
 结果写入 `artifacts/download_manifests/latest.json`。当前审计已发现行情、复权、
 财报、行业、公司行为、事件、融资、宏观、交易状态和 PIT 时间记录；但交易状态仍是
@@ -740,7 +839,7 @@ artifacts/free_research_models/
 - 模型/校准器/roster hash、数据质量 mask、事件缺失 mask、cache 状态。
 - 是否 abstain 以及完整 reason code。
 
-回填只追加，不回写预测，在 T+1/T+5/T+20/T+60 记录收益、方向、MAE/MFE、最大回撤、停牌/涨跌停与数据完整性。20 个有效 session 才生成第一份前向报告；60 个有效 session 后才允许考虑更换 research primary。免费数据 Shadow 永远不计入正式发布门槛。
+回填只追加，不回写预测，在 T+1/T+5/T+20/T+60 记录收益、方向、MAE/MFE、最大回撤、停牌/涨跌停与数据完整性。20 个独立有效交易日才生成第一份前向报告；60 个独立有效交易日后才允许考虑更换 research primary。免费数据 Shadow 永远不计入正式发布门槛。
 
 需要回填时：
 
@@ -749,6 +848,14 @@ python3 scripts/backfill_research_shadow.py \
   --session-id <shadow-session-uuid> \
   --standard-manifest <对应标准层-manifest.json>
 ```
+
+跨多个研究运行汇总 Shadow 时，必须按独立有效交易日去重，不能用同一交易日的多只证券凑数：
+
+```bash
+python3 scripts/build_research_shadow_summary.py
+```
+
+结果写入 `artifacts/research_shadow/summary.json`，同时保留原始 session 数、有效交易日数、回填进度和缺失原因。
 
 ## 13.1 持续更新与受控自进化
 

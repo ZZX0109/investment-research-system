@@ -6,11 +6,15 @@ metadata.  They do not promote public backfills to formal PIT data.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import json
+import multiprocessing
 from pathlib import Path
 import random
+import signal
+import threading
 import time
 from typing import Any, TypeVar
 
@@ -67,12 +71,17 @@ def call_with_retry(
     limiter: SerialRateLimiter,
     sleep: Callable[[float], None] = time.sleep,
     random_value: Callable[[], float] = random.random,
+    timeout_seconds: float | None = None,
+    hard_timeout: bool = False,
 ) -> tuple[T, int]:
     failures: list[str] = []
     for attempt in range(1, policy.max_attempts + 1):
         limiter.wait()
         try:
-            return operation(), attempt
+            if hard_timeout:
+                return _call_in_isolated_process(operation, timeout_seconds), attempt
+            with _operation_timeout(timeout_seconds):
+                return operation(), attempt
         except Exception as exc:
             failures.append(f"attempt={attempt}:{type(exc).__name__}:{exc}")
             if attempt == policy.max_attempts:
@@ -81,6 +90,86 @@ def call_with_retry(
             jitter = base * policy.jitter_ratio * random_value()
             sleep(base + jitter)
     raise RuntimeError("provider retries exhausted:" + ";".join(failures))
+
+
+def _call_in_isolated_process(operation: Callable[[], T], timeout_seconds: float | None) -> T:
+    """Run one public-provider operation in a killable child process.
+
+    A few third-party clients swallow socket exceptions or block below Python's
+    signal handling.  The daily collector must be able to abandon one bad
+    request; using ``fork`` preserves the zero-argument operation closure
+    without serialising provider clients.  It is intentionally opt-in because
+    callers with in-process side effects should retain normal retry semantics.
+    """
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return operation()
+    try:
+        context = multiprocessing.get_context("fork")
+    except ValueError:
+        # The supported production platforms expose fork.  Keep the signal
+        # guard as a portable fallback for constrained environments.
+        with _operation_timeout(timeout_seconds):
+            return operation()
+    receiver, sender = context.Pipe(duplex=False)
+
+    def execute() -> None:
+        try:
+            sender.send((True, operation()))
+        except BaseException as exc:
+            sender.send((False, f"{type(exc).__name__}:{exc}"))
+        finally:
+            sender.close()
+
+    process = context.Process(target=execute, daemon=True)
+    process.start()
+    sender.close()
+    process.join(float(timeout_seconds))
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        receiver.close()
+        raise TimeoutError(f"provider request exceeded {timeout_seconds:g}s")
+    try:
+        if not receiver.poll():
+            raise RuntimeError(f"provider process exited without a result (exitcode={process.exitcode})")
+        succeeded, value = receiver.recv()
+    finally:
+        receiver.close()
+    if not succeeded:
+        raise RuntimeError(str(value))
+    return value
+
+
+@contextmanager
+def _operation_timeout(seconds: float | None):
+    """Interrupt a stuck public-provider request in the collector main thread.
+
+    Free public endpoints occasionally hold an established socket forever.
+    ``signal.setitimer`` keeps the serial collector bounded without creating
+    unkillable executor threads.  In a non-main thread, callers retain the
+    previous behaviour; production collection is always invoked on its main
+    thread through the worker subprocess.
+    """
+    if (
+        seconds is None
+        or seconds <= 0
+        or not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        yield
+        return
+    previous_handler = signal.getsignal(signal.SIGALRM)
+
+    def _expired(_signum, _frame):
+        raise TimeoutError(f"provider request exceeded {seconds:g}s")
+
+    signal.signal(signal.SIGALRM, _expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, float(seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 class CollectionCursor(BaseModel):

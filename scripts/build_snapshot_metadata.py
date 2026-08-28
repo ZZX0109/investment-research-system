@@ -14,6 +14,8 @@ from pathlib import Path
 
 from investment_research.training.snapshot_landing import load_pit_leakage_audit
 
+ETF_SYMBOLS = {"510050", "510300", "510500", "159915", "512100"}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -83,7 +85,7 @@ def main() -> int:
         })
         if item.get("symbol"):
             symbols.add(str(item["symbol"]))
-        if dataset in {"cn_security_master_research", "cn_industry_mapping"} and item.get("symbol"):
+        if dataset in {"cn_security_master_research", "cn_industry_mapping"} and item.get("symbol") and str(item.get("symbol")) not in ETF_SYMBOLS:
             industries.add(str(item["symbol"]))
         # The same payload may be represented by coverage and catalog rows.
         if entry["quality_status"] == "complete" and item.get("status") not in {"complete", "backfilled"}:
@@ -91,7 +93,7 @@ def main() -> int:
     manifest_metadata = {
         "target_symbol_count": int(manifest.get("target_symbol_count", 0) or len(symbols)),
         "observed_symbol_count": int(manifest.get("observed_symbol_count", 0) or len(symbols)),
-        "industry_target_symbol_count": len(symbols),
+        "industry_target_symbol_count": len({symbol for symbol in symbols if symbol not in ETF_SYMBOLS}),
         "industry_observed_symbol_count": len(industries),
         "financial_target_field_count": int(manifest.get("financial_target_field_count", 0) or 0),
         "financial_observed_field_count": int(manifest.get("financial_observed_field_count", 0) or 0),

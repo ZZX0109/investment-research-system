@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "verify": "python3 -m pytest -q && npm run build && npm test",
+    "verify": "python3 -m pytest -q && npm run typecheck:workbench && npm run build && npm test",
+    "typecheck:workbench": "tsc -p workbench-ui/tsconfig.json --noEmit",
     "build": "npm run build:platform && npm run build:workbench",
     "build:adapter": "tsc -p tsconfig.json",
     "build:platform": "npm run build:adapter",

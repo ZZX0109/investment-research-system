@@ -11,6 +11,7 @@ from investment_research.api.routes import (
     get_analysis_provider_registry,
     get_analysis_provider_settings,
     get_unit_of_work,
+    research_delivery_manifest,
 )
 from investment_research.auth.security import AuthSettings
 from investment_research.auth.service import AuthService
@@ -115,6 +116,28 @@ def test_research_lifecycle_status_exposes_research_only_boundary(tmp_path) -> N
     assert payload["deployment_ready"] is False
     assert isinstance(payload["jobs"], list)
     assert isinstance(payload["blocking_reasons"], list)
+
+
+def test_research_delivery_manifest_is_read_only_and_fail_closed(tmp_path, monkeypatch) -> None:
+    delivery = tmp_path / "artifacts" / "optimization_delivery" / "latest.json"
+    delivery.parent.mkdir(parents=True)
+    delivery.write_text(json.dumps({
+        "schema_version": "investment-research-optimization-delivery-v1",
+        "status": "blocked",
+        "release_channel": "research_only",
+        "formal_pit_eligible": False,
+        "deployment_ready": False,
+        "gates": {"frontend_build": True},
+        "missing_gates": ["active_snapshot"],
+    }), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    # Call the read-only handler directly.  The authenticated TestClient setup
+    # runs Alembic relative to the process cwd, while this fixture deliberately
+    # changes cwd to verify the handler's fail-closed artifact lookup.
+    payload = research_delivery_manifest(user=object())
+    assert payload["release_channel"] == "research_only"
+    assert payload["deployment_ready"] is False
+    assert payload["missing_gates"] == ["active_snapshot"]
 
 
 def test_latest_long_term_scorecard_is_read_only_and_fail_closed(tmp_path) -> None:
@@ -232,8 +255,16 @@ def test_agent_function_tool_contract_is_authenticated_and_read_only(tmp_path) -
         "get_long_term_model_readings",
         "get_long_term_data_trust",
         "get_long_term_evidence_balance",
-        "get_long_term_fact_cards",
-        "search_latest_news",
+            "get_long_term_fact_cards",
+            "get_stock_analysis_context",
+            "search_latest_news",
+        "web_search",
+        "get_fund_flow",
+        "get_margin_data",
+        "get_dragon_tiger",
+        "get_current_regime",
+        "get_sector_rotation",
+        "get_price_path_forecast",
     ]
     assert all(tool["parameters"]["additionalProperties"] is False for tool in tools)
 
@@ -517,7 +548,7 @@ def test_domain_catalog_can_expose_stub_provider_configuration() -> None:
         "market_data_provider": "stub_realtime",
         "evidence_provider": "stub",
     }
-    assert response.json()["analysis_providers"][0]["provider_name"] == "stub-realtime-market-data-provider"
+    assert response.json()["analysis_providers"][0]["provider_name"] == "xystock-realtime-market-data-provider"
 
 
 def test_real_mode_rejects_synthetic_asset_source(tmp_path) -> None:
@@ -1778,11 +1809,11 @@ def test_real_mode_analysis_can_use_stub_provider_configuration(tmp_path) -> Non
 
     snapshot = analysis_response.json()["snapshot"]
     assert analysis_response.status_code == 201
-    assert snapshot["price_provider_name"] == "stub-realtime-market-data-provider"
-    assert snapshot["price_provider_version"] == "0.1.0"
-    assert snapshot["price_provider_status"] == "stub_real_time"
-    assert snapshot["evidence_provider_name"] == "stub-realtime-evidence-provider"
-    assert snapshot["evidence_provider_status"] == "stub_real_time"
+    assert snapshot["price_provider_name"] == "xystock-realtime-market-data-provider"
+    assert snapshot["price_provider_version"] == "1.0.0"
+    assert snapshot["price_provider_status"] == "real_time"
+    assert snapshot["evidence_provider_name"] == "fortune-realtime-evidence-provider"
+    assert snapshot["evidence_provider_status"] == "real_time"
 
 
 def test_report_generation_uses_fixed_analysis_run_bundle(tmp_path) -> None:

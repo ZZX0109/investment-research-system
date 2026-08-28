@@ -12,6 +12,7 @@ from investment_research.api.auth_routes import router as auth_router
 from investment_research.api.routes import router
 from investment_research.api.agent_routes import router as agent_router
 from investment_research.api.workbuddy_routes import router as workbuddy_router
+from investment_research.api.paper_game_routes import router as paper_game_router
 from investment_research.api.security_middleware import BasicRateLimiter, allowed_origins, security_headers
 from investment_research.public_demo import competition_mode_enabled
 from investment_research.auth.security import validate_auth_settings
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(BasicRateLimiter())
     app.middleware("http")(security_headers)
     app.include_router(router)
+    app.include_router(paper_game_router)
     if not competition_mode_enabled():
         app.include_router(auth_router)
     app.include_router(agent_router)

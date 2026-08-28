@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from investment_research.domain.trusted_market import (
     IngestionJob,
@@ -22,6 +23,9 @@ T = TypeVar("T", bound=BaseModel)
 class TrustedMarketRepository:
     def __init__(self, connection) -> None:
         self.connection = connection
+        # Rebuild/audit callers can opt into tolerant hydration for legacy
+        # catalog rows while still receiving an explicit validation trail.
+        self.last_raw_batch_errors: list[dict[str, str]] = []
 
     def add_security(self, item: SecurityMasterRecord) -> SecurityMasterRecord:
         self.connection.execute(
@@ -117,7 +121,7 @@ class TrustedMarketRepository:
 
     def raw_batches(
         self, *, dataset: str | None = None, data_tier: str | None = None,
-        symbol: str | None = None,
+        symbol: str | None = None, strict: bool = True,
     ) -> list[RawDataBatch]:
         """List immutable raw batches for replay/rebuild workflows.
 
@@ -125,9 +129,44 @@ class TrustedMarketRepository:
         JSON catalog representation used by the PostgreSQL cutover path.
         """
         rows = self.connection.execute(
-            "SELECT payload_json FROM raw_data_batches ORDER BY fetched_at"
+            "SELECT rowid, payload_json FROM raw_data_batches ORDER BY fetched_at"
         ).fetchall()
-        items = [RawDataBatch.model_validate_json(str(row[0])) for row in rows]
+        items: list[RawDataBatch] = []
+        errors: list[dict[str, str]] = []
+        for row_id, row in rows:
+            raw_text = str(row)
+            # Filter on the denormalized JSON keys before Pydantic hydration.
+            # Legacy rows from another dataset must not make an otherwise
+            # valid filtered rebuild fail; rows matching the requested scope
+            # are still validated and, in tolerant mode, reported.
+            try:
+                payload = json.loads(raw_text)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                if strict:
+                    raise
+                errors.append({"row_id": str(row_id), "error": f"{type(exc).__name__}:{exc}"})
+                continue
+            if not isinstance(payload, dict):
+                exc = TypeError("raw_data_batch_payload_must_be_object")
+                if strict:
+                    raise exc
+                errors.append({"row_id": str(row_id), "error": f"{type(exc).__name__}:{exc}"})
+                continue
+            if dataset is not None and payload.get("dataset") != dataset:
+                continue
+            payload_tier = payload.get("data_tier")
+            if data_tier is not None and payload_tier not in {None, data_tier}:
+                continue
+            try:
+                items.append(RawDataBatch.model_validate(payload))
+            except (ValidationError, TypeError, ValueError) as exc:
+                if strict:
+                    raise
+                errors.append({
+                    "row_id": str(row_id),
+                    "error": f"{type(exc).__name__}:{exc}",
+                })
+        self.last_raw_batch_errors = errors
         return [
             item for item in items
             if (dataset is None or item.dataset == dataset)

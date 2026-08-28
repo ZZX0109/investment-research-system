@@ -2,6 +2,7 @@
 """Download CNINFO special-treatment and delisting announcements."""
 from __future__ import annotations
 
+import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import json
@@ -17,6 +18,7 @@ from investment_research.domain.data_tier import DataTier
 from investment_research.repository.sqlite import SQLiteUnitOfWork
 from investment_research.service.object_store import LocalObjectStore
 from investment_research.service.trusted_ingestion import RawPayloadIngestionService
+from investment_research.service.cn_universe import load_cn_symbols
 from fetch_cn_financial_disclosures_cninfo import _fetch_symbol, _load_org_ids
 
 ETF = {"159915", "510050", "510300", "510500", "512100"}
@@ -25,11 +27,17 @@ CATEGORY_CODE = "category_tbclts_szsh"
 
 
 def main() -> int:
-    target = json.loads((PROJECT / "config/cn_research_target_167_symbols.json").read_text())
-    symbols = sorted({str(x).zfill(6) for x in target["cn"] if str(x).zfill(6) not in ETF})
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target-symbols", type=Path, default=PROJECT / "config/cn_research_target_167_symbols.json")
+    parser.add_argument("--all-current-universe", action="store_true")
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--output-root", type=Path, default=PROJECT / "artifacts/cn_security_status_disclosures_cninfo")
+    args = parser.parse_args()
+    target_path = PROJECT / "artifacts/cn_security_master_universe/security_master_current.json" if args.all_current_universe else args.target_symbols
+    symbols = load_cn_symbols(target_path, exclude_etf=True)
     org_ids = _load_org_ids()
     results = {}
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(args.workers, 8))) as pool:
         futures = {pool.submit(_fetch_status, symbol, org_ids.get(symbol)): symbol for symbol in symbols}
         for index, future in enumerate(as_completed(futures), start=1):
             symbol = futures[future]
@@ -40,7 +48,7 @@ def main() -> int:
             print(f"fetched {index}/{len(symbols)} {symbol} {results[symbol].get('status')}", flush=True)
     uow = SQLiteUnitOfWork(PROJECT / "var/cn-research/catalog.db")
     service = RawPayloadIngestionService(uow, object_store=LocalObjectStore(PROJECT / "var/cn-research/raw"))
-    output = PROJECT / "artifacts/cn_security_status_disclosures_cninfo"
+    output = args.output_root
     output.mkdir(parents=True, exist_ok=True)
     try:
         for symbol, result in sorted(results.items()):

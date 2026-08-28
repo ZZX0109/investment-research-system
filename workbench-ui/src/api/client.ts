@@ -22,6 +22,21 @@ import {
   getSandboxSession,
   getSandboxWatchlists
 } from "./demoData";
+import {
+  getDemoTestOfficerAuditRunDetail,
+  getDemoTestOfficerComparison,
+  getDemoTestOfficerEvidenceIndex,
+  getDemoTestOfficerFixtures,
+  getDemoTestOfficerHistory,
+  getDemoTestOfficerJudgeReport,
+  getDemoTestOfficerManifest,
+  getDemoTestOfficerMissionPackage,
+  getDemoTestOfficerOnboardingProtocol,
+  getDemoTestOfficerOracles,
+  getDemoTestOfficerRegistryManifest,
+  getDemoTestOfficerScenarios,
+  getDemoTestOfficerSelectorMaps
+} from "./testOfficerDemo";
 import { buildRunComparisonSummary } from "./runComparison";
 import { buildRunLineageTimeline } from "./runLineage";
 import {
@@ -61,6 +76,7 @@ import type {
   ResearchShadowSession,
   ResearchShadowSummary,
   ResearchLifecycleStatus,
+  ResearchDeliveryManifest,
   SessionResponse,
   LLMProviderProfile,
   LLMCredentialSummary,
@@ -69,6 +85,8 @@ import type {
   FinancialKnowledgeCoverage,
   FinancialKnowledgeDocument,
   FinancialKnowledgeSearchResult,
+  ResearchDataQualityReport,
+  ResearchDiscoveryResult,
   User,
   Watchlist,
   WorkbenchMode,
@@ -76,7 +94,27 @@ import type {
   ConversationSession,
   ConversationMessageResponse,
   ConversationCreateInput,
-  ConversationMessageInput
+  ConversationMessageInput,
+  TestOfficerAuditRun,
+  TestOfficerAuditRunDetail,
+  TestOfficerComparisonReport,
+  TestOfficerCredentialSummary,
+  TestOfficerCredentialUpsertRequest,
+  TestOfficerEvidenceRegistryResource,
+  TestOfficerFixtureRegistryResource,
+  TestOfficerHistoryIndex,
+  TestOfficerJudgeReportResource,
+  TestOfficerManifest,
+  TestOfficerMissionPackageResource,
+  TestOfficerMissionPreview,
+  TestOfficerOnboardingDraft,
+  TestOfficerOnboardingProtocolResource,
+  TestOfficerOracleRegistryResource,
+  TestOfficerRegistryManifest,
+  TestOfficerRunRequest,
+  TestOfficerRunResponse,
+  TestOfficerScenarioRegistryResource,
+  TestOfficerSelectorMapResource
 } from "./types";
 
 interface AssetCreateInput {
@@ -437,11 +475,24 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     },
     getDeploymentStatus: () => apiFetch<DeploymentStatus>("/api/v1/models/deployment-status"),
     getResearchAcceptance: () => apiFetch<ResearchAcceptanceReport>("/api/v1/research-acceptance"),
+    getResearchCompletion: () => apiFetch<import("./types").ResearchCompletionReport>("/api/v1/research-completion"),
+    getResearchDataQuality: () => apiFetch<ResearchDataQualityReport>("/api/v1/research-data/quality"),
+    getResearchDiscovery: (params: { query?: string; limit?: number; assetType?: "all" | "equity" | "etf"; eligibility?: "all" | "model" | "quote_only" | "unavailable" } = {}) => {
+      const search = new URLSearchParams({
+        limit: String(params.limit ?? 60),
+        asset_type: params.assetType ?? "all",
+        eligibility: params.eligibility ?? "all",
+      });
+      if (params.query?.trim()) search.set("query", params.query.trim());
+      return apiFetch<ResearchDiscoveryResult>(`/api/v1/research-data/discovery?${search.toString()}`);
+    },
+    getResearchDelivery: () => apiFetch<ResearchDeliveryManifest>("/api/v1/research-delivery"),
     getMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation`),
     refreshMarketObservation: (assetId: string) => apiFetch<import("./types").MarketObservation>(`/api/v1/assets/${assetId}/market-observation/refresh`, { method: "POST" }),
     getDirectionalForecast: (runId: string) => apiFetch<import("./types").DirectionalForecastResponse>(`/api/v1/analysis-runs/${runId}/directional-forecast`),
     getResearchForecast: (runId: string) => apiFetch<import("./types").ResearchForecastBundle>(`/api/v1/analysis-runs/${runId}/research-forecast`),
     getLatestLongTermScorecard: (symbol: string) => apiFetch<import("./types").LongTermScorecardResponse>(`/api/v1/research-scorecards/latest?symbol=${encodeURIComponent(symbol)}`),
+    getResearchCompare: (symbols: string[]) => apiFetch<import("./types").ResearchCompareResponse>(`/api/v1/research-compare?symbols=${encodeURIComponent(symbols.join(","))}`),
     getLatestResearchPrediction: (symbol: string, task: import("./types").LatestResearchPrediction["task"] = "drawdown_20d") =>
       apiFetch<import("./types").LatestResearchPrediction>(
         `/api/v1/research-predictions/latest?symbol=${encodeURIComponent(symbol)}&task=${encodeURIComponent(task)}`
@@ -602,6 +653,18 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
         : apiFetch<AssetSnapshot>(
             `/api/v1/assets/${assetId}/snapshot${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""}`
           ),
+    getPaperGameToday: () => apiFetch<import("./types").PaperGameToday>("/api/v1/paper-game/today"),
+    createPaperGameAccount: (personaCode?: string | null) => apiFetch<import("./types").PaperGameAccount>("/api/v1/paper-game/accounts", {
+      method: "POST", body: JSON.stringify({ persona_code: personaCode ?? null })
+    }),
+    getPaperGameAccount: () => apiFetch<import("./types").PaperGameAccount>("/api/v1/paper-game/account"),
+    getPaperGameOnboarding: () => apiFetch<import("./types").PaperGameOnboarding>("/api/v1/paper-game/onboarding"),
+    confirmPaperGameOnboarding: (payload: { positions: Array<{ symbol: string; quantity: number }>; idempotency_key: string }) => apiFetch<import("./types").PaperGameAccount>("/api/v1/paper-game/onboarding/confirm", { method: "POST", body: JSON.stringify(payload) }),
+    createPaperGameOrder: (payload: { symbol: string; side: "buy" | "sell"; quantity?: number; amount?: number; idempotency_key: string }) =>
+      apiFetch<import("./types").PaperGameOrder>("/api/v1/paper-game/orders", { method: "POST", body: JSON.stringify(payload) }),
+    cancelPaperGameOrder: (orderId: string) => apiFetch<import("./types").PaperGameOrder>(`/api/v1/paper-game/orders/${orderId}`, { method: "DELETE" }),
+    getPaperGameLeaderboard: () => apiFetch<import("./types").PaperGameLeaderboard>("/api/v1/paper-game/leaderboard"),
+    getPaperGameEquityCurve: () => apiFetch<import("./types").PaperGameEquityCurve>("/api/v1/paper-game/equity-curve"),
     listConversations: () =>
       dataSource !== "api"
         ? Promise.resolve<ConversationSession[]>([])
@@ -623,7 +686,82 @@ export function createWorkbenchClient(mode: WorkbenchMode) {
     getConversation: (sessionId: string) =>
       dataSource !== "api"
         ? Promise.resolve(buildStubConversation({ asset_id: sessionId, as_of: new Date().toISOString() }))
-        : apiFetch<ConversationSession>(`/api/v1/conversations/${sessionId}`)
+        : apiFetch<ConversationSession>(`/api/v1/conversations/${sessionId}`),
+    // Optional Test Officer QA surfaces. They are isolated from research data
+    // and use deterministic fixtures in seeded modes; real mode delegates to
+    // the backend when that service is enabled.
+    getTestOfficerManifest: () =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerManifest>("/api/v1/test-officer/manifest")
+        : Promise.resolve(getDemoTestOfficerManifest()),
+    getTestOfficerHistory: (missionId?: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerHistoryIndex>(`/api/v1/test-officer/history${missionId ? `?mission_id=${encodeURIComponent(missionId)}` : ""}`)
+        : Promise.resolve(getDemoTestOfficerHistory()),
+    getTestOfficerComparison: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerComparisonReport>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/comparison`)
+        : Promise.resolve(getDemoTestOfficerComparison()),
+    getTestOfficerRegistryManifest: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerRegistryManifest>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/registry`)
+        : Promise.resolve(getDemoTestOfficerRegistryManifest()),
+    getTestOfficerOnboardingProtocol: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerOnboardingProtocolResource>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/onboarding-protocol`)
+        : Promise.resolve(getDemoTestOfficerOnboardingProtocol()),
+    getTestOfficerMissionPackage: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerMissionPackageResource>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/mission-package`)
+        : Promise.resolve(getDemoTestOfficerMissionPackage()),
+    getTestOfficerSelectorMaps: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerSelectorMapResource>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/selector-maps`)
+        : Promise.resolve(getDemoTestOfficerSelectorMaps()),
+    getTestOfficerFixtures: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerFixtureRegistryResource[]>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/fixtures`)
+        : Promise.resolve(getDemoTestOfficerFixtures()),
+    getTestOfficerScenarios: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerScenarioRegistryResource[]>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/scenarios`)
+        : Promise.resolve(getDemoTestOfficerScenarios()),
+    getTestOfficerOracles: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerOracleRegistryResource[]>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/oracles`)
+        : Promise.resolve(getDemoTestOfficerOracles()),
+    getTestOfficerEvidenceIndex: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerEvidenceRegistryResource[]>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/evidence-index`)
+        : Promise.resolve(getDemoTestOfficerEvidenceIndex()),
+    getTestOfficerJudgeReportResource: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerJudgeReportResource>(`/api/v1/test-officer/runs/${encodeURIComponent(runId)}/judge-report`)
+        : Promise.resolve(getDemoTestOfficerJudgeReport()),
+    getTestOfficerAuditRuns: () =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerAuditRun[]>("/api/v1/test-officer/audit-runs")
+        : Promise.resolve(buildSeededAuditRuns()),
+    getTestOfficerAuditRunDetail: (runId: string) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerAuditRunDetail>(`/api/v1/test-officer/audit-runs/${encodeURIComponent(runId)}`)
+        : Promise.resolve(buildSeededAuditRunDetail(runId)),
+    previewTestOfficerMission: (payload: TestOfficerOnboardingDraft) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerMissionPreview>("/api/v1/test-officer/missions/preview", { method: "POST", body: JSON.stringify(payload) })
+        : Promise.resolve(buildSeededMissionPreview(payload)),
+    createTestOfficerRun: (payload: TestOfficerRunRequest) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerRunResponse>("/api/v1/test-officer/runs", { method: "POST", body: JSON.stringify(payload) })
+        : Promise.resolve(buildSeededRunResponse(payload)),
+    listTestOfficerCredentials: () =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerCredentialSummary[]>("/api/v1/test-officer/credentials")
+        : Promise.resolve(buildSeededCredentialSummaries()),
+    upsertTestOfficerCredential: (payload: TestOfficerCredentialUpsertRequest) =>
+      dataSource === "api"
+        ? apiFetch<TestOfficerCredentialSummary>("/api/v1/test-officer/credentials", { method: "POST", body: JSON.stringify(payload) })
+        : Promise.resolve(buildSeededCredentialSummary(payload))
   };
 }
 
@@ -801,14 +939,14 @@ function buildSeededRunResponse(payload: TestOfficerRunRequest): TestOfficerRunR
       diagnostics: {
         newFindings: manifest.findings.map((finding) => finding.title),
         newArtifactSignals: (manifest.artifacts ?? [])
-          .map((artifact) => typeof artifact.metadata.firstError === "string" ? `console:${artifact.metadata.firstError}` : undefined)
+          .map((artifact) => typeof artifact.metadata?.firstError === "string" ? `console:${artifact.metadata.firstError}` : undefined)
           .filter((signal): signal is string => Boolean(signal)),
         regression: {
           statusChanged: manifest.run.status !== "passed",
           reviewChanged: manifest.run.reviewStatus !== "pass",
           failedStepDelta: manifest.steps.filter((step) => step.status === "failed" || step.status === "blocked").length,
           findingDelta: manifest.findings.length,
-          artifactSignalDelta: (manifest.artifacts ?? []).filter((artifact) => typeof artifact.metadata.firstError === "string").length
+          artifactSignalDelta: (manifest.artifacts ?? []).filter((artifact) => typeof artifact.metadata?.firstError === "string").length
         }
       }
     }
@@ -860,8 +998,8 @@ function buildSeededAuditRuns(): TestOfficerAuditRun[] {
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     bundleUri: run.manifestPath,
-    createdAt: run.startedAt,
-    updatedAt: run.finishedAt
+    createdAt: run.startedAt ?? new Date().toISOString(),
+    updatedAt: run.finishedAt ?? run.startedAt ?? new Date().toISOString()
   }));
 }
 
@@ -931,17 +1069,13 @@ function buildSeededAuditRunDetail(runId: string): TestOfficerAuditRunDetail {
         diagnostics: {
           newFindings: manifest.findings.map((finding) => finding.title),
           newArtifactSignals: manifest.artifacts
-            .map((artifact) => typeof artifact.metadata.firstError === "string" ? `console:${artifact.metadata.firstError}` : undefined)
+            .map((artifact) => typeof artifact.metadata?.firstError === "string" ? `console:${artifact.metadata.firstError}` : undefined)
             .filter((signal): signal is string => Boolean(signal))
         },
-        generatedAt: manifest.run.finishedAt ?? manifest.run.updatedAt
+        generatedAt: manifest.run.finishedAt ?? manifest.run.startedAt ?? new Date().toISOString()
       }
     ],
-    runtimeLifecycle: (manifest.run.metadata?.runtimeLifecycle ?? [])
-      .filter((phase): phase is NonNullable<typeof manifest.run.metadata>["runtimeLifecycle"][number] =>
-        Boolean(phase)
-      )
-      .map((phase, index) => ({
+    runtimeLifecycle: (manifest.run.metadata?.runtimeLifecycle ?? []).map((phase, index) => ({
         id: `${runId}:runtime:${index}:${phase.phase}`,
         phase: phase.phase,
         status: phase.status,

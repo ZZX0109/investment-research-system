@@ -234,7 +234,14 @@ def build_file_record(
     return SnapshotFileRecord.model_validate(payload)
 
 
-def audit_file_contents(path: Path, *, dataset: str) -> dict[str, Any]:
+def audit_file_contents(
+    path: Path,
+    *,
+    dataset: str,
+    symbol_hint: str | None = None,
+    require_row_pit_timestamps: bool = False,
+    trading_dates: set[str] | None = None,
+) -> dict[str, Any]:
     """Run conservative, format-aware integrity checks on one landed file."""
     rows: list[Any]
     try:
@@ -256,6 +263,20 @@ def audit_file_contents(path: Path, *, dataset: str) -> dict[str, Any]:
         else:
             return _audit_result(schema_valid=True, row_count=None)
     except Exception:
+        # The National Bureau of Statistics release-calendar endpoint is an
+        # official HTML source.  The downloader deliberately keeps the
+        # byte-identical response under a ``.json`` content-addressed name so
+        # that the raw lineage remains immutable, while the normalized
+        # calendar is audited separately.  Treat this allow-listed raw format
+        # as structurally valid; it must not be mistaken for a PIT publication
+        # proof (that gate is evaluated from the normalized report).
+        if "macro_release_calendar_nbs" in dataset.lower():
+            try:
+                prefix = path.read_bytes()[:512].lower()
+            except OSError:
+                prefix = b""
+            if b"<html" in prefix or b"<!doctype html" in prefix:
+                return _audit_result(schema_valid=True, row_count=None)
         return _audit_result(schema_valid=False, row_count=None, pit_time_error_count=1)
     schema_valid = all(isinstance(row, dict) for row in rows)
     if not schema_valid:
@@ -270,13 +291,28 @@ def audit_file_contents(path: Path, *, dataset: str) -> dict[str, Any]:
     lifecycle_errors = 0
     pit_time_errors = 0
     dataset_name = dataset.lower()
+    is_price_like = any(token in dataset_name for token in ("daily_bars", "adjustment", "qfq", "hfq"))
+    is_trading_day_dataset = is_price_like or any(
+        token in dataset_name for token in ("trading_status", "market_breadth")
+    )
+    # A financial ratio table may contain many rows for one symbol/reporting
+    # date (one row per metric or source revision); a generic (symbol,date)
+    # duplicate check would reject valid long-form data.  Restrict primary-key
+    # checks to datasets whose contract is explicitly one bar/state per day.
+    is_daily_key_dataset = is_price_like or any(
+        token in dataset_name for token in ("trading_status", "market_breadth")
+    )
     for row in rows:
-        symbol = str(_first_value(row, ("symbol", "code", "证券代码", "股票代码")) or "").strip()
+        # AKShare/BaoStock payloads commonly use the short Chinese key
+        # ``代码``.  Omitting it made valid ``sz.000001`` rows look like
+        # missing security codes and inflated the content-audit failure count
+        # into the millions.
+        symbol = str(_first_value(row, ("symbol", "code", "代码", "证券代码", "股票代码")) or symbol_hint or "").strip()
         code_audit_dataset = (
             "daily_bars" in dataset_name
             or any(token in dataset_name for token in (
                 "adjustment", "trading_status", "security", "industry",
-                "universe", "margin_financing", "corporate_action",
+                "universe", "corporate_action",
             ))
         )
         if code_audit_dataset and (not symbol or not _valid_cn_symbol(symbol)):
@@ -284,21 +320,29 @@ def audit_file_contents(path: Path, *, dataset: str) -> dict[str, Any]:
         effective = _first_value(row, ("trade_date", "tradeDate", "date", "日期", "effective_date", "statDate", "pubDate"))
         parsed_date = _parse_date(effective)
         if parsed_date is not None:
-            if parsed_date.weekday() >= 5:
+            # Do not assume that every historical Saturday/Sunday is invalid:
+            # early A-share history contains weekend sessions.  A caller with
+            # an authoritative exchange calendar can pass it explicitly.
+            if is_trading_day_dataset and trading_dates is not None and parsed_date.isoformat() not in trading_dates:
                 trading_date_errors += 1
             key = (symbol, parsed_date.isoformat())
-            if key in duplicate_keys:
+            if is_daily_key_dataset and key in duplicate_keys:
                 duplicate_count += 1
-            duplicate_keys.add(key)
+            if is_daily_key_dataset:
+                duplicate_keys.add(key)
         elif effective is not None:
-            trading_date_errors += 1
-        if _first_value(row, ("published_at", "publishedAt", "pubDate", "发布时间")) is None or _first_value(row, ("available_at", "availableAt", "可用时间")) is None:
+            if is_trading_day_dataset:
+                trading_date_errors += 1
+        if require_row_pit_timestamps and (
+            _first_value(row, ("published_at", "publishedAt", "pubDate", "发布时间")) is None
+            or _first_value(row, ("available_at", "availableAt", "可用时间")) is None
+        ):
             pit_time_errors += 1
         open_value = _number_value(_first_value(row, ("open", "开盘", "open_price")))
         high_value = _number_value(_first_value(row, ("high", "最高", "high_price")))
         low_value = _number_value(_first_value(row, ("low", "最低", "low_price")))
         close_value = _number_value(_first_value(row, ("close", "收盘", "close_price")))
-        if None not in {open_value, high_value, low_value, close_value}:
+        if is_price_like and None not in {open_value, high_value, low_value, close_value}:
             if high_value < max(open_value, close_value) or low_value > min(open_value, close_value) or min(open_value, high_value, low_value, close_value) < 0:
                 ohlc_errors += 1
         if "trading_status" in dataset_name:

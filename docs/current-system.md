@@ -7,9 +7,19 @@
 完整的训练前置条件汇总可用 `scripts/audit_long_term_readiness.py` 生成；该报告只读，
 不会切换 active 指针。
 
+## 当前现场门禁快照
+
+以 [`artifacts/project_completion/latest.json`](../artifacts/project_completion/latest.json)
+和 [`artifacts/cn_data_completion_plan/latest.json`](../artifacts/cn_data_completion_plan/latest.json)
+为准：17 项项目门禁通过 13 项，数据完成计划完成 11/20，发布通道仍为
+`research_only`。未通过项是核心财务 PIT、公告/宏观发布时间证明、历史成分生效区间和
+PIT 泄漏审计。Shadow 虽有 60 个有效交易日，但真实预测只覆盖 2/60 个交易日，不能
+把日期门槛解释成模型已完成正式前向验证。
+
 ## 当前边界
 
 - 主线：CN A 股股票池与 ETF 参考，研究级公开数据。
+- 免费研究版的产品边界：沪深 A 股与声明的基准 ETF 必须同时具备 raw/qfq 行情才可进入收益研究与模型候选池；北交所及其他范围外标的即使保留 raw 行情也仅供查询，不进入免费模型或收益回测。`/api/v1/research-data/discovery` 提供 5,554 个当前公开枚举标的的检索与逐标的权限标签；它不是历史成分/PIT 证明。前端数据中心与 `/api/v1/research-data/quality` 公开这一差异，详见 [免费研究版数据与功能边界](free-research-edition.md)。
 - 数据层：`raw -> standard -> pit`；下载目录不能被训练读取。
 - 数据等级：`research_pit`，未经完整门禁始终 `research_only`、
   `deployment_ready=false`。
@@ -20,11 +30,12 @@
 - 5/20 日超额收益由 `scripts/run_panel_research_training.py` 作为辅助横截面研究任务维护；
   `scripts/run_long_term_training.py` 的当前长期主合同固定为 120/240 日超额收益与 120/240 日最大回撤四项任务。季度级质量持续性只能作为独立基本面评分卡或候选实验，不能替换四项主任务。
 - 长期样本至少需要 1,260 个交易日历史，且 purge/embargo 按季度决策期计数；不足时训练直接阻断。
-- 宏观数据先经过 `scripts/build_cn_macro_pit.py` 归一化；只有发布日期与可用时间被证明后，
-  `rebuild_cn_research_pit.py` 才会把宏观特征前向填充到样本，目前公开源缺少发布日期，宏观特征保持阻断。
+- 宏观数据先经过 `scripts/build_cn_macro_pit.py` 归一化；现在同时保留国家统计局、央行、外汇中心和 SHIBOR 的来源、证据等级与时间精度。最近一次官方 NBS 合并后的统一文件 `published_at` 覆盖为 59.96%，但日期级证据、未解析记录以及 CPI/PPI/PMI/LPR 的完整修订链仍不足；只有报告 `quality_status=complete` 时，`rebuild_cn_research_pit.py` 才会把宏观特征前向填充到样本，当前仍保持阻断。
 - `rebuild_cn_research_pit.py` 生成市场宽度时必须读取 PIT 历史成员映射；当前 cohort 只能通过
   明确的 `--allow-current-cohort-breadth` 测试开关使用，生产重建没有默认回退。
-- 训练入口：`scripts/run_long_term_training.py`。它要求 active 快照、完整层级、
+- 统一训练编排入口：`scripts/run_long_term_automation.py`。它先执行 dry-run/formal 门禁、
+  队列/GPU 双锁、阶段状态、重试和 artifact index，再调用 `scripts/run_long_term_training.py`。
+  直接训练入口仍要求 active 快照、完整层级、
   PIT 时间覆盖、成熟标签和门禁通过；否则只写 blocked 报告。
 - `scripts/audit_long_term_readiness.py` 会在读取 active 指针时重新核对快照内每个文件的
   存在性、大小、SHA-256 和内容审计计数，并复跑长期快照硬门禁；active 指针存在本身不等于可训练。
@@ -38,6 +49,13 @@
   独立的内容寻址存储中，但不能位于 `landing`，并必须由该绑定 manifest 引用。
 - `scripts/rebuild_cn_research_pit.py` 默认按真实 `available_at` 建立财报可见性；只有明确传入
   `--allow-unproven-visibility` 才会启用研究兼容模式，且产物仍标记 `research_only`。
+- 授权供应商文件先经过 `scripts/ingest_authorized_pit_source.py`；该边界校验授权声明、发布时间、可用时间、修订链和哈希，并只写 content-addressed landing，永不直接创建或切换 `active.json`。
+- 研究基线若因成熟标签与正式覆盖门槛没有交集，可在隔离目录显式使用 `--allow-research-only --minimum-feature-coverage <阈值>`；报告会同时记录实际阈值、正式阈值和交集计数，结果仍标记 `research_only`，不解除 PIT 或发布门禁。
+- broad 标准重建可以使用 `--skip-samples`；随后由
+  `scripts/run_cn_research_sample_batches.py` 在同一 immutable snapshot 下断点生成样本，
+  必要时由 `scripts/adopt_cn_research_sample_staging.py` 显式迁移并校验旧 staging marker，
+  再由 `scripts/merge_cn_research_sample_batches.py` 校验完整 cohort 后才更新 index。批次
+  staging 期间 `training_blocked=true`，旧快照样本不会被自动复用。
 - API 只负责提交和查询 Job；`scripts/run_research_worker.py` 负责分钟级调度/采集，
   `scripts/run_training_worker.py` 独立领取长期训练 Job。训练 worker 使用独占锁和
   24 小时超时，API 与调度器都不会在进程内同步执行长期训练。

@@ -301,6 +301,123 @@ export function useResearchAcceptanceQuery() {
   });
 }
 
+export function useResearchCompletionQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-completion", client.mode],
+    queryFn: () => client.getResearchCompletion(),
+    enabled: client.mode === "research" || client.mode === "real",
+    retry: false,
+  });
+}
+
+export function useResearchDataQualityQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-data-quality", client.mode],
+    queryFn: () => client.getResearchDataQuality(),
+    enabled: client.mode === "research" || client.mode === "real",
+    retry: false,
+    // The data center includes resumable long-running backfills. Refreshing
+    // this small read-only inventory lets users see real progress without
+    // treating a stale page load as a completed download.
+    refetchInterval: 30_000,
+  });
+}
+
+export function useResearchDiscoveryQuery({
+  query = "",
+  limit = 60,
+  assetType = "all",
+  eligibility = "all",
+}: {
+  query?: string;
+  limit?: number;
+  assetType?: "all" | "equity" | "etf";
+  eligibility?: "all" | "model" | "quote_only" | "unavailable";
+} = {}) {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-current-discovery", client.mode, query.trim(), limit, assetType, eligibility],
+    queryFn: () => client.getResearchDiscovery({ query, limit, assetType, eligibility }),
+    enabled: client.mode === "research",
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
+export function useResearchDeliveryQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({
+    queryKey: ["research-delivery", client.mode],
+    queryFn: () => client.getResearchDelivery(),
+    enabled: client.mode === "research" || client.mode === "real",
+    retry: false,
+  });
+}
+
+export function usePaperGameTodayQuery() {
+  const client = useWorkbenchClient();
+  return useQuery({ queryKey: ["paper-game-today"], queryFn: client.getPaperGameToday, refetchInterval: 60_000, retry: false });
+}
+
+export function usePaperGameAccountQuery(enabled = true) {
+  const client = useWorkbenchClient();
+  return useQuery({ queryKey: ["paper-game-account"], queryFn: client.getPaperGameAccount, enabled, refetchInterval: 30_000, retry: false });
+}
+
+export function usePaperGameOnboardingQuery(enabled = true) {
+  const client = useWorkbenchClient();
+  return useQuery({ queryKey: ["paper-game-onboarding"], queryFn: client.getPaperGameOnboarding, enabled, refetchInterval: 60_000, retry: false });
+}
+
+export function useConfirmPaperGameOnboardingMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({ mutationFn: client.confirmPaperGameOnboarding, onSuccess: () => {
+    void queryClient.invalidateQueries({ queryKey: ["paper-game-account"] });
+    void queryClient.invalidateQueries({ queryKey: ["paper-game-onboarding"] });
+    void queryClient.invalidateQueries({ queryKey: ["paper-game-leaderboard"] });
+  }});
+}
+
+export function useCreatePaperGameAccountMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (personaCode?: string | null) => client.createPaperGameAccount(personaCode),
+    onSuccess: (account) => queryClient.setQueryData(["paper-game-account"], account)
+  });
+}
+
+export function useCreatePaperGameOrderMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: client.createPaperGameOrder,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["paper-game-account"] }); void queryClient.invalidateQueries({ queryKey: ["paper-game-leaderboard"] }); }
+  });
+}
+
+export function useCancelPaperGameOrderMutation() {
+  const client = useWorkbenchClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: client.cancelPaperGameOrder,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper-game-account"] })
+  });
+}
+
+export function usePaperGameLeaderboardQuery(enabled = true) {
+  const client = useWorkbenchClient();
+  return useQuery({ queryKey: ["paper-game-leaderboard"], queryFn: client.getPaperGameLeaderboard, enabled, refetchInterval: 60_000, retry: false });
+}
+
+export function usePaperGameEquityCurveQuery(enabled = true) {
+  const client = useWorkbenchClient();
+  return useQuery({ queryKey: ["paper-game-equity"], queryFn: client.getPaperGameEquityCurve, enabled, refetchInterval: 60_000, retry: false });
+}
+
 export function useMarketObservationQuery(assetId: string | null) {
   const client = useWorkbenchClient();
   return useQuery({ queryKey: ["market-observation", client.mode, assetId], queryFn: () => client.getMarketObservation(assetId ?? ""), enabled: ["research", "real"].includes(client.mode) && Boolean(assetId), refetchInterval: 300000, retry: false });
@@ -336,6 +453,17 @@ export function useLatestLongTermScorecardQuery(symbol?: string | null) {
     queryKey: ["latest-long-term-scorecard", client.mode, symbol],
     queryFn: () => client.getLatestLongTermScorecard(symbol ?? ""),
     enabled: ["research", "real"].includes(client.mode) && Boolean(symbol),
+    retry: false,
+  });
+}
+
+export function useResearchCompareQuery(symbols: string[]) {
+  const client = useWorkbenchClient();
+  const normalized = [...new Set(symbols.map((value) => value.trim().toUpperCase()).filter(Boolean))].slice(0, 12);
+  return useQuery({
+    queryKey: ["research-compare", client.mode, normalized],
+    queryFn: () => client.getResearchCompare(normalized),
+    enabled: (client.mode === "research" || client.mode === "real") && normalized.length >= 2,
     retry: false,
   });
 }
@@ -883,7 +1011,12 @@ export function useAssetSnapshotQuery(assetId: string | null | undefined, asOf?:
   return useQuery({
     queryKey: ["asset-snapshot", client.mode, assetId ?? null, asOf ?? null],
     queryFn: () => client.getAssetSnapshot(assetId as string, asOf),
-    enabled: Boolean(assetId)
+    enabled: Boolean(assetId),
+    // A stock snapshot is expensive to compose. Keep the last result visible
+    // while it is fresh so revisiting an already selected stock is immediate.
+    staleTime: 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnWindowFocus: false
   });
 }
 

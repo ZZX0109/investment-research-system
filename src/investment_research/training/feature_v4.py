@@ -79,16 +79,22 @@ def build_cross_sectional_features(
     omit it only for isolated fixtures; production rebuilds must pass the
     historical membership map rather than reusing today's cohort.
     """
-    latest_by_date: dict[date, list[tuple[str, PreparedPriceBar, float | None]]] = defaultdict(list)
+    latest_by_date: dict[date, list[tuple[str, PreparedPriceBar, float | None, list[float]]]] = defaultdict(list)
     for symbol in sorted(set(symbols)):
         ordered = sorted(bars_by_symbol.get(symbol, []), key=lambda item: item.trade_date)
         previous_close: float | None = None
+        closes_window: list[float] = []
         for bar in ordered:
             daily_return = None
             if previous_close is not None and previous_close > 0 and bar.close_normalized > 0:
                 daily_return = bar.close_normalized / previous_close - 1.0
             if bar.close_normalized > 0:
                 previous_close = bar.close_normalized
+                closes_window = closes_window + [bar.close_normalized]
+                # Keep a rolling 260-day window (enough for MA250 + BB20) to
+                # bound memory on long histories.
+                if len(closes_window) > 260:
+                    closes_window = closes_window[-260:]
             # Membership controls whether a row contributes to the
             # cross-section, not which prior close defines the stock's daily
             # return.  Updating ``previous_close`` above prevents a re-entering
@@ -96,23 +102,23 @@ def build_cross_sectional_features(
             # of the historical universe.
             if symbols_by_date is not None and symbol not in symbols_by_date.get(bar.trade_date, set()):
                 continue
-            latest_by_date[bar.trade_date].append((symbol, bar, daily_return))
+            latest_by_date[bar.trade_date].append((symbol, bar, daily_return, list(closes_window)))
 
     output: dict[str, dict[date, dict[str, float]]] = defaultdict(dict)
     advance_ratio_by_date: dict[date, float] = {}
     for trade_date in sorted(latest_by_date):
         rows = latest_by_date[trade_date]
-        valid_returns = [value for _symbol, _bar, value in rows if value is not None]
+        valid_returns = [value for _symbol, _bar, value, _w in rows if value is not None]
         if not valid_returns:
             continue
         mean = sum(valid_returns) / len(valid_returns)
         dispersion = sqrt(sum((value - mean) ** 2 for value in valid_returns) / len(valid_returns))
         advance_ratio = sum(value > 0 for value in valid_returns) / len(valid_returns)
         advance_ratio_by_date[trade_date] = advance_ratio
-        limit_up_ratio = sum(bar.is_limit_up for _symbol, bar, _value in rows) / len(rows)
-        limit_down_ratio = sum(bar.is_limit_down for _symbol, bar, _value in rows) / len(rows)
-        amounts = sorted(bar.amount for _symbol, bar, _value in rows if bar.amount is not None and bar.amount >= 0)
-        turnovers = sorted(bar.turnover_rate for _symbol, bar, _value in rows if bar.turnover_rate is not None)
+        limit_up_ratio = sum(bar.is_limit_up for _symbol, bar, _value, _closes in rows) / len(rows)
+        limit_down_ratio = sum(bar.is_limit_down for _symbol, bar, _value, _closes in rows) / len(rows)
+        amounts = sorted(bar.amount for _symbol, bar, _value, _closes in rows if bar.amount is not None and bar.amount >= 0)
+        turnovers = sorted(bar.turnover_rate for _symbol, bar, _value, _closes in rows if bar.turnover_rate is not None)
         market_values = {
             "market_advance_ratio_1d": advance_ratio,
             "market_median_return_1d": median(valid_returns),
@@ -136,12 +142,25 @@ def build_cross_sectional_features(
             ) / len(prior_dates)
         else:
             market_values["market_breadth_5d"] = None
-        for symbol, bar, _value in rows:
+        for symbol, bar, _value, closes in rows:
             values = dict(market_values)
             if bar.amount is not None and amounts:
                 values["amount_cross_section_percentile"] = _percentile_rank(amounts, bar.amount)
+                # Keep an auditable absolute liquidity input for research-only
+                # capacity estimation; the percentile remains the model
+                # feature while this raw point-in-time value stays available
+                # to the evaluation layer.
+                values["amount_1d"] = float(bar.amount)
             if bar.turnover_rate is not None and turnovers:
                 values["turnover_cross_section_percentile"] = _percentile_rank(turnovers, bar.turnover_rate)
+                values["turnover_rate_1d"] = float(bar.turnover_rate)
+            # Round 35 — fortune Top10 alpha features derivable from the
+            # per-asset close window (no external file, no GARCH fit): Bollinger
+            # Band width (#4), distance to 20d support/resistance (#7), MA250
+            # slope (#2), and longer-horizon momentum (ret_60d/120d).  These
+            # were the missing real-alpha signals that left all 11 candidates'
+            # OOF Rank IC negative on the simple amount/benchmark panel.
+            _add_fortune_price_features(values, closes)
             output[symbol][trade_date] = values
     return dict(output)
 
@@ -193,3 +212,40 @@ def _safe_log1p(value: float) -> float:
     from math import log1p
 
     return log1p(max(0.0, value))
+
+
+def _add_fortune_price_features(values: dict[str, float], closes: list[float]) -> None:
+    """Round 35 — fortune Top10 price-derived alpha features.  All degrade
+    gracefully (skip the key) when the close window is too short; never
+    fabricates.  Mirrors fortune's feature importance #2/#4/#7 + momentum."""
+    n = len(closes)
+    if n < 2 or closes[-1] <= 0:
+        return
+    # Longer-horizon momentum (ret_60d / ret_120d) — complements 1/5/20d.
+    for horizon in (60, 120):
+        if n > horizon and closes[-horizon - 1] > 0:
+            values[f"ret_{horizon}d"] = closes[-1] / closes[-horizon - 1] - 1.0
+    # Bollinger Band width (#4) over 20 sessions — volatility expansion.
+    if n >= 20:
+        window = closes[-20:]
+        mean = sum(window) / 20.0
+        var = sum((c - mean) ** 2 for c in window) / 20.0
+        std = var ** 0.5
+        if mean > 0 and std >= 0:
+            values["bb_width_20d"] = (4.0 * std) / mean  # 2-sigma band / mid
+    # Distance to 20d support / resistance (#7) — position in the range.
+    if n >= 20:
+        window = closes[-20:]
+        hi = max(window)
+        lo = min(window)
+        span = hi - lo
+        if span > 0:
+            values["distance_support_20d"] = (closes[-1] - lo) / span
+            values["distance_resistance_20d"] = (hi - closes[-1]) / span
+    # MA250 slope (#2) + distance — long-term trend direction.
+    if n >= 250:
+        ma_now = sum(closes[-250:]) / 250.0
+        ma_prev = sum(closes[-251:-1]) / 250.0 if n > 250 else ma_now
+        if ma_prev > 0 and ma_now > 0:
+            values["ma250_slope"] = (ma_now - ma_prev) / ma_prev
+            values["distance_ma250"] = closes[-1] / ma_now - 1.0

@@ -135,7 +135,7 @@ export function CompetitionHome() {
             </div>
             <p className="muted">{l("研究助手使用平台预置的研究能力整理证据和通俗说明，不提供买卖或仓位指令。", "The research assistant uses the platform's configured research capability to organize evidence and plain explanations; it never provides trading or position instructions.")}</p>
             {notice ? <p className="ai-assistant-card__setup" role="status">{notice}</p> : null}
-            {assistant.error ? <InlineNotice tone="error" title={l("提问失败", "Question failed")} body={assistant.error.message} /> : null}
+            {assistant.error ? <InlineNotice tone="block" title={l("提问失败", "Question failed")} body={assistant.error.message} /> : null}
           </Panel>
 
           <PlainAnswerCard explanation={explanation.data} plain={plain} busy={assistant.isPending || explanation.isLoading} hasRun={Boolean(runId)} />
@@ -274,7 +274,7 @@ function SourceList({ sources }: { sources: PlainSource[] }) {
       <ul>
         {sources.map((source) => (
           <li key={`${source.url}-${source.title}`}>
-            <a href={source.url} target="_blank" rel="noreferrer">
+            <a href={source.url ?? "#"} target="_blank" rel="noreferrer">
               <span><strong>{source.title}</strong><small>{source.source}{source.published_at ? ` · ${source.published_at}` : ""}{source.kind ? ` · ${source.kind}` : ""}</small></span>
               <ExternalLink size={12} aria-hidden="true" />
             </a>

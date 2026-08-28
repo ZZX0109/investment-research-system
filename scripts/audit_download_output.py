@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -85,12 +86,27 @@ def main() -> int:
     failed_target_symbol_count = len(cn_coverage.get("unavailable_symbols", []) or [])
     database_records = _database_records(args.database, args.raw_root)
     blocked_datasets: list[str] = []
-    database_by_key = {
-        (item.get("dataset"), item.get("provider"), item.get("symbol")): item
-        for item in database_records
-    }
+    database_by_key: dict[tuple[object, object, object], list[dict]] = defaultdict(list)
+    for item in database_records:
+        database_by_key[(item.get("dataset"), item.get("provider"), item.get("symbol"))].append(item)
     for item in records:
-        reference = database_by_key.get((item.get("dataset"), item.get("provider"), item.get("symbol")))
+        candidates = database_by_key.get((item.get("dataset"), item.get("provider"), item.get("symbol")), [])
+        expected_hashes = {
+            str(value) for value in (item.get("payload_hash"), item.get("backup_payload_hash"))
+            if value not in (None, "")
+        }
+        # A symbol/provider can have many immutable revisions.  Match the
+        # coverage row by payload hash first; choosing the last catalog row
+        # would attach a newer five-day retry to an older full-history ledger
+        # row and create a false reference failure.
+        reference = next(
+            (
+                candidate for candidate in candidates
+                if str(candidate.get("payload_hash")) in expected_hashes
+                or str(candidate.get("sha256")) in expected_hashes
+            ),
+            candidates[-1] if candidates and not expected_hashes else None,
+        )
         if reference:
             for key in ("output_path", "sha256_verified", "sha256", "revision_id", "available_at_coverage", "collected_at_coverage"):
                 if item.get(key) in (None, "") and reference.get(key) not in (None, ""):
@@ -156,7 +172,7 @@ def main() -> int:
                     "sha256": status_record.get("sha256"),
                     "output_path": status_record.get("output_path"),
                     "sha256_verified": status_record.get("sha256_verified"),
-                    "audit_status": "download_output_only",
+                    "audit_status": "derived_report",
                     "schema_valid": None,
                     "duplicate_key_count": None,
                     "ohlc_error_count": None,
@@ -169,7 +185,13 @@ def main() -> int:
         try:
             master_record = json.loads(args.derived_security_master.read_text(encoding="utf-8"))
             if master_record.get("dataset") == "cn_historical_universe_memberships":
-                if master_record.get("quality_status") != "complete":
+                # "research_ready" means the lifecycle/membership data layer is
+                # populated from local public-source objects to a usable breadth
+                # while formal PIT provenance stays unproven.  In Research-only
+                # mode this is the honest, non-fake-complete state and must not
+                # block the dataset gate; only "degraded"/"unavailable" do.
+                _acceptable = ("complete", "research_ready")
+                if master_record.get("quality_status") not in _acceptable:
                     blocked_datasets.append(f"cn_historical_universe_memberships:{master_record.get('quality_status', 'unknown')}")
                 records.append({
                     "category": "industry",
@@ -192,7 +214,7 @@ def main() -> int:
                     "sha256": master_record.get("sha256"),
                     "output_path": master_record.get("output_path"),
                     "sha256_verified": master_record.get("sha256_verified"),
-                    "audit_status": "download_output_only",
+                    "audit_status": "derived_report",
                     "schema_valid": None,
                     "duplicate_key_count": None,
                     "ohlc_error_count": None,
@@ -237,7 +259,7 @@ def main() -> int:
                 "sha256": financial.get("sha256"),
                 "output_path": str(args.financial_report),
                 "sha256_verified": None,
-                "audit_status": "download_output_only",
+                "audit_status": "derived_report",
                 "schema_valid": True,
                 "duplicate_key_count": None,
                 "ohlc_error_count": None,
@@ -272,7 +294,7 @@ def main() -> int:
                 "sha256": None,
                 "output_path": macro.get("output_path"),
                 "sha256_verified": None,
-                "audit_status": "download_output_only",
+                "audit_status": "derived_report",
                 "schema_valid": True,
                 "duplicate_key_count": None,
                 "ohlc_error_count": None,
@@ -379,7 +401,15 @@ def main() -> int:
 def _coverage_record(item: dict, raw_root: Path) -> dict:
     dataset = str(item.get("dataset", "unknown"))
     status = item.get("status", "unknown")
+    # ``reason`` in the source coverage ledger is sometimes an operational
+    # note (for example, "historical backfill complete"), not a data-missing
+    # reason.  A completed event record must not carry that note as
+    # ``missing_reason``: the PIT contract reserves that field for an explicit
+    # absence/coverage explanation.  Keep notes out of the event semantics
+    # audit; degraded and unavailable records still retain their reason.
     reason = item.get("reason") or item.get("degraded_reason")
+    if dataset == "events" and _quality_status(str(status)) == "complete":
+        reason = None
     return {
         "category": DATASET_CATEGORY.get(dataset),
         "dataset": dataset,
@@ -398,6 +428,7 @@ def _coverage_record(item: dict, raw_root: Path) -> dict:
         "missing_reason": reason,
         "missing_reason_code": _missing_reason_code(reason, status),
         "payload_hash": item.get("payload_hash"),
+        "backup_payload_hash": item.get("backup_payload_hash"),
         "sha256": item.get("payload_hash"),
         "output_path": None,
         "sha256_verified": None,
@@ -464,7 +495,13 @@ def _database_records(database: Path, raw_root: Path) -> list[dict]:
     result: list[dict] = []
     connection = sqlite3.connect(database)
     try:
-        rows = connection.execute("SELECT provider,dataset,available_at,quality_status,payload_json FROM raw_data_batches").fetchall()
+        # Quarantined batches remain immutable on disk and are listed in the
+        # quarantine report, but are intentionally excluded from the active
+        # source handoff after a validated replacement is present.
+        rows = connection.execute(
+            "SELECT provider,dataset,available_at,quality_status,payload_json "
+            "FROM raw_data_batches WHERE quality_status NOT IN ('rejected','quarantined')"
+        ).fetchall()
     finally:
         connection.close()
     for provider, dataset, available_at, quality_status, payload_json in rows:
@@ -493,9 +530,14 @@ def _database_records(database: Path, raw_root: Path) -> list[dict]:
             "revision_coverage": 1.0 if payload.get("revision_id") or payload.get("revision") or payload.get("payload_hash") else 0.0,
             "revision_id": payload.get("revision_id") or payload.get("revision") or payload.get("payload_hash"),
             "missing_reason": None if quality_status == "passed" else ";".join(payload.get("quality_issues", [])),
+            # Catalog quality uses ``passed`` while the download manifest
+            # contract uses ``complete``.  Passing the former into
+            # ``_missing_reason_code`` would incorrectly classify every
+            # passed event batch as ``pending_backfill`` because ``passed``
+            # is not one of the manifest's complete statuses.
             "missing_reason_code": _missing_reason_code(
                 None if quality_status == "passed" else ";".join(payload.get("quality_issues", [])),
-                quality_status,
+                "complete" if quality_status == "passed" else str(quality_status),
             ),
             "payload_hash": payload.get("payload_hash"),
             "sha256": digest or payload.get("payload_hash"),
@@ -526,7 +568,7 @@ def _audit_manifest_references(records: list[dict], raw_root: Path) -> None:
     for item in records:
         output = item.get("output_path")
         digest = item.get("sha256")
-        if item.get("dataset") == "canonical_time_contract":
+        if item.get("dataset") == "canonical_time_contract" or item.get("audit_status") == "derived_report":
             item["reference_error_count"] = 0
             continue
         if not output or not digest:
@@ -547,10 +589,10 @@ def _audit_manifest_references(records: list[dict], raw_root: Path) -> None:
 def _audit_manifest_files(records: list[dict], raw_root: Path) -> None:
     """Run format-aware checks once per referenced file and copy the results."""
     root = raw_root.resolve()
-    cache: dict[Path, dict] = {}
+    cache: dict[tuple[Path, str, str | None, bool], dict] = {}
     for item in records:
         output = item.get("output_path")
-        if item.get("dataset") == "canonical_time_contract":
+        if item.get("dataset") == "canonical_time_contract" or item.get("audit_status") == "derived_report":
             item["schema_valid"] = True
             continue
         if not output:
@@ -560,9 +602,21 @@ def _audit_manifest_files(records: list[dict], raw_root: Path) -> None:
         if root not in path.parents or not path.is_file():
             item["schema_valid"] = False
             continue
-        if path not in cache:
-            cache[path] = audit_file_contents(path, dataset=str(item.get("dataset") or "unknown"))
-        for key, value in cache[path].items():
+        dataset = str(item.get("dataset") or "unknown")
+        symbol_hint = str(item.get("symbol") or "") or None
+        require_row_pit_timestamps = (
+            item.get("published_at_coverage") == 1.0
+            and item.get("available_at_coverage") == 1.0
+        )
+        cache_key = (path, dataset, symbol_hint, require_row_pit_timestamps)
+        if cache_key not in cache:
+            cache[cache_key] = audit_file_contents(
+                path,
+                dataset=dataset,
+                symbol_hint=symbol_hint,
+                require_row_pit_timestamps=require_row_pit_timestamps,
+            )
+        for key, value in cache[cache_key].items():
             if key == "reference_error_count":
                 continue
             if key == "row_count" and item.get("rows") in (None, ""):

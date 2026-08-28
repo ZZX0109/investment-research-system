@@ -4,6 +4,7 @@ import { useWorkbenchStore } from "../workbench-ui/src/state/workbenchStore";
 function resetWorkbenchState() {
   useWorkbenchStore.setState({
     mode: "research",
+    researchAssetIds: [],
     selectedAssetId: null,
     selectedRunId: null,
     selectedEvidenceId: null,
@@ -54,5 +55,17 @@ describe("workbench store", () => {
     expect(useWorkbenchStore.getState().selectedRunId).toBeNull();
     expect(useWorkbenchStore.getState().selectedEvidenceId).toBeNull();
     expect(useWorkbenchStore.getState().onlySelectedRunResearch).toBe(false);
+  });
+
+  it("keeps the research list limited to assets explicitly added in this workspace", () => {
+    const store = useWorkbenchStore.getState();
+    store.addResearchAsset("asset-1");
+    store.addResearchAsset("asset-2");
+    store.addResearchAsset("asset-1");
+
+    expect(useWorkbenchStore.getState().researchAssetIds).toEqual(["asset-1", "asset-2"]);
+
+    store.removeResearchAssets(["asset-1"]);
+    expect(useWorkbenchStore.getState().researchAssetIds).toEqual(["asset-2"]);
   });
 });

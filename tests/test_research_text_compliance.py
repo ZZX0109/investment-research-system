@@ -14,6 +14,7 @@ def test_blocks_explicit_individual_security_trade_instructions() -> None:
         "600519适合加仓。": "POSITION_INCREASE_INSTRUCTION",
         "建议对该股减仓。": "POSITION_REDUCE_INSTRUCTION",
         "建议继续持有600519。": "HOLD_INSTRUCTION",
+        "建议长期持有600519。": "HOLD_INSTRUCTION",
     }
 
     for text, expected in cases.items():
@@ -65,6 +66,18 @@ def test_does_not_misclassify_educational_or_corporate_action_language() -> None
 
     assert educational.allowed is True
     assert corporate_action.allowed is True
+
+
+def test_does_not_treat_long_term_holder_descriptions_as_hold_instructions() -> None:
+    checker = ResearchTextComplianceChecker()
+
+    result = checker.check(
+        "股东回报偏弱，对长期持有者吸引力有限，也可能影响长期持有信心。",
+        subject_symbol="000001",
+    )
+
+    assert result.allowed is True
+    assert result.reason_codes == []
 
 
 def test_policy_version_is_returned_for_audit_records() -> None:

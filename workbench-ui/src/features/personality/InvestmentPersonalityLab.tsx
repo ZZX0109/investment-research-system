@@ -1,6 +1,8 @@
 import { ArrowLeft, ArrowRight, Bot, CalendarDays, Clock3, Coins, Newspaper, RotateCcw, Sparkles, Trophy, WalletCards, X } from "lucide-react";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useMemo, useState } from "react";
 import { useI18n } from "../../i18n";
+import { LivePaperGame } from "./LivePaperGame";
 
 type Persona = { code: string; name: string; emoji: string; slogan: string; psychology: string; weights: [number, number, number, number] };
 type Asset = { id: string; name: string; category: "股票" | "基金" | "黄金"; sector: string; base: number; volatility: number; trend: number; lot: number; seed: number; note: string };
@@ -82,7 +84,7 @@ function assetPrice(asset: Asset, day: number) {
 
 export function InvestmentPersonalityLab({ onExit }: { onExit: () => void }) {
   const { l } = useI18n();
-  const [stage, setStage] = useState<"intro" | "quiz" | "result" | "game">("intro");
+  const [stage, setStage] = useState<"live" | "intro" | "quiz" | "result" | "game">("live");
   const [question, setQuestion] = useState(0);
   const [answers, setAnswers] = useState<number[]>([]);
   const [day, setDay] = useState(1);
@@ -122,7 +124,11 @@ export function InvestmentPersonalityLab({ onExit }: { onExit: () => void }) {
   const reset = () => { setStage("intro"); setQuestion(0); setAnswers([]); setDay(1); setCash(100000); setHoldings({}); setOrders([]); setTrades([]); };
 
   return <main className="personality-lab" data-testid="investment-personality-lab">
-    <section className="personality-lab__hero"><button type="button" className="personality-lab__back" onClick={onExit}><ArrowLeft size={16} />{l("返回研究面板", "Back to research")}</button><div className="personality-lab__hero-copy"><span className="personality-lab__kicker"><Sparkles size={15} /> 投资人格实验室</span><h2>先认识自己的投资习惯，再到历史里生活 30 天</h2><p>16 个贴近日常的选择情境，搭配多资产历史风格回放。虚拟资金、娱乐竞赛，不构成投资建议。</p></div><div className="personality-lab__steps"><span className={stage === "intro" || stage === "quiz" ? "is-active" : ""}>1 · 16题测试</span><span className={stage === "result" ? "is-active" : ""}>2 · 策略画像</span><span className={stage === "game" ? "is-active" : ""}>3 · 30日挑战</span></div></section>
+    <section className="personality-lab__hero"><button type="button" className="personality-lab__back" onClick={onExit}><ArrowLeft size={16} />{l("返回研究面板", "Back to research")}</button><div className="personality-lab__hero-copy"><span className="personality-lab__kicker"><Sparkles size={15} /> 投资人格实验室</span><h2>认识投资习惯，也可以参加今日模拟赛</h2><p>16 个贴近日常的选择情境、30日历史回放和延迟真实行情模拟。虚拟资金、娱乐竞赛，不构成投资建议。</p></div><div className="personality-lab__steps"><span className={stage === "live" ? "is-active" : ""}>今日模拟赛</span><span className={stage === "intro" || stage === "quiz" || stage === "result" ? "is-active" : ""}>16题测试</span><span className={stage === "game" ? "is-active" : ""}>30日回放</span></div></section>
+
+    <nav className="personality-lab__mode-nav" aria-label="模拟模式"><button type="button" className={stage === "live" ? "is-active" : ""} onClick={() => setStage("live")}>今日模拟赛</button><button type="button" className={["intro", "quiz", "result"].includes(stage) ? "is-active" : ""} onClick={() => setStage("intro")}>16题人格测试</button><button type="button" className={stage === "game" ? "is-active" : ""} onClick={() => setStage("game")}>30日历史回放</button></nav>
+
+    {stage === "live" && <LivePaperGame personaCode={answers.length === QUESTIONS.length ? persona.code : null} />}
 
     {stage === "intro" && <section className="personality-lab__intro-card"><div><span className="personality-lab__giant">🧠 × 🧺</span><h3>你如何面对赚钱、亏损、等待和别人的意见？</h3><p>题目没有专业术语，也没有标准答案。每题描述一个真实决策处境，完成约需 4–6 分钟，结果对应 12 种娱乐人格和不同的模拟策略。</p></div><button type="button" className="personality-lab__primary" onClick={() => setStage("quiz")}>开始 16 题测试<ArrowRight size={17} /></button></section>}
     {stage === "quiz" && <section className="personality-lab__quiz"><div className="personality-lab__progress"><span style={{ width: `${((question + 1) / QUESTIONS.length) * 100}%` }} /></div><small>第 {question + 1} 题 / 共 {QUESTIONS.length} 题</small><h3>{QUESTIONS[question][0]}</h3><p className="personality-lab__question-context">{QUESTIONS[question][1]}</p><div className="personality-lab__answers">{QUESTIONS[question].slice(2).map((choice, index) => <button type="button" key={choice} onClick={() => answer(index)}><b>{String.fromCharCode(65 + index)}</b><span>{choice}</span></button>)}</div>{question > 0 && <button type="button" className="personality-lab__quiz-back" onClick={() => { setQuestion((value) => value - 1); setAnswers((values) => values.slice(0, -1)); }}><ArrowLeft size={14} />返回上一题</button>}</section>}
@@ -133,7 +139,15 @@ export function InvestmentPersonalityLab({ onExit }: { onExit: () => void }) {
 }
 
 function MarketPanel({ category, selectedId, onCategory, onSelect, day, holdings }: { category: Asset["category"]; selectedId: string; onCategory: (value: Asset["category"]) => void; onSelect: (id: string) => void; day: number; holdings: Record<string, number> }) {
-  return <article className="personality-lab__market"><span className="personality-lab__kicker"><Coins size={15} /> 可选资产</span><div className="personality-lab__category-tabs">{(["股票", "基金", "黄金"] as const).map((item) => <button type="button" key={item} className={category === item ? "is-active" : ""} onClick={() => onCategory(item)}>{item}</button>)}</div><div className="personality-lab__asset-options">{ASSETS.filter((asset) => asset.category === category).map((asset) => { const price = assetPrice(asset, day), previous = assetPrice(asset, Math.max(1, day - 1)), change = (price / previous - 1) * 100; return <button type="button" key={asset.id} className={selectedId === asset.id ? "is-active" : ""} onClick={() => onSelect(asset.id)}><span><b>{asset.name}</b><small>{asset.sector} · {asset.note}</small></span><span><strong>¥{price.toFixed(2)}</strong><em className={change >= 0 ? "is-up" : "is-down"}>{change >= 0 ? "+" : ""}{change.toFixed(2)}%</em>{holdings[asset.id] ? <small>持有 {holdings[asset.id]}</small> : null}</span></button>; })}</div></article>;
+  const selected = ASSETS.find((asset) => asset.id === selectedId) ?? ASSETS.find((asset) => asset.category === category) ?? ASSETS[0];
+  const chartData = useMemo(() => {
+    const start = Math.max(1, day - 19);
+    return Array.from({ length: Math.max(2, day - start + 1) }, (_, index) => {
+      const session = start + index;
+      return { day: session, price: assetPrice(selected, session) };
+    });
+  }, [day, selected]);
+  return <article className="personality-lab__market"><span className="personality-lab__kicker"><Coins size={15} /> 可选资产</span><div className="personality-lab__category-tabs">{(["股票", "基金", "黄金"] as const).map((item) => <button type="button" key={item} className={category === item ? "is-active" : ""} onClick={() => onCategory(item)}>{item}</button>)}</div><div className="personality-lab__market-chart" aria-label={`模拟${selected.name}价格涨跌折线图`}><div className="personality-lab__market-chart-head"><span>{selected.name} · 最近 {chartData.length} 个模拟交易日</span><strong>¥{assetPrice(selected, day).toFixed(2)}</strong></div><div className="personality-lab__market-chart-body"><ResponsiveContainer width="100%" height="100%"><LineChart data={chartData} margin={{ top: 5, right: 6, bottom: 0, left: -22 }}><CartesianGrid strokeDasharray="3 3" vertical={false} /><XAxis dataKey="day" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} /><YAxis domain={["auto", "auto"]} tickLine={false} axisLine={false} width={45} tick={{ fontSize: 10 }} tickFormatter={(value) => Number(value).toFixed(0)} /><Tooltip formatter={(value) => [`¥${Number(value).toFixed(2)}`, "模拟价格"]} labelFormatter={(value) => `第 ${value} 日`} /><Line type="monotone" dataKey="price" stroke="#5c49c9" strokeWidth={2.2} dot={false} /></LineChart></ResponsiveContainer></div></div><p className="personality-lab__market-chart-note">折线随每个模拟交易日更新，展示当前选择资产的涨跌路径。</p><div className="personality-lab__asset-options">{ASSETS.filter((asset) => asset.category === category).map((asset) => { const price = assetPrice(asset, day), previous = assetPrice(asset, Math.max(1, day - 1)), change = (price / previous - 1) * 100; return <button type="button" key={asset.id} className={selectedId === asset.id ? "is-active" : ""} onClick={() => onSelect(asset.id)}><span><b>{asset.name}</b><small>{asset.sector} · {asset.note}</small></span><span><strong>¥{price.toFixed(2)}</strong><em className={change >= 0 ? "is-up" : "is-down"}>{change >= 0 ? "+" : ""}{change.toFixed(2)}%</em>{holdings[asset.id] ? <small>持有 {holdings[asset.id]}</small> : null}</span></button>; })}</div></article>;
 }
 
 function OrderPanel({ asset, day, cash, holdings, ratio, orders, onRatio, onOrder, onCancel, onAdvance }: { asset: Asset; day: number; cash: number; holdings: Record<string, number>; ratio: number; orders: Order[]; onRatio: (value: number) => void; onOrder: (side: "buy" | "sell") => void; onCancel: (id: string) => void; onAdvance: () => void }) {

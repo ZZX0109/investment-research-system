@@ -1,7 +1,7 @@
 export interface CNResearchCandidate {
   ticker: string;
   name: string;
-  exchange: "XSHG" | "XSHE";
+  exchange: "XSHG" | "XSHE" | "XBSE";
   assetType: "equity" | "etf";
   frozenResultAvailable?: boolean;
   trainingEligible?: boolean;

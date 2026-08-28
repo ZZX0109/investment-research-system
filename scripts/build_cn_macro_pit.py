@@ -66,6 +66,16 @@ def _source_release_date(dataset: str, row: dict) -> str | None:
 def build_report(database: Path, raw_root: Path, output_root: Path) -> dict:
     output_root.mkdir(parents=True, exist_ok=True)
     release_calendar = _load_release_calendar(PROJECT / "artifacts/cn_macro_release_calendar_nbs/nbs_release_calendar.json")
+    actual_releases = _load_actual_releases(PROJECT / "artifacts/cn_macro_actual_release_nbs/actual_releases.json")
+    # The public macro collectors contain observation dates, while the
+    # research retry pass collected additional official publication evidence
+    # from PBC/CFETS.  Merge that evidence here without promoting unresolved
+    # or date-only rows: the resulting record keeps its evidence level and
+    # timestamp precision so downstream PIT gates can distinguish direct
+    # timestamps from rule-derived timestamps.
+    publication_evidence = _load_publication_evidence(
+        PROJECT / "artifacts/subagent_macro_history_retry/normalized/release_date_mapping.jsonl"
+    )
     connection = sqlite3.connect(database)
     try:
         rows = connection.execute(
@@ -76,6 +86,7 @@ def build_report(database: Path, raw_root: Path, output_root: Path) -> dict:
         connection.close()
 
     records: list[dict] = []
+    evidence_levels: dict[str, int] = defaultdict(int)
     datasets: dict[str, dict] = defaultdict(lambda: {
         "row_count": 0,
         "observation_count": 0,
@@ -119,30 +130,54 @@ def build_report(database: Path, raw_root: Path, output_root: Path) -> dict:
             available_at = metadata.get("available_at") or catalog_available_at
             collected_at = metadata.get("fetched_at") or metadata.get("received_at") or available_at
             revision_id = str(metadata.get("revision_id") or metadata.get("revision") or metadata.get("payload_hash") or "")
+            actual = actual_releases.get((dataset, period), {})
+            evidence = publication_evidence.get((dataset, _evidence_period_key(dataset, period)), {})
+            # An NBS article can be discovered successfully while its page
+            # lacks an explicit publication timestamp.  That unresolved
+            # discovery must not shadow a verified timestamp from the
+            # source-specific retry mapping; otherwise refreshing the NBS
+            # collector would silently reduce historical PIT coverage.
+            publication = actual if actual.get("published_at") else evidence if evidence.get("published_at") else actual or evidence
+            published_at = publication.get("published_at")
             record = {
                 "dataset": dataset,
                 "series_id": dataset.removeprefix("cn_macro_"),
                 "observation_period": period,
                 "values": row,
-                "published_at": None,
+                "published_at": published_at,
+                "published_at_semantics": (
+                    "official_article_pubdate"
+                    if actual.get("published_at")
+                    else evidence.get("evidence_subtype")
+                    if published_at
+                    else None
+                ),
+                "publication_evidence_level": publication.get("evidence_level") or (
+                    "actual" if actual.get("published_at") else None
+                ),
+                "publication_timestamp_precision": publication.get("timestamp_precision"),
+                "publication_source_ref": publication.get("source_ref") or actual.get("source_url"),
+                "publication_source_url": publication.get("source_url"),
                 "source_release_date": source_release_date,
                 "source_release_date_semantics": "economic_calendar_release_date_without_time" if source_release_date else None,
                 "planned_published_at": release_calendar.get((dataset, period), {}).get("planned_published_at"),
                 "planned_release_source": release_calendar.get((dataset, period), {}).get("source_url"),
-                "available_at": available_at,
+                "available_at": published_at or available_at,
                 "revision_id": revision_id or None,
                 "collected_at": collected_at,
                 "provider": provider,
                 "raw_hash": metadata.get("payload_hash"),
-                "quality_status": "degraded",
-                "missing_reason": "source publication/release time is not provided; collection time is not a PIT timestamp",
-                "missing_reason_code": "published_time_unverified",
+                "quality_status": "complete" if published_at else "degraded",
+                "missing_reason": None if published_at else "source publication/release time is not provided; collection time is not a PIT timestamp",
+                "missing_reason_code": None if published_at else "published_time_unverified",
                 "data_tier": "research_pit",
             }
             records.append(record)
+            evidence_levels[str(record.get("publication_evidence_level") or "unresolved")] += 1
             summary = datasets[dataset]
             summary["row_count"] += 1
             summary["observation_count"] += 1
+            summary["published_at_count"] += int(bool(published_at))
             summary["available_at_count"] += int(bool(available_at))
             summary["revision_count"] += int(bool(revision_id))
             summary["source_release_date_count"] += int(bool(source_release_date))
@@ -159,9 +194,9 @@ def build_report(database: Path, raw_root: Path, output_root: Path) -> dict:
         item = datasets[dataset]
         periods = sorted(item.pop("periods"))
         item.update({
-            "status": "degraded" if item["row_count"] else "unavailable",
-            "quality_status": "degraded" if item["row_count"] else "unavailable",
-            "published_at_coverage": 0.0,
+            "status": "complete" if item["row_count"] and item["published_at_count"] == item["row_count"] else "degraded" if item["row_count"] else "unavailable",
+            "quality_status": "complete" if item["row_count"] and item["published_at_count"] == item["row_count"] else "degraded" if item["row_count"] else "unavailable",
+            "published_at_coverage": item["published_at_count"] / item["row_count"] if item["row_count"] else 0.0,
             "source_release_date_coverage": item["source_release_date_count"] / item["row_count"] if item["row_count"] else 0.0,
             "planned_published_at_coverage": item["planned_published_at_count"] / item["row_count"] if item["row_count"] else 0.0,
             "available_at_coverage": item["available_at_count"] / item["row_count"] if item["row_count"] else 0.0,
@@ -176,16 +211,17 @@ def build_report(database: Path, raw_root: Path, output_root: Path) -> dict:
         "schema_version": "cn-macro-pit-audit-v1",
         "dataset": "cn_macro_pit",
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "status": "degraded" if records else "unavailable",
-        "quality_status": "degraded" if records else "unavailable",
+        "status": "complete" if records and all(item.get("published_at") for item in records) else "degraded" if records else "unavailable",
+        "quality_status": "complete" if records and all(item.get("published_at") for item in records) else "degraded" if records else "unavailable",
         "deployment_ready": False,
         "data_tier": "research_pit",
         "record_count": len(records),
-        "published_at_coverage": 0.0,
+        "published_at_coverage": sum(bool(item.get("published_at")) for item in records) / len(records) if records else 0.0,
         "source_release_date_coverage": sum(bool(item.get("source_release_date")) for item in records) / len(records) if records else 0.0,
         "planned_published_at_coverage": sum(bool(item.get("planned_published_at")) for item in records) / len(records) if records else 0.0,
         "available_at_coverage": sum(bool(item.get("available_at")) for item in records) / len(records) if records else 0.0,
         "revision_coverage": sum(bool(item.get("revision_id")) for item in records) / len(records) if records else 0.0,
+        "evidence_levels": dict(sorted(evidence_levels.items())),
         "missing_reason": "source publication/release time is not provided; macro features must remain blocked for PIT training",
         "missing_reason_code": "published_time_unverified",
         "output_path": str(records_path),
@@ -214,6 +250,75 @@ def _load_release_calendar(path: Path) -> dict[tuple[str, str], dict]:
         for row in rows
         if row.get("series") in dataset_map and row.get("data_period")
     }
+
+
+def _load_actual_releases(path: Path) -> dict[tuple[str, str], dict]:
+    if not path.is_file():
+        return {}
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {
+        (
+            f"cn_macro_{str(row.get('series') or '')}",
+            _period_key(row.get("observation_period")),
+        ): row
+        for row in rows
+        if isinstance(row, dict) and row.get("series") and row.get("observation_period")
+    }
+
+
+def _evidence_period_key(dataset: str, value: object) -> str:
+    """Normalize a mapping period to the same key used by the raw record.
+
+    M2 and social-financing records are monthly observations represented as
+    ``YYYY-MM-01`` by this builder.  LPR, SHIBOR and FX records are daily and
+    must retain their exact day; collapsing them to a month would incorrectly
+    apply one publication timestamp to every observation in that month.
+    """
+    text = str(value or "")
+    if dataset in {"cn_macro_m2", "cn_macro_social_financing"}:
+        return _period_key(text)
+    return text[:10]
+
+
+def _load_publication_evidence(path: Path) -> dict[tuple[str, str], dict]:
+    """Load only mapped official evidence from the research retry artifact.
+
+    ``date_level`` rows deliberately remain in the index with no
+    ``published_at`` so the caller can preserve an explicit unresolved PIT
+    state.  Duplicate rows are resolved deterministically by preferring an
+    actual timestamp over an unresolved mapping and then the first source
+    record, which keeps the raw evidence hash stable across runs.
+    """
+    if not path.is_file():
+        return {}
+    evidence: dict[tuple[str, str], dict] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(item, dict) or item.get("status") != "mapped":
+            continue
+        dataset = str(item.get("baseline_dataset") or "")
+        if dataset not in MACRO_DATASETS:
+            continue
+        period = _evidence_period_key(dataset, item.get("observation_period"))
+        if not period:
+            continue
+        key = (dataset, period)
+        current = evidence.get(key)
+        current_rank = 1 if current and current.get("published_at") else 0
+        item_rank = 1 if item.get("published_at") else 0
+        if current is None or item_rank > current_rank:
+            evidence[key] = item
+    return evidence
 
 
 def _period_key(value: object) -> str:

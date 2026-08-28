@@ -135,6 +135,33 @@ class IngestionJobService:
             )
         )
 
+    def recover_interrupted_running(
+        self,
+        *,
+        job_types: set[str],
+        reason: str = "worker restarted before job completion",
+    ) -> int:
+        """Return this worker's orphaned running jobs to its durable queue."""
+        recovered = 0
+        now = self.clock()
+        for item in self.uow.ingestion_jobs.list_recent(limit=1000):
+            if item.state != "running" or item.job_type not in job_types:
+                continue
+            recovered += 1
+            self.uow.ingestion_jobs.add(
+                item.model_copy(
+                    update={
+                        "state": "cancelled" if item.cancel_requested else "retrying",
+                        "next_attempt_at": None if item.cancel_requested else now,
+                        "completed_at": now if item.cancel_requested else None,
+                        "quality_status": "failed" if not item.cancel_requested else item.quality_status,
+                        "error_code": "WorkerRestart" if not item.cancel_requested else item.error_code,
+                        "error_message": reason if not item.cancel_requested else item.error_message,
+                    }
+                )
+            )
+        return recovered
+
     def drain(
         self,
         handlers: dict[str, JobHandler],

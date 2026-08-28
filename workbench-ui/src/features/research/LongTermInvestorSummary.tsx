@@ -1,5 +1,6 @@
 import { Activity, CircleDollarSign, Gauge, HandCoins, ShieldAlert, Sprout, TrendingUp, WalletCards } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import type { LongTermModelCandidate, LongTermModelReading, LongTermModelRegistryEntry, LongTermScorecardResponse, ResearchAcceptanceReport, ResearchForecastBundle } from "../../api/types";
 
 type Props = {
@@ -7,6 +8,7 @@ type Props = {
   acceptance?: ResearchAcceptanceReport;
   scorecard?: LongTermScorecardResponse;
   language: "zh-CN" | "en-US";
+  researchDetails?: ReactNode;
 };
 
 function modelRange(reading: LongTermModelReading | undefined, language: "zh-CN" | "en-US") {
@@ -133,7 +135,7 @@ function RegistryEntry({ entry, language }: { entry: LongTermModelRegistryEntry;
         · Shadow: {entry.shadow_status ?? (language === "zh-CN" ? "等待独立验证" : "Awaiting independent validation")}
       </p>
       <p className="muted">
-        {language === "zh-CN" ? "换手 / 容量" : "Turnover / capacity"}: {entry.turnover == null ? "—" : formatTechnicalMetric("turnover", entry.turnover)} · {entry.capacity_estimate == null ? (language === "zh-CN" ? "尚未估计（缺少成交额冲击模型）" : "Not estimated (no volume-impact model)") : formatTechnicalMetric("capacity", entry.capacity_estimate)}
+        {language === "zh-CN" ? "换手 / 容量" : "Turnover / capacity"}: {entry.turnover == null ? "—" : formatTechnicalMetric("turnover", entry.turnover, language)} · {entry.capacity_estimate == null ? (language === "zh-CN" ? "尚未估计（缺少成交额冲击模型）" : "Not estimated (no volume-impact model)") : formatTechnicalMetric("capacity", entry.capacity_estimate, language)}
       </p>
     </article>
   );
@@ -159,7 +161,7 @@ function SummaryMetric({ icon: Icon, label, value }: { icon: LucideIcon; label: 
 }
 
 /** A compact plain-language summary; the technical material stays collapsed. */
-export function LongTermInvestorSummary({ forecast, acceptance, scorecard, language }: Props) {
+export function LongTermInvestorSummary({ forecast, acceptance, scorecard, language, researchDetails }: Props) {
   const zh = language === "zh-CN";
   const card = scorecard?.scorecard;
   const modelReadings = scorecard?.long_term_model_readings ?? card?.long_term_model_readings ?? {};
@@ -186,7 +188,7 @@ export function LongTermInvestorSummary({ forecast, acceptance, scorecard, langu
       </div>
       <details className="long-term-summary__technical" data-testid="long-term-professional-details">
         <span className="long-term-summary__compatibility-copy">证据不足 Evidence limited；先补数据 Fix data first；不应把研究参考当成确定结论；相对表现（约6个月）相对表现（约12个月）潜在回撤（约6个月）潜在回撤（约12个月）；等待模型读数；四个长期模型读数尚待生成</span>
-        <summary>{zh ? "专业详情（默认折叠）" : "Professional details (collapsed by default)"}</summary>
+        <summary>{zh ? "专业详情与研究证据（默认折叠）" : "Professional details & research evidence (collapsed by default)"}</summary>
         <div className="long-term-summary__explain">
           <div><span>{zh ? "数据日期" : "Data date"}</span><p>{asOf}</p></div>
           <div><span>{zh ? "支持与反方证据" : "Evidence for / against"}</span><p>{zh ? "支持：长期模型同时给出经营、成长、估值、股东回报和风险读数。反方：新的公告、财报修订、行业变化或更完整的反方材料，可能改变当前观察。" : "For: the long-term models cover business quality, growth, valuation, shareholder return and risk. Against: new disclosures, revisions, industry changes or stronger contrary material may change the view."}</p></div>
@@ -198,6 +200,7 @@ export function LongTermInvestorSummary({ forecast, acceptance, scorecard, langu
             ? "这里保留四个模型的训练范围、PIT 快照、评估摘要和引用哈希，供 Pre 与专业用户核对；这些信息不等同于交易结论。"
             : "This section keeps the four models' training scope, PIT snapshot, evaluation summary and citation hashes for Pre and technical review; it is not a trading conclusion."}
         </p>
+        {researchDetails ? <div className="long-term-summary__research-details">{researchDetails}</div> : null}
         {(modelRegistry?.models ?? []).map((entry) => <RegistryEntry key={entry.task} entry={entry} language={language} />)}
         {!modelRegistry?.models?.length ? <p className="muted">{zh ? "模型训练详情尚未生成，等待评估文件补齐。" : "Training details are not available yet; waiting for evaluation artifacts."}</p> : null}
         <details className="long-term-summary__technical-candidates">

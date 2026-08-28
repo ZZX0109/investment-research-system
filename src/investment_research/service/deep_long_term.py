@@ -290,15 +290,23 @@ def _evaluation_metric_status(task: str, evaluation: dict[str, Any]) -> dict[str
         f"{prefix}industry_rank_ic", f"{prefix}regime_metrics",
         f"{prefix}data_completeness_rank_ic",
     ]
-    status = {
-        key: {
-            "status": "recorded" if _evaluation_field_recorded(holdout, key) else "not_recorded",
-            "missing_reason": None if _evaluation_field_recorded(holdout, key) else (
-                "evaluation_report_field_missing_or_null"
-            ),
+    # Risk reports use a ``risk_`` prefix for the directional metrics but
+    # retain the shared nested regime/year/completeness structures.  Resolve
+    # those explicit aliases without inventing values or treating an empty
+    # mapping as evidence.
+    aliases: dict[str, tuple[str, ...]] = {}
+    if risk:
+        for key in required:
+            aliases[key] = (key, key.removeprefix("risk_"))
+    status = {}
+    for key in required:
+        candidates = aliases.get(key, (key,))
+        recorded = any(_evaluation_field_recorded(holdout, candidate) for candidate in candidates)
+        status[key] = {
+            "status": "recorded" if recorded else "not_recorded",
+            "source_field": next((candidate for candidate in candidates if _evaluation_field_recorded(holdout, candidate)), None),
+            "missing_reason": None if recorded else "evaluation_report_field_missing_or_null",
         }
-        for key in required
-    }
     return {
         "required_count": len(required),
         "recorded_count": sum(item["status"] == "recorded" for item in status.values()),

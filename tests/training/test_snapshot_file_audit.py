@@ -42,3 +42,11 @@ def test_snapshot_file_audit_checks_cn_security_code_format(tmp_path: Path) -> N
     )
     result = audit_file_contents(path, dataset="daily_bars_raw")
     assert result["security_code_error_count"] == 1
+
+
+def test_snapshot_file_audit_accepts_allowlisted_nbs_html_raw_payload(tmp_path: Path) -> None:
+    path = tmp_path / "2013.json"
+    path.write_text("<!doctype html><html><title>NBS</title></html>", encoding="utf-8")
+    result = audit_file_contents(path, dataset="cn_macro_release_calendar_nbs_research")
+    assert result["schema_valid"] is True
+    assert result["pit_time_error_count"] == 0

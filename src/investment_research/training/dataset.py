@@ -81,6 +81,10 @@ class TrainingDatasetBuilder:
             events=events,
         )
         event_cursor = 0
+        event_1d_start = 0
+        event_7d_start = 0
+        event_30d_start = 0
+        event_times = [_event_available_at(event) for event in events]
         recent_events: deque[PointInTimeEvent] = deque()
         trading_dates = [item.trade_date for item in ordered]
         next_trading_dates = {
@@ -112,7 +116,7 @@ class TrainingDatasetBuilder:
             feature_cutoff = context.decision_time
             while (
                 event_cursor < len(events)
-                and _event_available_at(events[event_cursor]) <= feature_cutoff
+                and event_times[event_cursor] <= feature_cutoff
             ):
                 event = events[event_cursor]
                 recent_events.append(event)
@@ -124,9 +128,20 @@ class TrainingDatasetBuilder:
             ):
                 recent_events.popleft()
             feature_events = list(recent_events)
-            event_count_1d = _window_event_count(feature_events, feature_cutoff, 1)
-            event_count_7d = _window_event_count(feature_events, feature_cutoff, 7)
-            event_count_30d = len(feature_events)
+            # The event cursor is already sorted by available_at.  Maintain
+            # three lower-bound cursors instead of rescanning the recent event
+            # list for every bar (which was quadratic for dense filing feeds).
+            lower_1d = feature_cutoff - timedelta(days=1)
+            lower_7d = feature_cutoff - timedelta(days=7)
+            while event_1d_start < event_cursor and event_times[event_1d_start] <= lower_1d:
+                event_1d_start += 1
+            while event_7d_start < event_cursor and event_times[event_7d_start] <= lower_7d:
+                event_7d_start += 1
+            while event_30d_start < event_cursor and event_times[event_30d_start].date() < oldest_relevant:
+                event_30d_start += 1
+            event_count_1d = event_cursor - event_1d_start
+            event_count_7d = event_cursor - event_7d_start
+            event_count_30d = event_cursor - event_30d_start
             visible_provider_names = {
                 event.provider or event.source_name for event in feature_events
             }
@@ -384,6 +399,13 @@ class TrainingDatasetBuilder:
             "market_hk_flag": 1.0 if market == Market.HK else 0.0,
             "market_jp_flag": 1.0 if market == Market.JP else 0.0,
         }
+        # Preserve the latest observable liquidity inputs for research-only
+        # capacity estimation.  These are point-in-time bar fields, not
+        # forecasts, and remain absent when the provider did not supply them.
+        if latest.amount is not None:
+            features["amount_1d"] = float(latest.amount)
+        if latest.turnover_rate is not None:
+            features["turnover_rate_1d"] = float(latest.turnover_rate)
         features.update(event_features)
         if (
             self.feature_version in {

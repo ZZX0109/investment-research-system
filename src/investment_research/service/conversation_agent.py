@@ -153,7 +153,14 @@ class ConversationAgentService:
         }
 
     def _run_explanation_text(self, run_id: str) -> str:
-        """Best-effort extract of the run's plain-answer narrative text."""
+        """Format the actual LLM narrative for the visible chat turn.
+
+        The conversation used to persist only ``summary``. That made a
+        successful multi-part LLM explanation look like a one-line answer,
+        while a separate deterministic card below carried most of the text.
+        Keep the model-generated structure in the chat where the user asked
+        the question; the deterministic plain answer remains a safe fallback.
+        """
         payload: dict[str, object] = {}
         for event in reversed(self._orchestrator.runtime.list_events(run_id)):
             if event.event_type == "llm.research_explanation":
@@ -161,10 +168,41 @@ class ConversationAgentService:
                 break
         if not payload:
             return "（本轮研究未生成可引用解释，请等待下一次工具执行或披露更新。）"
-        narrative = payload.get("narrative") if isinstance(payload.get("narrative"), dict) else {}
-        summary = narrative.get("summary") or payload.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            return summary.strip()
+        narrative = payload.get("narrative") if isinstance(payload.get("narrative"), dict) else payload
+        if not isinstance(narrative, dict):
+            narrative = {}
+
+        def text(key: str) -> str:
+            value = narrative.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        sections: list[str] = []
+        if text("summary"):
+            sections.append(text("summary"))
+        for key, label in (
+            ("current_assessment", "当前观察"),
+            ("supporting_view", "依据"),
+            ("contrary_view", "需要谨慎看待"),
+        ):
+            if text(key):
+                sections.append(f"{label}：{text(key)}")
+        for key, label in (("major_risks", "主要风险"), ("observation_conditions", "接下来观察")):
+            values = narrative.get(key)
+            if isinstance(values, list):
+                items = [str(value).strip() for value in values if str(value).strip()][:3]
+                if items:
+                    sections.append(f"{label}：{'；'.join(items)}")
+        reasoning = narrative.get("reasoning")
+        if isinstance(reasoning, list):
+            items = [str(value).strip() for value in reasoning if str(value).strip()][:3]
+            if items:
+                sections.append(f"变化解读：{'；'.join(items)}")
+        if text("data_as_of"):
+            sections.append(f"资料日期：{text('data_as_of')}")
+        if text("display_notice"):
+            sections.append(f"提示：{text('display_notice')}")
+        if sections:
+            return "\n\n".join(sections)
         plain = payload.get("plain_answer")
         if isinstance(plain, dict):
             business = plain.get("business_condition")

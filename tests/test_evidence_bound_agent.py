@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from investment_research.agent.llm import HTTPStructuredProvider, LLMToolDefinition, LLMToolRequest
+from investment_research.agent.llm import HTTPStructuredProvider, LLMRequest, LLMToolDefinition, LLMToolRequest
 from investment_research.agent.models import AgentPlan, AgentRun, CitationAudit, ProviderProfile, ReportNarrative
 from investment_research.agent.service import AgentExecutionError, AgentOrchestrator
 from investment_research.domain.base import Provenance
@@ -77,9 +77,41 @@ def _write_long_term_scorecard(tmp_path, *, symbol: str, as_of_date: str, comple
     )
 
 
+def _write_financial_line_items(uow: SQLiteUnitOfWork, *, symbol: str, as_of: datetime, subset: set[str] | None = None) -> None:
+    """Ingest the 6 fundamental line items the long-term data-trust gate
+    requires (revenue/net_profit/gross_margin/operating_profit/roe/roa) so the
+    agent completes rather than abstaining on `fundamental_coverage_missing_*`
+    (the round-13 honest-abstain-on-missing-data gate)."""
+    from investment_research.domain.knowledge import FinancialLineItem
+    from investment_research.service.financial_knowledge import FinancialKnowledgeService
+
+    service = FinancialKnowledgeService(uow)
+    published = as_of - timedelta(days=30)
+    metrics = [
+        ("revenue", 1743.0), ("net_profit", 820.0), ("gross_margin", 0.91),
+        ("operating_profit", 640.0), ("roe", 0.30), ("roa", 0.21),
+    ]
+    if subset is not None:
+        metrics = [m for m in metrics if m[0] in subset]
+    for metric, value in metrics:
+        unit = "亿元" if metric in ("revenue", "net_profit", "operating_profit") else "ratio"
+        hash_kwargs = dict(
+            symbol=symbol, period="2025FY", metric=metric,
+            source_url=f"https://example-exchange.com/{symbol}",
+            value=value, unit=unit, scale=1.0, published_at=published, metric_label=metric,
+        )
+        item = FinancialLineItem(
+            market="CN", yoy_pct=8.0, source_name="交易所公告",
+            available_at=published, valid_from=published,
+            content_hash=FinancialLineItem.content_hash_of(**hash_kwargs), **hash_kwargs,
+        )
+        service.ingest_line_item(item)
+
+
 def test_long_term_agent_enforces_long_term_tool_sequence_without_short_forecasts(tmp_path) -> None:
     uow, user, asset, now = _context(tmp_path)
     _write_long_term_scorecard(tmp_path, symbol=asset.ticker, as_of_date=now.date().isoformat())
+    _write_financial_line_items(uow, symbol=asset.ticker, as_of=now)
 
     run = AgentOrchestrator(uow, project_root=tmp_path).create_and_execute(
         user=user, asset_id=str(asset.id), task_text="请解释这家公司的长期基本面和估值风险", as_of=now,
@@ -87,11 +119,10 @@ def test_long_term_agent_enforces_long_term_tool_sequence_without_short_forecast
 
     assert run.state.value == "completed"
     tool_ids = [item.tool_id for item in uow.agent_runtime.list_tool_calls(str(run.id))]
-    required = [
-        "collect_pit_evidence", "get_long_term_scorecard", "get_long_term_model_readings", "get_long_term_data_trust",
-        "get_long_term_evidence_balance", "get_long_term_fact_cards", "quality_gate",
-    ]
-    assert [tool for tool in tool_ids if tool in required] == required
+    # A right-side long-term turn receives one server-owned aggregate rather
+    # than asking the model to stitch scorecards, live reads and evidence tools.
+    assert tool_ids.count("get_stock_analysis_context") == 1
+    assert tool_ids.count("search_latest_news") == 1
     assert "get_four_task_forecasts" not in tool_ids
     assert "approved_model_inference" not in tool_ids
     explanation = next(
@@ -116,6 +147,74 @@ def test_long_term_agent_enforces_long_term_tool_sequence_without_short_forecast
     assert explanation.payload["compliance_audit"]["policy_version"] == "cn-public-research-text-v1"
     assert explanation.payload["compliance_audit"]["llm_output_rejected"] is False
     assert all(source["citation_id"] for source in explanation.payload["sources"])
+
+
+def test_research_pit_abstains_when_no_citable_source_is_available(tmp_path) -> None:
+    uow, user, asset, now = _context(tmp_path)
+    service = AgentOrchestrator(uow, project_root=tmp_path)
+    # The local fixture has no frozen research evidence.  A safe research-PIT
+    # answer must be an explicit refusal, not an uncited research_only result.
+    assert service._research_pit_abstain_reasons({
+        "research_pit": {"research_mode": "short_term_risk"},
+        "function_calls": [],
+    }) == ["research_evidence_unavailable"]
+
+
+def test_research_pit_downgrades_to_abstain_when_emitted_sources_are_not_citable(tmp_path, monkeypatch) -> None:
+    uow, user, asset, now = _context(tmp_path)
+    _write_long_term_scorecard(tmp_path, symbol=asset.ticker, as_of_date=now.date().isoformat())
+    _write_financial_line_items(uow, symbol=asset.ticker, as_of=now)
+    service = AgentOrchestrator(uow, project_root=tmp_path)
+    monkeypatch.setattr(service, "_explanation_sources", lambda _calls: [])
+    monkeypatch.setattr(service, "_research_pit_abstain_reasons", lambda _context: [])
+
+    run = service.create_and_execute(
+        user=user, asset_id=str(asset.id), task_text="长期基本面风险", as_of=now,
+    )
+
+    assert run.state.value == "abstained"
+    assert "citable_sources_missing_or_invalid" in (run.abstain_reason or "")
+    explanation = next(item for item in uow.agent_runtime.list_events(str(run.id)) if item.event_type == "llm.research_explanation")
+    assert explanation.payload["status"] == "abstain"
+    assert explanation.payload["citation_audit"]["valid"] is False
+    assert explanation.payload["plain_answer"]["result_status"] == "insufficient_evidence"
+    assert explanation.payload["plain_answer"]["sources"] == []
+
+
+def test_long_term_agent_completes_when_only_critical_fundamentals_present(tmp_path) -> None:
+    """Round 24: the fundamental_coverage abstain gate relaxes to CRITICAL-only
+    (revenue/net_profit). With only those 2 present (roe/roa/operating_profit/
+    gross_margin missing — non-critical), the agent COMPLETES (surfaces the gaps
+    via missing_evidence) rather than hard-abstaining — a retail research
+    assistant should answer with visible caveats, not refuse on partial data."""
+    uow, user, asset, now = _context(tmp_path)
+    _write_long_term_scorecard(tmp_path, symbol=asset.ticker, as_of_date=now.date().isoformat())
+    _write_financial_line_items(uow, symbol=asset.ticker, as_of=now, subset={"revenue", "net_profit"})
+
+    run = AgentOrchestrator(uow, project_root=tmp_path).create_and_execute(
+        user=user, asset_id=str(asset.id), task_text="长期基本面风险", as_of=now,
+    )
+    # Completes (not abstained) — only non-critical pillars missing.
+    assert run.state.value == "completed", f"expected completed, got {run.state.value}"
+    # The non-critical missing are surfaced (not silently dropped).
+    abstain = run.abstain_reason
+    assert abstain is None or "fundamental_coverage_missing_revenue" not in abstain
+    assert abstain is None or "fundamental_coverage_missing_net_profit" not in abstain
+
+
+def test_long_term_agent_abstains_when_revenue_missing(tmp_path) -> None:
+    """Round 24: revenue is CRITICAL — when it's missing (even if net_profit is
+    present), the agent abstains (no fundamental assessment possible without
+    revenue)."""
+    uow, user, asset, now = _context(tmp_path)
+    _write_long_term_scorecard(tmp_path, symbol=asset.ticker, as_of_date=now.date().isoformat())
+    _write_financial_line_items(uow, symbol=asset.ticker, as_of=now, subset={"net_profit", "gross_margin"})
+
+    run = AgentOrchestrator(uow, project_root=tmp_path).create_and_execute(
+        user=user, asset_id=str(asset.id), task_text="长期基本面风险", as_of=now,
+    )
+    assert run.state.value == "abstained"
+    assert "fundamental_coverage_missing_revenue" in (run.abstain_reason or "")
 
 
 def test_long_term_scorecard_and_model_readings_are_separate_tool_payloads(tmp_path) -> None:
@@ -157,7 +256,7 @@ def test_long_term_agent_abstains_when_four_model_readings_are_missing(tmp_path)
         if item.event_type == "llm.research_explanation"
     )
     assert explanation.payload["status"] == "abstain"
-    assert "四项长期模型读数尚未生成" in explanation.payload["summary"]
+    assert "当前可用资料不足以给出完整的长期判断" in explanation.payload["summary"]
 
 
 def test_long_term_agent_abstains_when_scorecard_is_missing(tmp_path) -> None:
@@ -171,18 +270,18 @@ def test_long_term_agent_abstains_when_scorecard_is_missing(tmp_path) -> None:
     assert run.verdict == "hold"
     assert "long_term_training_report_missing" in (run.abstain_reason or "")
     tool_ids = [item.tool_id for item in uow.agent_runtime.list_tool_calls(str(run.id))]
-    assert "get_long_term_scorecard" in tool_ids
-    assert "get_long_term_fact_cards" in tool_ids
-    assert "get_four_task_forecasts" not in tool_ids
+    # The consumer chat receives one server-owned aggregate even when the
+    # scorecard is unavailable; it does not wait on an LLM tool-choice round.
+    assert tool_ids == ["get_stock_analysis_context", "search_latest_news"]
     explanation = next(
         item for item in uow.agent_runtime.list_events(str(run.id))
         if item.event_type == "llm.research_explanation"
     )
     assert explanation.payload["status"] == "abstain"
-    assert "暂不形成长期判断" in explanation.payload["summary"]
+    assert "当前可用资料不足以给出完整的长期判断" in explanation.payload["summary"]
 
 
-def test_unsafe_long_term_narrative_is_rejected_and_replaced(tmp_path, monkeypatch) -> None:
+def test_advisory_long_term_narrative_is_shown_with_notice(tmp_path, monkeypatch) -> None:
     uow, user, asset, now = _context(tmp_path)
     _write_long_term_scorecard(tmp_path, symbol=asset.ticker, as_of_date=now.date().isoformat())
     service = AgentOrchestrator(uow, project_root=tmp_path)
@@ -190,6 +289,7 @@ def test_unsafe_long_term_narrative_is_rejected_and_replaced(tmp_path, monkeypat
 
     def unsafe_llm(run, node_name, response_model, payload, default, max_output_tokens):
         if response_model is ReportNarrative:
+            service._successful_llm_nodes.setdefault(str(run.id), set()).add(node_name)
             return ReportNarrative(
                 summary="建议买入并长期持有。", supporting_view="评分较高。", contrary_view="无。",
                 observation_conditions=[], evidence_ids=[], contains_trade_instruction=False,
@@ -202,15 +302,17 @@ def test_unsafe_long_term_narrative_is_rejected_and_replaced(tmp_path, monkeypat
     )
 
     events = uow.agent_runtime.list_events(str(run.id))
-    assert any(item.event_type == "llm.output_rejected" for item in events)
+    assert any(item.event_type == "llm.output_flagged" for item in events)
     explanation = next(item for item in events if item.event_type == "llm.research_explanation")
     rendered = json.dumps(explanation.payload, ensure_ascii=False)
-    assert "建议买入" not in rendered
-    assert "长期持有" not in rendered
-    assert explanation.payload["generated_by"] == "deterministic_fallback"
-    assert explanation.payload["compliance_audit"]["allowed"] is True
-    assert explanation.payload["compliance_audit"]["llm_output_rejected"] is True
-    assert set(explanation.payload["compliance_audit"]["rejected_reason_codes"]) >= {
+    assert "建议买入" in rendered
+    assert "长期持有" in rendered
+    assert "不构成买卖、持仓、目标价或收益承诺" in rendered
+    assert explanation.payload["generated_by"] == "llm"
+    assert explanation.payload["compliance_audit"]["allowed"] is False
+    assert explanation.payload["compliance_audit"]["llm_output_rejected"] is False
+    assert explanation.payload["compliance_audit"]["llm_output_flagged"] is True
+    assert set(explanation.payload["compliance_audit"]["flagged_reason_codes"]) >= {
         "DIRECT_BUY_INSTRUCTION", "HOLD_INSTRUCTION",
     }
 
@@ -429,6 +531,7 @@ def test_openai_compatible_provider_sends_native_allowlisted_tool_schema(monkeyp
         protocol="openai_compatible",
         endpoint="https://example.com/v1/chat/completions",
         model="test-model",
+        timeout_seconds=0.0,
     )
     provider = HTTPStructuredProvider(profile, api_key="test-key")
     monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
@@ -454,7 +557,10 @@ def test_openai_compatible_provider_sends_native_allowlisted_tool_schema(monkeyp
     def fake_urlopen(request, timeout, context=None):
         observed["payload"] = json.loads(request.data.decode("utf-8"))
         observed["authorization"] = request.headers.get("Authorization")
-        assert timeout == 20.0
+        # The default profile deliberately has no application-level timeout.
+        # Long-running configured research assistants should not be replaced
+        # by deterministic fallback text merely because generation is slow.
+        assert timeout is None
         return Response()
 
     monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
@@ -514,6 +620,239 @@ def test_openai_compatible_provider_completes_a_v1_base_endpoint(monkeypatch) ->
         )
     )
     assert observed["url"] == "https://api.example.com/v1/chat/completions"
+
+
+def test_structured_provider_accepts_json_wrapped_in_markdown_fence() -> None:
+    assert HTTPStructuredProvider._parse_structured_content(
+        "```json\n{\"summary\": \"可读结论\"}\n```"
+    ) == {"summary": "可读结论"}
+
+
+def test_structured_provider_retries_one_transient_network_failure(monkeypatch) -> None:
+    profile = ProviderProfile(
+        owner_user_id=uuid4(), name="retry-provider", protocol="openai_compatible",
+        endpoint="https://example.com/v1", model="test-model",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
+    attempts = 0
+
+    class Response:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps({"summary": "已重试成功"})}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(*_, **__):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            from urllib.error import URLError
+            raise URLError("temporary")
+        return Response()
+
+    monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
+    monkeypatch.setattr("investment_research.agent.llm.time.sleep", lambda _: None)
+    result = provider.generate_structured(
+        LLMRequest(
+            node_name="report_generation", system_prompt="JSON only", user_payload={},
+            response_schema=ReportNarrative.model_json_schema(), response_model_name="ReportNarrative",
+            max_output_tokens=100,
+        ),
+        ReportNarrative,
+    )
+
+    assert attempts == 2
+    assert result.output.summary == "已重试成功"
+
+
+def test_structured_provider_retries_without_response_format_when_gateway_rejects_it(monkeypatch) -> None:
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    profile = ProviderProfile(
+        owner_user_id=uuid4(), name="format-fallback-provider", protocol="openai_compatible",
+        endpoint="https://example.com/v1", model="flash-model",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
+    payloads: list[dict[str, object]] = []
+
+    class Response:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps({"summary": "兼容模式成功"})}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, *_, **__):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        if len(payloads) == 1:
+            raise HTTPError(
+                request.full_url, 400, "Bad Request", {},
+                BytesIO(b'{"error":{"message":"Format Error"}}'),
+            )
+        return Response()
+
+    monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
+    result = provider.generate_structured(
+        LLMRequest(
+            node_name="report_generation", system_prompt="JSON only", user_payload={},
+            response_schema=ReportNarrative.model_json_schema(), response_model_name="ReportNarrative",
+            max_output_tokens=100,
+        ),
+        ReportNarrative,
+    )
+
+    assert len(payloads) == 2
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]
+    assert result.output.summary == "兼容模式成功"
+
+
+def test_structured_provider_retries_transient_gateway_500(monkeypatch) -> None:
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    profile = ProviderProfile(
+        owner_user_id=uuid4(), name="gateway-retry-provider", protocol="openai_compatible",
+        endpoint="https://example.com/v1", model="test-model",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
+    monkeypatch.setattr("investment_research.agent.llm.time.sleep", lambda _: None)
+    attempts = 0
+
+    class Response:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": json.dumps({"summary": "网关重试成功"})}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, *_, **__):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise HTTPError(request.full_url, 500, "Internal Server Error", {}, BytesIO(b"{}"))
+        return Response()
+
+    monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
+    result = provider.generate_structured(
+        LLMRequest(
+            node_name="report_generation", system_prompt="JSON only", user_payload={},
+            response_schema=ReportNarrative.model_json_schema(), response_model_name="ReportNarrative",
+            max_output_tokens=100,
+        ),
+        ReportNarrative,
+    )
+
+    assert attempts == 2
+    assert result.output.summary == "网关重试成功"
+
+
+def test_structured_provider_retries_empty_choices_without_response_format(monkeypatch) -> None:
+    profile = ProviderProfile(
+        owner_user_id=uuid4(), name="empty-choice-provider", protocol="openai_compatible",
+        endpoint="https://example.com/v1", model="test-model",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    monkeypatch.setattr(provider, "_validate_runtime_endpoint", lambda: None)
+    payloads: list[dict[str, object]] = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def read(self):
+            return json.dumps(self.body).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fake_urlopen(request, *_, **__):
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        if len(payloads) == 1:
+            return Response({"choices": []})
+        return Response({
+            "choices": [{"message": {"content": json.dumps({"summary": "空响应重试成功"})}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        })
+
+    monkeypatch.setattr("investment_research.agent.llm.urlopen", fake_urlopen)
+    result = provider.generate_structured(
+        LLMRequest(
+            node_name="report_generation", system_prompt="JSON only", user_payload={},
+            response_schema=ReportNarrative.model_json_schema(), response_model_name="ReportNarrative",
+            max_output_tokens=100,
+        ),
+        ReportNarrative,
+    )
+
+    assert len(payloads) == 2
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]
+    assert result.output.summary == "空响应重试成功"
+
+
+def test_deepseek_structured_payload_starts_in_compatible_non_thinking_mode() -> None:
+    profile = ProviderProfile(
+        owner_user_id=uuid4(), name="deepseek-provider", protocol="openai_compatible",
+        endpoint="https://example.com/v1", model="DeepSeek-V4-Flash",
+    )
+    provider = HTTPStructuredProvider(profile, api_key="test-key")
+    payload, _ = provider._payload(LLMRequest(
+        node_name="report_generation", system_prompt="JSON only", user_payload={},
+        response_schema=ReportNarrative.model_json_schema(), response_model_name="ReportNarrative",
+        max_output_tokens=100,
+    ))
+
+    assert payload["enable_thinking"] is False
+    assert "response_format" not in payload
+
+
+def test_period_mismatch_question_gets_horizon_specific_context() -> None:
+    focus = AgentOrchestrator._question_focus_instruction(
+        "基本面看起来不错，但不同观察周期结果不一致，为什么"
+    )
+    compact = AgentOrchestrator._compact_stock_analysis_context({
+        "long_term": {"model_readings": {
+            "excess_return_120d": {"q50": 0.0065},
+            "excess_return_240d": {"q50": -0.1345},
+            "future_max_drawdown_120d": {"q50": -0.1747},
+            "future_max_drawdown_240d": {"q50": -0.1713},
+        }}
+    })
+
+    assert "周期差异解释题" in focus
+    assert compact["horizon_comparison"] == {
+        "relative_performance_6m_median_pct": 0.65,
+        "relative_performance_12m_median_pct": -13.45,
+        "potential_drawdown_6m_median_pct": -17.47,
+        "potential_drawdown_12m_median_pct": -17.13,
+    }
 
 
 @pytest.mark.parametrize(
