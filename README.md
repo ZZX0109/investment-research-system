@@ -2,14 +2,14 @@
 
 # A 股量化研究平台
 
-### 零预算 · 研究级 · 可复现 · 证据驱动
+### A 股研究工作台 · 长期研究 · 模拟体验 · 可复现
 
 面向 A 股长期投资研究的完整工作台：从免费数据、Research PIT、长期质量评估、风险解释到 Shadow 前向验证。
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-TypeScript-149ECA?logo=react&logoColor=white)
-![Tests](https://img.shields.io/badge/Python_tests-797_passed-16A34A)
+![Tests](https://img.shields.io/badge/Python_tests-868_collected-16A34A)
 ![Research Only](https://img.shields.io/badge/status-research__only-7C3AED)
 ![Deployment](https://img.shields.io/badge/deployment__ready-false-B45309)
 
@@ -20,6 +20,9 @@
 
 当前 A 股长期投资主线、数据层和已废弃架构的唯一事实源见
 [`docs/current-system.md`](docs/current-system.md)。
+
+> [!NOTE]
+> 当前版本还包含“投资人格实验室”：16 题人格测试、30 日历史回放和今日实时模拟赛。模拟赛使用约 5 分钟延迟的公开行情与虚拟资金，不接触真实资金，也不提供买卖建议。
 
 **第一次使用？**
 
@@ -59,6 +62,22 @@
 <p align="center">
   <img src="docs/images/research-risk-outlook.jpg" alt="回撤风险结论、情景分析和主要观察因素" width="920" />
 </p>
+
+### 投资人格实验室与今日模拟赛
+
+通过研究面板顶部的“研究观察·非投资建议”按钮进入。该模块与长期研究面板、训练数据和 30 日历史回放相互隔离。
+
+| 功能 | 当前实现 |
+| --- | --- |
+| 16 题投资人格测试 | 根据用户选择生成 12 类娱乐型投资人格，并用于模拟赛展示 |
+| 30 日历史回放 | 独立的历史/演示数据，不写入实时模拟账户 |
+| 今日模拟赛 | 约 5 分钟延迟行情，初始虚拟资金 ¥100,000 |
+| 实名资产池 | 项目股票池中的 162 只股票、5 只 ETF 和黄金 ETF，支持名称/代码/行业搜索与分页 |
+| 昨日建仓 | 首次参与先按最近已冻结的真实收盘价选择股票建立初始持仓；确认后刷新页面不会重置账户 |
+| 交易规则 | 股票 100 股一手、股票 T+1、模拟佣金/最低费用/卖出税费/滑点、休市委托排队 |
+| 账户与排行 | 匿名浏览器账户可恢复，保存订单、成交、持仓、费用、净值曲线和 12 个人格机器人排行 |
+
+模拟赛 API 位于 `/api/v1/paper-game/`，包括今日资产、账户、昨日建仓、订单、撤单、排行榜和净值曲线接口。盘中行情由独立 worker 采集；盘后收盘快照用于下一交易日的初始建仓。行情过期或收盘快照未准备好时，系统会阻止错误成交或建仓。
 
 ## 你可以用它完成什么
 
@@ -180,7 +199,7 @@ deployment_ready=false
 
 ```bash
 git clone <你的仓库地址>
-cd Hack
+cd investment-research-system
 
 # 建议创建独立虚拟环境
 python3 -m venv .venv
